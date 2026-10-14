@@ -1,0 +1,319 @@
+"""HTTP API for mapping review, object pages, the inbox, and governed actions."""
+
+from __future__ import annotations
+
+import tempfile
+from contextlib import asynccontextmanager
+from pathlib import Path
+
+from fastapi import Depends, FastAPI, File, Form, Request, UploadFile
+from fastapi.responses import FileResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
+from starlette.middleware.sessions import SessionMiddleware
+
+from ontology.loader import load_merged
+from services.actions.executor import compensate
+from services.db import authenticate, connect, ensure_ready
+from services.errors import AppError
+from services.pipeline import (
+    acknowledge_drift,
+    adjust_on_hand,
+    approve,
+    confirm_confident,
+    confirm_mapping,
+    execute_recommendation,
+    ingest_csv,
+    ingest_excel,
+    ingest_sql,
+    load_fixtures,
+    ontology,
+    refresh_canonical,
+    reject_mapping,
+    run_agents,
+)
+from services.queries import get_customer, get_order, list_audit, list_drift, list_inbox, list_mappings, list_orders
+from services.text import jsonable
+from services.workflow.engine import expire_stale, modify, reject
+
+WEB = Path(__file__).resolve().parents[1] / "web"
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    model = load_merged()
+    app.state.ontology = model
+    with connect() as conn:
+        ensure_ready(conn, model.packages)
+    yield
+
+
+app = FastAPI(title="Intelligent Enterprise Operating Layer", lifespan=lifespan)
+app.add_middleware(SessionMiddleware, secret_key="ieol-dev-secret", same_site="lax")
+app.mount("/assets", StaticFiles(directory=WEB), name="assets")
+
+
+@app.exception_handler(AppError)
+async def app_error(_request: Request, exc: AppError) -> JSONResponse:
+    return JSONResponse({"detail": exc.message}, status_code=exc.status)
+
+
+def require_user(request: Request) -> dict:
+    user = request.session.get("user")
+    if not user:
+        raise AppError(401, "Accesso richiesto")
+    return user
+
+
+def _ok(payload):
+    return jsonable(payload)
+
+
+@app.get("/api/health")
+def health() -> dict:
+    return {"status": "ok"}
+
+
+@app.post("/api/login")
+def login(request: Request, body: dict) -> dict:
+    with connect() as conn:
+        user = authenticate(conn, body.get("username", ""), body.get("password", ""))
+    if user is None:
+        raise AppError(401, "Credenziali non valide")
+    request.session["user"] = user
+    return user
+
+
+@app.post("/api/logout")
+def logout(request: Request) -> dict:
+    request.session.clear()
+    return {"ok": True}
+
+
+@app.get("/api/me")
+def me(user: dict = Depends(require_user)) -> dict:
+    return user
+
+
+@app.post("/api/demo/load")
+def demo_load(user: dict = Depends(require_user)) -> dict:
+    model = ontology()
+    with connect() as conn:
+        result = load_fixtures(conn, user["username"], user["role"], model)
+        conn.commit()
+    return _ok(result)
+
+
+@app.post("/api/ingest/csv")
+async def ingest_csv_route(
+    file: UploadFile = File(...),
+    source_name: str | None = Form(None),
+    user: dict = Depends(require_user),
+) -> dict:
+    return await _ingest_upload(file, source_name, user, excel=False)
+
+
+@app.post("/api/ingest/excel")
+async def ingest_excel_route(
+    file: UploadFile = File(...),
+    source_name: str | None = Form(None),
+    user: dict = Depends(require_user),
+) -> dict:
+    return await _ingest_upload(file, source_name, user, excel=True)
+
+
+async def _ingest_upload(file: UploadFile, source_name: str | None, user: dict, excel: bool) -> dict:
+    suffix = Path(file.filename or "upload").suffix
+    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as temporary:
+        temporary.write(await file.read())
+        path = Path(temporary.name)
+    name = source_name or Path(file.filename or "upload").stem
+    try:
+        with connect() as conn:
+            if excel:
+                result = ingest_excel(conn, path, name, user["username"], user["role"])
+            else:
+                result = ingest_csv(conn, path, name, user["username"], user["role"])
+            conn.commit()
+    finally:
+        path.unlink(missing_ok=True)
+    return _ok(result)
+
+
+@app.post("/api/ingest/sql")
+def ingest_sql_route(body: dict, user: dict = Depends(require_user)) -> dict:
+    table = body.get("table", "")
+    source_name = body.get("source_name") or table.replace(".", "_")
+    with connect() as conn:
+        result = ingest_sql(conn, table, source_name, user["username"], user["role"])
+        conn.commit()
+    return _ok(result)
+
+
+@app.get("/api/mappings")
+def mappings(user: dict = Depends(require_user)) -> dict:
+    del user
+    with connect() as conn:
+        return _ok({"mappings": list_mappings(conn), "drift": list_drift(conn)})
+
+
+@app.post("/api/mappings/{mapping_id}/confirm")
+def confirm(mapping_id: str, user: dict = Depends(require_user)) -> dict:
+    model = ontology()
+    with connect() as conn:
+        result = confirm_mapping(conn, mapping_id, user["username"], user["role"], model)
+        conn.commit()
+    return _ok(result)
+
+
+@app.post("/api/mappings/{mapping_id}/reject")
+def reject_map(mapping_id: str, user: dict = Depends(require_user)) -> dict:
+    with connect() as conn:
+        result = reject_mapping(conn, mapping_id, user["role"])
+        conn.commit()
+    return _ok(result)
+
+
+@app.post("/api/mappings/confirm-confident")
+def confirm_high(user: dict = Depends(require_user)) -> dict:
+    model = ontology()
+    with connect() as conn:
+        count = confirm_confident(conn, user["role"], model)
+        conn.commit()
+    return {"confirmed": count}
+
+
+@app.post("/api/drift/{drift_id}/acknowledge")
+def ack_drift(drift_id: str, user: dict = Depends(require_user)) -> dict:
+    with connect() as conn:
+        result = acknowledge_drift(conn, drift_id, user["role"])
+        conn.commit()
+    return result
+
+
+@app.post("/api/materialize")
+def materialize_route(user: dict = Depends(require_user)) -> dict:
+    del user
+    with connect() as conn:
+        counts = refresh_canonical(conn, ontology())
+        conn.commit()
+    return counts
+
+
+@app.post("/api/agent/run")
+def agent_run(user: dict = Depends(require_user)) -> dict:
+    with connect() as conn:
+        created = run_agents(conn, actor=user["username"], role=user["role"])
+        conn.commit()
+    return {"recommendations": created}
+
+
+@app.get("/api/orders")
+def orders(user: dict = Depends(require_user)) -> dict:
+    with connect() as conn:
+        return _ok({"orders": list_orders(conn, user["role"])})
+
+
+@app.get("/api/orders/{order_id}")
+def order_detail(order_id: str, user: dict = Depends(require_user)) -> dict:
+    with connect() as conn:
+        detail = get_order(conn, order_id, user["role"])
+    if detail is None:
+        raise AppError(404, "Ordine assente")
+    return _ok(detail)
+
+
+@app.get("/api/customers/{customer_id}")
+def customer_detail(customer_id: str, user: dict = Depends(require_user)) -> dict:
+    with connect() as conn:
+        detail = get_customer(conn, customer_id, user["role"])
+    if detail is None:
+        raise AppError(404, "Cliente assente")
+    return _ok(detail)
+
+
+@app.get("/api/inbox")
+def inbox(user: dict = Depends(require_user)) -> dict:
+    del user
+    with connect() as conn:
+        expire_stale(conn)
+        rows = list_inbox(conn)
+        conn.commit()
+    return _ok({"recommendations": rows})
+
+
+@app.post("/api/recommendations/{recommendation_id}/approve")
+def approve_route(recommendation_id: str, user: dict = Depends(require_user)) -> dict:
+    with connect() as conn:
+        result = approve(conn, recommendation_id, user["username"], user["role"])
+        conn.commit()
+    return _ok(result)
+
+
+@app.post("/api/recommendations/{recommendation_id}/modify")
+def modify_route(recommendation_id: str, body: dict, user: dict = Depends(require_user)) -> dict:
+    with connect() as conn:
+        result = modify(
+            conn,
+            recommendation_id,
+            quantity=int(body.get("quantity", 0)),
+            actor=user["username"],
+            role=user["role"],
+        )
+        conn.commit()
+    return _ok(result)
+
+
+@app.post("/api/recommendations/{recommendation_id}/reject")
+def reject_route(recommendation_id: str, body: dict, user: dict = Depends(require_user)) -> dict:
+    with connect() as conn:
+        result = reject(
+            conn,
+            recommendation_id,
+            reason=str(body.get("reason") or ""),
+            actor=user["username"],
+            role=user["role"],
+        )
+        conn.commit()
+    return _ok(result)
+
+
+@app.post("/api/recommendations/{recommendation_id}/execute")
+def execute_route(recommendation_id: str, user: dict = Depends(require_user)) -> dict:
+    with connect() as conn:
+        result = execute_recommendation(
+            conn, recommendation_id, user["username"], user["role"], ontology()
+        )
+        conn.commit()
+    return _ok(result)
+
+
+@app.post("/api/sandbox/{document_id}/compensate")
+def compensate_route(document_id: str, user: dict = Depends(require_user)) -> dict:
+    if user["role"] not in ("admin", "approver"):
+        raise AppError(403, "Solo un approvatore compensa")
+    with connect() as conn:
+        result = compensate(conn, document_id, actor=user["username"], role=user["role"])
+        conn.commit()
+    return _ok(result)
+
+
+@app.post("/api/stock/{product_key}")
+def adjust_stock(product_key: str, body: dict, user: dict = Depends(require_user)) -> dict:
+    if user["role"] not in ("admin", "mapper"):
+        raise AppError(403, "Serve il ruolo mapper")
+    with connect() as conn:
+        expired = adjust_on_hand(conn, ontology(), product_key, int(body.get("on_hand", 0)))
+        conn.commit()
+    return {"expired": expired}
+
+
+@app.get("/api/audit")
+def audit(user: dict = Depends(require_user)) -> dict:
+    del user
+    with connect() as conn:
+        return _ok({"events": list_audit(conn)})
+
+
+@app.get("/")
+def index() -> FileResponse:
+    return FileResponse(WEB / "index.html")

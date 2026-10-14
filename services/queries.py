@@ -1,0 +1,288 @@
+"""Read models for object pages, the inbox, and the audit trail."""
+
+from __future__ import annotations
+
+from typing import Any
+
+import psycopg
+
+from services.text import stable
+
+MASK = "••••"
+STOCK_FORMULA = "disponibile = giacenza − impegnato"
+
+
+def list_mappings(conn: psycopg.Connection) -> list[dict]:
+    return list(
+        conn.execute(
+            """
+            SELECT id::text, source_name, source_field, target_type, target_property,
+                   confidence, status, samples, profile
+            FROM app.field_mappings
+            WHERE valid_to IS NULL
+            ORDER BY source_name, confidence DESC, source_field
+            """
+        ).fetchall()
+    )
+
+
+def list_drift(conn: psycopg.Connection) -> list[dict]:
+    return list(
+        conn.execute(
+            """
+            SELECT id::text, source_name, previous_hash, new_hash, diff, status, created_at
+            FROM app.drift_reviews
+            ORDER BY created_at DESC
+            """
+        ).fetchall()
+    )
+
+
+def list_orders(conn: psycopg.Connection, role: str) -> list[dict]:
+    rows = conn.execute(
+        """
+        SELECT id::text, business_key FROM app.entities
+        WHERE type = 'Order' AND valid_to IS NULL
+        ORDER BY business_key
+        """
+    ).fetchall()
+    return [_order_summary(conn, row, role) for row in rows]
+
+
+def get_order(conn: psycopg.Connection, order_id: str, role: str) -> dict | None:
+    row = conn.execute(
+        """
+        SELECT id::text, type, business_key FROM app.entities
+        WHERE id = %s AND type = 'Order' AND valid_to IS NULL
+        """,
+        (order_id,),
+    ).fetchone()
+    if row is None:
+        return None
+    summary = _order_summary(conn, row, role)
+    summary["facts"] = _facts(conn, order_id, role)
+    summary["lines"] = _lines(conn, row["business_key"], role)
+    summary["edges"] = _edges(conn, order_id)
+    summary["stock_formula"] = STOCK_FORMULA
+    customer_key = next((fact["value"] for fact in summary["facts"] if fact["property"] == "customer_source_key"), None)
+    if customer_key and customer_key != MASK:
+        customer_id = _alias(conn, "Customer", str(customer_key))
+        summary["customer_id"] = customer_id
+    return summary
+
+
+def get_customer(conn: psycopg.Connection, customer_id: str, role: str) -> dict | None:
+    row = conn.execute(
+        """
+        SELECT id::text, business_key FROM app.entities
+        WHERE id = %s AND type = 'Customer' AND valid_to IS NULL
+        """,
+        (customer_id,),
+    ).fetchone()
+    if row is None:
+        return None
+    facts = _facts(conn, customer_id, role)
+    orders = conn.execute(
+        """
+        SELECT e.id::text, e.business_key
+        FROM app.graph_edges g
+        JOIN app.entities e ON e.id = g.to_id
+        WHERE g.from_id = %s AND g.rel = 'places' AND g.valid_to IS NULL
+        ORDER BY e.business_key
+        """,
+        (customer_id,),
+    ).fetchall()
+    return {
+        "id": row["id"],
+        "business_key": row["business_key"],
+        "company_name": _visible(facts, "company_name"),
+        "facts": facts,
+        "orders": list(orders),
+        "edges": _edges(conn, customer_id),
+    }
+
+
+def list_inbox(conn: psycopg.Connection) -> list[dict]:
+    rows = conn.execute(
+        """
+        SELECT r.id::text, r.order_entity_id::text, e.business_key AS order_key,
+               r.problem, r.evidence, r.evidence_hash, r.actions, r.expected_impact,
+               r.risk, r.confidence, r.status, r.requires_cfo, r.created_at
+        FROM app.recommendations r
+        JOIN app.entities e ON e.id = r.order_entity_id
+        ORDER BY r.created_at DESC
+        """
+    ).fetchall()
+    inbox = []
+    for row in rows:
+        payloads = conn.execute(
+            """
+            SELECT payloads FROM app.action_batches
+            WHERE recommendation_id = %s AND kind = 'dry_run'
+            ORDER BY created_at DESC LIMIT 1
+            """,
+            (row["id"],),
+        ).fetchone()
+        item = dict(row)
+        item["dry_run"] = payloads["payloads"] if payloads else None
+        inbox.append(item)
+    return inbox
+
+
+def list_audit(conn: psycopg.Connection) -> list[dict]:
+    return list(
+        conn.execute(
+            """
+            SELECT id::text, at, actor, role, action, entity_ref, payload
+            FROM app.audit_log
+            ORDER BY at DESC
+            LIMIT 200
+            """
+        ).fetchall()
+    )
+
+
+def _order_summary(conn: psycopg.Connection, row: dict, role: str) -> dict:
+    facts = _facts(conn, row["id"], role)
+    customer_key = _raw_fact(conn, row["id"], "customer_source_key")
+    customer_name = None
+    customer_id = None
+    if customer_key:
+        customer_id = _alias(conn, "Customer", str(customer_key))
+        if customer_id:
+            customer_name = _raw_fact(conn, customer_id, "company_name")
+    return {
+        "id": row["id"],
+        "business_key": row["business_key"],
+        "amount": _visible(facts, "amount"),
+        "status": _visible(facts, "status"),
+        "shortage_qty": _visible(facts, "shortage_qty"),
+        "margin": _visible(facts, "margin"),
+        "customer_name": customer_name,
+        "customer_id": customer_id,
+        "stock_formula": STOCK_FORMULA,
+    }
+
+
+def _lines(conn: psycopg.Connection, order_key: str, role: str) -> list[dict]:
+    import json
+
+    rows = conn.execute(
+        """
+        SELECT e.id::text
+        FROM app.entities e
+        JOIN app.facts f ON f.entity_id = e.id AND f.valid_to IS NULL
+        WHERE e.type = 'OrderLine' AND e.valid_to IS NULL
+          AND f.property = 'order_source_key' AND f.value = %s::jsonb
+        ORDER BY e.business_key
+        """,
+        (json.dumps(order_key),),
+    ).fetchall()
+    lines = []
+    for row in rows:
+        facts = _facts(conn, row["id"], role)
+        product_key = _raw_fact(conn, row["id"], "product_source_key")
+        stock = None
+        if product_key:
+            stock_row = conn.execute(
+                """
+                SELECT e.id::text
+                FROM app.entities e
+                JOIN app.facts f ON f.entity_id = e.id AND f.valid_to IS NULL
+                WHERE e.type = 'StockPosition'
+                  AND f.property = 'product_source_key' AND f.value = %s::jsonb
+                LIMIT 1
+                """,
+                (json.dumps(str(product_key)),),
+            ).fetchone()
+            if stock_row:
+                stock_facts = _facts(conn, stock_row["id"], role)
+                stock = {
+                    "on_hand": _visible(stock_facts, "on_hand"),
+                    "reserved": _visible(stock_facts, "reserved"),
+                    "available": _visible(stock_facts, "available"),
+                    "formula": STOCK_FORMULA,
+                }
+        lines.append(
+            {
+                "id": row["id"],
+                "product": product_key,
+                "quantity": _visible(facts, "quantity"),
+                "shortage": _visible(facts, "shortage"),
+                "unit_price": _visible(facts, "unit_price"),
+                "stock": stock,
+            }
+        )
+    return lines
+
+
+def _facts(conn: psycopg.Connection, entity_id: str, role: str) -> list[dict]:
+    rows = conn.execute(
+        """
+        SELECT id::text, property, value, classification, origin, source, confidence, valid_from
+        FROM app.facts
+        WHERE entity_id = %s AND valid_to IS NULL
+        ORDER BY property
+        """,
+        (entity_id,),
+    ).fetchall()
+    visible = []
+    for row in rows:
+        item = dict(row)
+        item["value"] = stable(item["value"])
+        if item["classification"] == "confidential" and role not in ("admin", "approver"):
+            item["value"] = MASK
+            item["masked"] = True
+        visible.append(item)
+    return visible
+
+
+def _edges(conn: psycopg.Connection, entity_id: str) -> list[dict]:
+    outbound = conn.execute(
+        """
+        SELECT g.rel, g.to_id::text AS other_id, e.type AS other_type, e.business_key AS other_key, 'out' AS direction
+        FROM app.graph_edges g
+        JOIN app.entities e ON e.id = g.to_id
+        WHERE g.from_id = %s AND g.valid_to IS NULL
+        """,
+        (entity_id,),
+    ).fetchall()
+    inbound = conn.execute(
+        """
+        SELECT g.rel, g.from_id::text AS other_id, e.type AS other_type, e.business_key AS other_key, 'in' AS direction
+        FROM app.graph_edges g
+        JOIN app.entities e ON e.id = g.from_id
+        WHERE g.to_id = %s AND g.valid_to IS NULL
+        """,
+        (entity_id,),
+    ).fetchall()
+    return list(outbound) + list(inbound)
+
+
+def _visible(facts: list[dict], name: str) -> Any:
+    for fact in facts:
+        if fact["property"] == name:
+            return fact["value"]
+    return None
+
+
+def _raw_fact(conn: psycopg.Connection, entity_id: str, name: str) -> Any:
+    row = conn.execute(
+        """
+        SELECT value FROM app.facts
+        WHERE entity_id = %s AND property = %s AND valid_to IS NULL
+        """,
+        (entity_id, name),
+    ).fetchone()
+    return None if row is None else stable(row["value"])
+
+
+def _alias(conn: psycopg.Connection, entity_type: str, alias: str) -> str | None:
+    row = conn.execute(
+        """
+        SELECT entity_id::text FROM app.identity_aliases
+        WHERE entity_type = %s AND alias = %s
+        """,
+        (entity_type, alias),
+    ).fetchone()
+    return row["entity_id"] if row else None

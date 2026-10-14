@@ -1,0 +1,70 @@
+:root {
+  --ink: #1d2430;
+  --muted: #5c6778;
+  --paper: #f3efe6;
+  --card: #fffdf8;
+  --line: #e2d9cb;
+  --teal: #0e6e6b;
+  --teal-ink: #084743;
+  --warn: #8a4b08;
+  --danger: #8d2f39;
+  --ok: #1d6b3a;
+  color: var(--ink);
+  font-family: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
+  background:
+    radial-gradient(1200px 400px at 10% -10%, #efe4cf 0%, transparent 50%),
+    var(--paper);
+}
+
+* { box-sizing: border-box; }
+body { margin: 0; min-height: 100vh; }
+button, input { font: inherit; }
+button {
+  background: var(--teal);
+  color: white;
+  border: 0;
+  border-radius: 999px;
+  padding: 0.55rem 1rem;
+  cursor: pointer;
+}
+button.ghost { background: transparent; color: var(--teal-ink); border: 1px solid var(--line); }
+button:disabled { opacity: 0.5; cursor: not-allowed; }
+h1, h2, h3 { font-weight: 600; letter-spacing: -0.03em; margin: 0; }
+h1 { font-size: 1.8rem; }
+.eyebrow { margin: 0; text-transform: uppercase; letter-spacing: 0.14em; font-size: 0.72rem; color: var(--muted); font-family: "Avenir Next", "Segoe UI", sans-serif; }
+.lede { color: var(--muted); max-width: 62ch; }
+.top, nav, .panel { width: min(1100px, calc(100% - 2rem)); margin: 0 auto; }
+.top { display: flex; justify-content: space-between; align-items: end; padding: 1.5rem 0 0.5rem; }
+.session { display: flex; gap: 0.75rem; align-items: center; font-family: "Avenir Next", "Segoe UI", sans-serif; }
+nav { display: flex; gap: 0.5rem; padding: 0.5rem 0 1rem; }
+nav button[data-view].active { background: var(--ink); }
+.panel { background: var(--card); border: 1px solid var(--line); border-radius: 18px; padding: 1.25rem; margin-bottom: 2rem; box-shadow: 0 20px 50px rgba(60, 40, 10, 0.05); }
+.login { max-width: 460px; }
+form { display: grid; gap: 0.75rem; }
+label { display: grid; gap: 0.3rem; font-family: "Avenir Next", "Segoe UI", sans-serif; font-size: 0.92rem; }
+input { border: 1px solid var(--line); border-radius: 10px; padding: 0.55rem 0.7rem; background: white; }
+.accounts { padding-left: 1.1rem; color: var(--muted); }
+.row, .actions { display: flex; gap: 0.5rem; justify-content: space-between; align-items: start; flex-wrap: wrap; }
+.table-wrap { overflow-x: auto; }
+table { width: 100%; border-collapse: collapse; font-family: "Avenir Next", "Segoe UI", sans-serif; font-size: 0.92rem; }
+th, td { text-align: left; padding: 0.55rem 0.4rem; border-bottom: 1px solid var(--line); vertical-align: top; }
+th { color: var(--muted); font-weight: 600; font-size: 0.75rem; letter-spacing: 0.06em; text-transform: uppercase; }
+.cards, .stack { display: grid; gap: 0.75rem; }
+.card { border: 1px solid var(--line); border-radius: 14px; padding: 0.9rem 1rem; background: #fff; }
+.card button { margin-right: 0.4rem; margin-top: 0.4rem; }
+.meta { display: flex; gap: 0.4rem; flex-wrap: wrap; margin: 0.4rem 0; }
+.pill { font-family: "Avenir Next", "Segoe UI", sans-serif; font-size: 0.75rem; border-radius: 999px; padding: 0.15rem 0.55rem; background: #efe7da; }
+.pill.high, .pill.failed { background: #f8d7dc; color: var(--danger); }
+.pill.ok, .pill.executed, .pill.confirmed { background: #d9f0e2; color: var(--ok); }
+.pill.warn, .pill.proposed, .pill.dry_run_ok { background: #f8e7cf; color: var(--warn); }
+pre { background: #17211d; color: #e7f3ee; padding: 0.8rem; border-radius: 12px; overflow: auto; font-size: 0.82rem; }
+.error, .flash { font-family: "Avenir Next", "Segoe UI", sans-serif; }
+.error { color: var(--danger); }
+.flash { background: #e7f3f2; border-radius: 12px; padding: 0.7rem 0.9rem; }
+.formula { font-family: "Iowan Old Style", Georgia, serif; font-style: italic; color: var(--teal-ink); }
+a { color: var(--teal-ink); }
+.edges { font-family: "Avenir Next", "Segoe UI", sans-serif; font-size: 0.9rem; }
+@media (max-width: 720px) {
+  .row { display: grid; }
+  h1 { font-size: 1.45rem; }
+}

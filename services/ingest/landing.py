@@ -1,0 +1,76 @@
+"""Land a connector extract once per watermark, then propose mappings."""
+
+from __future__ import annotations
+
+import uuid
+from typing import Any
+
+import psycopg
+from psycopg.types.json import Json
+
+from services.mapping.engine import propose_mappings
+
+
+def land(
+    conn: psycopg.Connection,
+    *,
+    source_name: str,
+    extracted: dict[str, Any],
+    actor: str | None = None,
+    role: str | None = None,
+) -> dict[str, Any]:
+    watermark = extracted["watermark"]
+    existing = conn.execute(
+        """
+        SELECT id, row_count FROM app.landing_batches
+        WHERE source_name = %s AND watermark = %s
+        """,
+        (source_name, watermark),
+    ).fetchone()
+    if existing:
+        return {
+            "batch_id": str(existing["id"]),
+            "skipped": True,
+            "row_count": existing["row_count"],
+            "mappings": [],
+            "drift": None,
+        }
+    batch_id = str(uuid.uuid4())
+    conn.execute(
+        """
+        INSERT INTO app.landing_batches (id, source_name, watermark, row_count)
+        VALUES (%s, %s, %s, %s)
+        """,
+        (batch_id, source_name, watermark, len(extracted["rows"])),
+    )
+    for index, row in enumerate(extracted["rows"]):
+        conn.execute(
+            """
+            INSERT INTO app.landing_rows (batch_id, row_index, data)
+            VALUES (%s, %s, %s)
+            """,
+            (batch_id, index, Json(row)),
+        )
+    conn.execute(
+        """
+        INSERT INTO app.ingest_watermarks (source_name, watermark)
+        VALUES (%s, %s)
+        ON CONFLICT (source_name) DO UPDATE
+        SET watermark = EXCLUDED.watermark, updated_at = now()
+        """,
+        (source_name, watermark),
+    )
+    proposed = propose_mappings(
+        conn,
+        source_name=source_name,
+        columns=extracted["columns"],
+        rows=extracted["rows"],
+        actor=actor,
+        role=role,
+    )
+    return {
+        "batch_id": batch_id,
+        "skipped": False,
+        "row_count": len(extracted["rows"]),
+        **proposed,
+    }

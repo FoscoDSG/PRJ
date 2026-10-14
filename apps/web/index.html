@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Operating layer — ordini</title>
+  <link rel="stylesheet" href="/assets/styles.css" />
+</head>
+<body>
+  <header class="top">
+    <div>
+      <p class="eyebrow">Intelligent Enterprise Operating Layer</p>
+      <h1>Order management</h1>
+    </div>
+    <div class="session" id="session" hidden>
+      <span id="who"></span>
+      <button type="button" id="logout" class="ghost">Esci</button>
+    </div>
+  </header>
+
+  <section id="login" class="panel login">
+    <h2>Accesso</h2>
+    <p class="lede">Quattro ruoli di prova. La password coincide con il nome del ruolo.</p>
+    <form id="login-form">
+      <label>Utente <input name="username" autocomplete="username" required value="mapper" /></label>
+      <label>Password <input name="password" type="password" autocomplete="current-password" required value="mapper" /></label>
+      <button type="submit">Entra</button>
+    </form>
+    <ul class="accounts">
+      <li><code>mapper</code> conferma i mapping</li>
+      <li><code>operator</code> legge, senza dati riservati</li>
+      <li><code>approver</code> approva, anche sopra 50.000 €</li>
+      <li><code>admin</code> tutto</li>
+    </ul>
+    <p id="login-error" class="error" hidden></p>
+  </section>
+
+  <div id="app" hidden>
+    <nav>
+      <button type="button" data-view="mapping" class="active">Mapping</button>
+      <button type="button" data-view="orders">Ordini</button>
+      <button type="button" data-view="inbox">Inbox</button>
+      <button type="button" data-view="audit">Audit</button>
+    </nav>
+    <p id="flash" class="flash" hidden></p>
+
+    <section id="view-mapping" class="panel">
+      <div class="row">
+        <div>
+          <h2>Review del mapping</h2>
+          <p class="lede">Le colonne sotto soglia restano in review. Il drift di schema apre un controllo.</p>
+        </div>
+        <div class="actions">
+          <button type="button" id="load-fixture">Carica fixture</button>
+          <button type="button" id="confirm-high" class="ghost">Conferma soglia alta</button>
+          <button type="button" id="materialize" class="ghost">Aggiorna modello</button>
+        </div>
+      </div>
+      <div id="drift"></div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Fonte</th><th>Colonna</th><th>Destinazione</th><th>Confidence</th><th>Stato</th><th></th>
+            </tr>
+          </thead>
+          <tbody id="mappings"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section id="view-orders" class="panel" hidden>
+      <h2>Ordini</h2>
+      <div id="order-list" class="cards"></div>
+      <article id="order-detail" hidden></article>
+    </section>
+
+    <section id="view-inbox" class="panel" hidden>
+      <h2>Inbox eccezioni</h2>
+      <p class="lede">L'agente propone. L'approvazione mostra il payload ERP prima di qualsiasi scrittura.</p>
+      <div id="inbox" class="stack"></div>
+    </section>
+
+    <section id="view-audit" class="panel" hidden>
+      <h2>Audit</h2>
+      <div id="audit" class="stack"></div>
+    </section>
+  </div>
+  <script src="/assets/app.js"></script>
+</body>
+</html>
