@@ -1,5 +1,5 @@
 {
-  "label_origin": "hand_written",
+  "label_origin": "synthetic",
   "cases": [
     {
       "case_kind": "mapping",

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import date
 from typing import Any
 
 import psycopg
@@ -21,9 +22,16 @@ ACTION_LABELS = {
     "external_call": "Chiamata esterna",
     "outcome": "Esito",
     "pii_unmask": "Smascheramento dati personali",
+    "pii_read": "Lettura dati personali",
+    "pii_mask": "Mascheramento dati personali",
     "approve": "Approvazione",
     "reject": "Rifiuto",
     "modify": "Modifica",
+    "decision": "Decisione",
+    "status": "Stato",
+    "quantity": "Quantità",
+    "reason": "Motivo",
+    "problem": "Problema",
 }
 
 _EVENTS = """
@@ -71,8 +79,8 @@ def list_readable(
     user: str | None = None,
     order: str | None = None,
     batch: str | None = None,
-    date_from: str | None = None,
-    date_to: str | None = None,
+    date_from: date | str | None = None,
+    date_to: date | str | None = None,
     limit: int = 50,
     offset: int = 0,
 ) -> dict[str, Any]:
@@ -115,8 +123,8 @@ def _filters(
     user: str | None,
     order: str | None,
     batch: str | None,
-    date_from: str | None,
-    date_to: str | None,
+    date_from: date | str | None,
+    date_to: date | str | None,
 ) -> tuple[str, list[Any]]:
     clauses: list[str] = []
     params: list[Any] = []
@@ -165,7 +173,10 @@ def _detail(value: Any) -> str:
         parts = []
         for key in ("decision", "status", "quantity", "reason", "problem"):
             if key in cleaned and cleaned[key] not in (None, ""):
-                parts.append(f"{key}: {cleaned[key]}")
+                shown = cleaned[key]
+                if isinstance(shown, str):
+                    shown = ACTION_LABELS.get(shown, shown)
+                parts.append(f"{ACTION_LABELS.get(key, key)}: {shown}")
         if parts:
             return redact_text("; ".join(parts))
     if cleaned in (None, ""):

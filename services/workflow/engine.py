@@ -338,7 +338,7 @@ def _record_decision(
         row.get("confidence_method"),
         row.get("confidence_rule"),
     )
-    threshold, _measured = active_threshold(conn)
+    threshold, _measured, _support = active_threshold(conn)
     context = build_context(conn, str(row["order_entity_id"]))
     if decision == "reject":
         action_label: list = []
@@ -372,9 +372,10 @@ def _record_decision(
           id, recommendation_id, batch_id, row_index, decision, evidence_hash,
           recommendation, confidence, confidence_method, confidence_rule,
           actor, actor_role, agent_version, rules_version,
-          confidence_threshold, amount_threshold_eur, action_label, context_snapshot
+          confidence_threshold, amount_threshold_eur, action_label, context_snapshot,
+          hash_version
         )
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         """,
         (
             decision_id,
@@ -395,6 +396,7 @@ def _record_decision(
             CFO_THRESHOLD,
             Json(action_label),
             Json(snapshot),
+            "hmac-sha256-v1",
         ),
     )
     for source in sources:

@@ -5,9 +5,16 @@
 -- ieol_app can read the masked columns. Cleartext columns are granted to
 -- ieol_pii only. The application login does not select them.
 --
--- Allowlist of this file, one exact statement:
+-- Allowlist of this file, exact statements only:
 --   ALTER TABLE app.audit_log DROP CONSTRAINT IF EXISTS audit_log_action_check
--- Every other DROP and every TRUNCATE stay refused.
+--   ALTER TABLE app.audit_log DISABLE TRIGGER audit_no_update
+--   ALTER TABLE app.audit_log ENABLE TRIGGER audit_no_update
+--   ALTER TABLE app.decisions_log DISABLE TRIGGER decisions_log_no_update
+--   ALTER TABLE app.decisions_log ENABLE TRIGGER decisions_log_no_update
+-- The trigger lines exist only inside shield_existing_pii. Every other
+-- DROP, TRUNCATE, DISABLE TRIGGER, ENABLE TRIGGER and ALTER TABLE ... DISABLE
+-- stays refused. hmac_evidence takes fact ids only. The key is one row
+-- ieol_app cannot read or replace.
 
 CREATE EXTENSION IF NOT EXISTS pgcrypto;
 
@@ -33,6 +40,30 @@ ALTER TABLE app.email_outbox ADD COLUMN IF NOT EXISTS recipient_cleartext text;
 
 ALTER TABLE app.decisions_log ADD COLUMN IF NOT EXISTS action_label jsonb;
 ALTER TABLE app.decisions_log ADD COLUMN IF NOT EXISTS context_snapshot jsonb;
+
+-- Existing rows receive sha256 from the column default. No UPDATE: the log
+-- is append-only. Rows inserted after this statement omit the column and
+-- receive hmac-sha256-v1, which the application also writes explicitly.
+ALTER TABLE app.decisions_log
+  ADD COLUMN IF NOT EXISTS hash_version text NOT NULL DEFAULT 'sha256';
+ALTER TABLE app.decisions_log
+  ALTER COLUMN hash_version SET DEFAULT 'hmac-sha256-v1';
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conname = 'decisions_log_hash_version_check'
+      AND conrelid = 'app.decisions_log'::regclass
+  ) THEN
+    ALTER TABLE app.decisions_log
+      ADD CONSTRAINT decisions_log_hash_version_check
+      CHECK (hash_version IN ('sha256', 'hmac-sha256-v1'));
+  END IF;
+END $$;
+
+COMMENT ON COLUMN app.decisions_log.hash_version IS
+  'sha256 sulle righe già presenti all''aggiunta della colonna. Le righe nuove usano hmac-sha256-v1. Nessun UPDATE.';
 
 ALTER TABLE app.decisions_log_sources
   ADD COLUMN IF NOT EXISTS confidence_method text NOT NULL DEFAULT 'unknown';
@@ -389,11 +420,23 @@ BEGIN
   END IF;
 END $$;
 
-CREATE OR REPLACE FUNCTION app.hmac_evidence(fact_ids uuid[], secret text) RETURNS text
+-- The key is one row. ieol_app cannot read it or replace it. The function
+-- takes only fact ids, so the caller cannot supply a key and brute-force offline.
+CREATE TABLE IF NOT EXISTS app.evidence_hmac_key (
+  id integer PRIMARY KEY CHECK (id = 1),
+  secret text NOT NULL
+);
+
+REVOKE ALL ON app.evidence_hmac_key FROM PUBLIC;
+REVOKE ALL ON app.evidence_hmac_key FROM ieol_app;
+
+CREATE OR REPLACE FUNCTION app.hmac_evidence(fact_ids uuid[]) RETURNS text
 LANGUAGE plpgsql SECURITY DEFINER SET search_path = app, public AS $$
 DECLARE
   payload text;
+  secret text;
 BEGIN
+  SELECT evidence_hmac_key.secret INTO secret FROM app.evidence_hmac_key WHERE id = 1;
   IF secret IS NULL OR length(btrim(secret)) = 0 THEN
     RAISE EXCEPTION 'chiave hmac assente';
   END IF;
@@ -409,8 +452,8 @@ BEGIN
 END;
 $$;
 
-REVOKE ALL ON FUNCTION app.hmac_evidence(uuid[], text) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION app.hmac_evidence(uuid[], text) TO ieol_app;
+REVOKE ALL ON FUNCTION app.hmac_evidence(uuid[]) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION app.hmac_evidence(uuid[]) TO ieol_app;
 
 CREATE OR REPLACE FUNCTION app.vat_is_valid(entity_id uuid) RETURNS boolean
 LANGUAGE sql SECURITY DEFINER SET search_path = app, public AS $$
@@ -558,17 +601,29 @@ REVOKE ALL ON FUNCTION app.queue_customer_email(uuid, text, text, text) FROM PUB
 GRANT EXECUTE ON FUNCTION app.queue_customer_email(uuid, text, text, text) TO ieol_app;
 
 -- Scan first. Rewrite a row only when cleartext personal data is still there.
+-- When at least one row changes, write one audit row with the counts and the
+-- migration version. The payload has numbers only.
 CREATE OR REPLACE FUNCTION app.shield_existing_pii() RETURNS void
 LANGUAGE plpgsql SECURITY DEFINER SET search_path = app, public AS $$
 DECLARE
-  pending integer;
+  n_facts integer := 0;
+  n_landing integer := 0;
+  n_samples integer := 0;
+  n_email integer := 0;
+  n_recommendations integer := 0;
+  n_batches integer := 0;
+  n_quality integer := 0;
+  n_identity integer := 0;
+  n_audit integer := 0;
+  n_decisions integer := 0;
+  total integer;
 BEGIN
-  SELECT count(*) INTO pending
+  SELECT count(*) INTO n_facts
   FROM app.facts
   WHERE app.field_is_pii(entity_id, property)
     AND value_cleartext IS NULL
     AND value IS DISTINCT FROM to_jsonb('••••'::text);
-  IF pending > 0 THEN
+  IF n_facts > 0 THEN
     UPDATE app.facts
     SET value = value
     WHERE app.field_is_pii(entity_id, property)
@@ -576,20 +631,20 @@ BEGIN
       AND value IS DISTINCT FROM to_jsonb('••••'::text);
   END IF;
 
-  SELECT count(*) INTO pending
+  SELECT count(*) INTO n_landing
   FROM app.landing_rows
   WHERE data_cleartext IS NULL AND app.landing_has_pii(data);
-  IF pending > 0 THEN
+  IF n_landing > 0 THEN
     UPDATE app.landing_rows
     SET data = data
     WHERE data_cleartext IS NULL AND app.landing_has_pii(data);
   END IF;
 
-  SELECT count(*) INTO pending
+  SELECT count(*) INTO n_samples
   FROM app.field_mappings
   WHERE samples_cleartext IS NULL
     AND (app.key_is_pii(source_field) OR app.key_is_pii(target_property));
-  IF pending > 0 THEN
+  IF n_samples > 0 THEN
     UPDATE app.field_mappings
     SET samples = samples
     WHERE samples_cleartext IS NULL
@@ -599,26 +654,34 @@ BEGIN
   UPDATE app.email_outbox
   SET recipient = recipient
   WHERE recipient IS NOT NULL AND recipient <> '••••' AND recipient_cleartext IS NULL;
+  GET DIAGNOSTICS n_email = ROW_COUNT;
 
   UPDATE app.recommendations
   SET problem = problem
   WHERE problem IS DISTINCT FROM app.redact_text(problem)
      OR evidence IS DISTINCT FROM app.redact_json(evidence)
      OR actions IS DISTINCT FROM app.redact_json(actions);
+  GET DIAGNOSTICS n_recommendations = ROW_COUNT;
+
   UPDATE app.action_batches
   SET payloads = app.redact_json(payloads)
   WHERE payloads IS DISTINCT FROM app.redact_json(payloads);
+  GET DIAGNOSTICS n_batches = ROW_COUNT;
+
   UPDATE app.quality_issues
   SET detail = app.redact_text(detail)
   WHERE detail IS DISTINCT FROM app.redact_text(detail);
+  GET DIAGNOSTICS n_quality = ROW_COUNT;
+
   UPDATE app.identity_reviews
   SET reason = 'Nomi vicini senza identità comune'
   WHERE reason ILIKE 'Nomi vicini%' AND reason <> 'Nomi vicini senza identità comune';
+  GET DIAGNOSTICS n_identity = ROW_COUNT;
 
-  SELECT count(*) INTO pending
+  SELECT count(*) INTO n_audit
   FROM app.audit_log
   WHERE payload IS DISTINCT FROM app.redact_json(payload);
-  IF pending > 0 THEN
+  IF n_audit > 0 THEN
     ALTER TABLE app.audit_log DISABLE TRIGGER audit_no_update;
     BEGIN
       UPDATE app.audit_log
@@ -631,12 +694,12 @@ BEGIN
     END;
   END IF;
 
-  SELECT count(*) INTO pending
+  SELECT count(*) INTO n_decisions
   FROM app.decisions_log
   WHERE recommendation IS DISTINCT FROM app.redact_text(recommendation)
      OR action_label IS DISTINCT FROM app.redact_json(action_label)
      OR context_snapshot IS DISTINCT FROM app.redact_json(context_snapshot);
-  IF pending > 0 THEN
+  IF n_decisions > 0 THEN
     ALTER TABLE app.decisions_log DISABLE TRIGGER decisions_log_no_update;
     BEGIN
       UPDATE app.decisions_log
@@ -650,16 +713,45 @@ BEGIN
       RAISE;
     END;
   END IF;
+
+  total := n_facts + n_landing + n_samples + n_email + n_recommendations
+    + n_batches + n_quality + n_identity + n_audit + n_decisions;
+  IF total > 0 THEN
+    INSERT INTO app.audit_log (id, actor, role, action, entity_ref, payload)
+    VALUES (
+      gen_random_uuid(),
+      'sistema',
+      'sistema',
+      'pii_mask',
+      '0005',
+      jsonb_build_object(
+        'migration', '0005',
+        'hash_version', 'hmac-sha256-v1',
+        'facts', n_facts,
+        'landing_rows', n_landing,
+        'field_mappings', n_samples,
+        'email_outbox', n_email,
+        'recommendations', n_recommendations,
+        'action_batches', n_batches,
+        'quality_issues', n_quality,
+        'identity_reviews', n_identity,
+        'audit_log', n_audit,
+        'decisions_log', n_decisions
+      )
+    );
+  END IF;
 END;
 $$;
 
 REVOKE ALL ON FUNCTION app.shield_existing_pii() FROM PUBLIC;
-SELECT app.shield_existing_pii();
 
 ALTER TABLE app.audit_log DROP CONSTRAINT IF EXISTS audit_log_action_check;
 ALTER TABLE app.audit_log ADD CONSTRAINT audit_log_action_check CHECK (action IN (
-  'proposal', 'human_decision', 'dry_run', 'external_call', 'outcome', 'pii_unmask'
+  'proposal', 'human_decision', 'dry_run', 'external_call', 'outcome',
+  'pii_unmask', 'pii_read', 'pii_mask'
 ));
+
+SELECT app.shield_existing_pii();
 
 CREATE TABLE IF NOT EXISTS app.testset_versions (
   version integer PRIMARY KEY,
@@ -673,13 +765,13 @@ CREATE TABLE IF NOT EXISTS app.labelled_cases (
   id uuid PRIMARY KEY,
   testset_version integer NOT NULL REFERENCES app.testset_versions (version),
   case_kind text NOT NULL CHECK (case_kind IN ('recommendation', 'mapping')),
-  label_origin text NOT NULL CHECK (label_origin IN ('human_decision', 'hand_written')),
+  label_origin text NOT NULL CHECK (label_origin IN ('human_decision', 'hand_written', 'synthetic')),
   decision_id uuid REFERENCES app.decisions_log (id),
   label jsonb NOT NULL,
   built_at timestamptz NOT NULL DEFAULT now(),
   CONSTRAINT labelled_cases_origin_check CHECK (
     (label_origin = 'human_decision' AND decision_id IS NOT NULL)
-    OR (label_origin = 'hand_written' AND decision_id IS NULL)
+    OR (label_origin IN ('hand_written', 'synthetic') AND decision_id IS NULL)
   )
 );
 
@@ -687,7 +779,7 @@ CREATE INDEX IF NOT EXISTS labelled_cases_version_idx
   ON app.labelled_cases (testset_version);
 
 COMMENT ON TABLE app.labelled_cases IS
-  'Casi etichettati, append-only. Origine: decisione umana oppure fixture manoscritta. Non è il registro decisioni e l''agente non lo legge per proporre.';
+  'Casi etichettati, append-only. Origine: decisione umana, fixture manoscritta, oppure synthetic. I synthetic non contano per il minimo di 30 né per la soglia. Non è il registro decisioni e l''agente non lo legge per proporre.';
 
 CREATE TABLE IF NOT EXISTS app.testset_evals (
   id uuid PRIMARY KEY,

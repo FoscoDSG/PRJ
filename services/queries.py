@@ -17,7 +17,7 @@ SENSITIVE_KEYS = {"vat", "amount", "cost", "margin", "piva", "costo", "importo"}
 
 
 def list_mappings(conn: psycopg.Connection, role: str, ontology: Any) -> list[dict]:
-    _threshold, measured = active_threshold(conn)
+    _threshold, measured, support = active_threshold(conn)
     rows = conn.execute(
         """
         SELECT id::text, source_name, source_field, target_type, target_property,
@@ -36,7 +36,9 @@ def list_mappings(conn: psycopg.Connection, role: str, ontology: Any) -> list[di
         if personal or (confidential and role not in PRIVILEGED):
             item["samples"] = [MASK for _ in (item["samples"] or [])]
         item["samples"] = redact(item["samples"])
-        item["calibrated"] = bool(measured)
+        item["calibrated"] = False
+        item["measured"] = bool(measured)
+        item["support"] = support
         visible.append(item)
     return visible
 
@@ -54,7 +56,7 @@ def list_drift(conn: psycopg.Connection) -> list[dict]:
 
 
 def list_orders(conn: psycopg.Connection, role: str) -> list[dict]:
-    _threshold, measured = active_threshold(conn)
+    _threshold, measured, support = active_threshold(conn)
     rows = conn.execute(
         """
         SELECT id::text, business_key FROM app.entities
@@ -62,11 +64,11 @@ def list_orders(conn: psycopg.Connection, role: str) -> list[dict]:
         ORDER BY business_key
         """
     ).fetchall()
-    return [_order_summary(conn, row, role, measured) for row in rows]
+    return [_order_summary(conn, row, role, measured, support) for row in rows]
 
 
 def get_order(conn: psycopg.Connection, order_id: str, role: str) -> dict | None:
-    _threshold, measured = active_threshold(conn)
+    _threshold, measured, support = active_threshold(conn)
     row = conn.execute(
         """
         SELECT id::text, type, business_key FROM app.entities
@@ -76,9 +78,9 @@ def get_order(conn: psycopg.Connection, order_id: str, role: str) -> dict | None
     ).fetchone()
     if row is None:
         return None
-    summary = _order_summary(conn, row, role, measured)
-    summary["facts"] = _facts(conn, order_id, role, measured, "Order")
-    summary["lines"] = _lines(conn, row["business_key"], role, measured)
+    summary = _order_summary(conn, row, role, measured, support)
+    summary["facts"] = _facts(conn, order_id, role, measured, support, "Order")
+    summary["lines"] = _lines(conn, row["business_key"], role, measured, support)
     summary["edges"] = _edges(conn, order_id)
     summary["stock_formula"] = STOCK_FORMULA
     customer_key = next((fact["value"] for fact in summary["facts"] if fact["property"] == "customer_source_key"), None)
@@ -89,7 +91,7 @@ def get_order(conn: psycopg.Connection, order_id: str, role: str) -> dict | None
 
 
 def get_customer(conn: psycopg.Connection, customer_id: str, role: str) -> dict | None:
-    _threshold, measured = active_threshold(conn)
+    _threshold, measured, support = active_threshold(conn)
     row = conn.execute(
         """
         SELECT id::text, business_key FROM app.entities
@@ -99,7 +101,7 @@ def get_customer(conn: psycopg.Connection, customer_id: str, role: str) -> dict 
     ).fetchone()
     if row is None:
         return None
-    facts = _facts(conn, customer_id, role, measured, "Customer")
+    facts = _facts(conn, customer_id, role, measured, support, "Customer")
     orders = conn.execute(
         """
         SELECT e.id::text, e.business_key
@@ -270,8 +272,8 @@ def _mask_tree(value: Any, role: str) -> Any:
     return value
 
 
-def _order_summary(conn: psycopg.Connection, row: dict, role: str, measured: bool) -> dict:
-    facts = _facts(conn, row["id"], role, measured, "Order")
+def _order_summary(conn: psycopg.Connection, row: dict, role: str, measured: bool, support: int) -> dict:
+    facts = _facts(conn, row["id"], role, measured, support, "Order")
     customer_key = _raw_fact(conn, row["id"], "customer_source_key")
     customer_name = None
     customer_id = None
@@ -292,7 +294,7 @@ def _order_summary(conn: psycopg.Connection, row: dict, role: str, measured: boo
     }
 
 
-def _lines(conn: psycopg.Connection, order_key: str, role: str, measured: bool) -> list[dict]:
+def _lines(conn: psycopg.Connection, order_key: str, role: str, measured: bool, support: int) -> list[dict]:
     import json
 
     rows = conn.execute(
@@ -308,7 +310,7 @@ def _lines(conn: psycopg.Connection, order_key: str, role: str, measured: bool) 
     ).fetchall()
     lines = []
     for row in rows:
-        facts = _facts(conn, row["id"], role, measured, "OrderLine")
+        facts = _facts(conn, row["id"], role, measured, support, "OrderLine")
         product_key = _raw_fact(conn, row["id"], "product_source_key")
         stock = None
         if product_key:
@@ -324,7 +326,7 @@ def _lines(conn: psycopg.Connection, order_key: str, role: str, measured: bool) 
                 (json.dumps(str(product_key)),),
             ).fetchone()
             if stock_row:
-                stock_facts = _facts(conn, stock_row["id"], role, measured, "StockPosition")
+                stock_facts = _facts(conn, stock_row["id"], role, measured, support, "StockPosition")
                 stock = {
                     "on_hand": _visible(stock_facts, "on_hand"),
                     "reserved": _visible(stock_facts, "reserved"),
@@ -349,6 +351,7 @@ def _facts(
     entity_id: str,
     role: str,
     measured: bool = False,
+    support: int = 0,
     entity_type: str | None = None,
 ) -> list[dict]:
     rows = conn.execute(
@@ -370,7 +373,9 @@ def _facts(
         if personal or (item["classification"] == "confidential" and role not in ("admin", "approver")):
             item["value"] = MASK
             item["masked"] = True
-        item["calibrated"] = bool(measured) and item.get("confidence_method") == "rule"
+        item["calibrated"] = False
+        item["measured"] = bool(measured)
+        item["support"] = support
         visible.append(item)
     return visible
 

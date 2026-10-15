@@ -79,10 +79,8 @@
     }
     const confidence = fact && typeof fact === "object" ? fact.confidence : fact;
     if (method === "rule" && confidence != null && confidence !== "") {
-      const number = Number(confidence);
-      if (fact.calibrated === true && Number.isFinite(number)) {
-        return `${Math.round(number * 100)}%`;
-      }
+      const phrase = measuredThreshold(fact);
+      if (phrase) return phrase;
       const score = decimalScore(confidence);
       if (score != null) {
         const rule = fact.confidence_rule ? ` · ${fact.confidence_rule}` : "";
@@ -107,7 +105,16 @@
     return role === "admin" && demoMode === true;
   }
 
+  function measuredThreshold(item) {
+    if (!item || typeof item !== "object" || item.measured !== true) return null;
+    const support = Number(item.support);
+    if (!Number.isFinite(support)) return null;
+    return `soglia misurata su ${support} casi`;
+  }
+
   function mappingConfidence(item) {
+    const phrase = measuredThreshold(item);
+    if (phrase) return phrase;
     const confidence = item && typeof item === "object" ? item.confidence : item;
     if (confidence == null || confidence === "") {
       return "confidenza non disponibile";
@@ -115,9 +122,6 @@
     const number = Number(confidence);
     if (!Number.isFinite(number)) {
       return "confidenza non disponibile";
-    }
-    if (item && typeof item === "object" && item.calibrated === true) {
-      return `${Math.round(number * 100)}%`;
     }
     return number.toFixed(2);
   }
@@ -201,7 +205,7 @@
     <ul class="edges">${edges}</ul>
     <h3>Fatti</h3>
     ${factList(customer.facts)}
-    ${role === "admin" ? `<p><button type="button" id="unmask-pii" data-entity="${escapeHtml(customer.id)}">Mostra dati personali</button></p><pre id="unmask-result"></pre>` : ""}
+    ${role === "admin" ? `<label>Motivo dello smascheramento <input data-reason required minlength="5" maxlength="500" /></label><p><button type="button" id="unmask-pii" data-entity="${escapeHtml(customer.id)}">Mostra dati personali</button></p><pre id="unmask-result"></pre>` : ""}
   `;
   }
 
@@ -261,6 +265,7 @@
     provenanceLabel,
     confidenceLabel,
     recommendationConfidence,
+    mappingConfidence,
     showFixtureButton,
     factList,
     driftCard,

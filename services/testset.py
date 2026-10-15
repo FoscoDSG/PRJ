@@ -1,8 +1,11 @@
 """Labelled cases and the measured mapping threshold.
 
-Outcomes come from human decisions or from a hand-written fixture that says
-so. The agent is not a source of labels, and evaluation reads the labelled
-cases, not the decisions log.
+Outcomes come from human decisions, from a hand-written fixture, or from
+synthetic fixtures used only to exercise the code. Synthetic cases are stored
+and are excluded from the 30-case minimum and from threshold selection.
+The agent is not a source of labels. Evaluation reads the labelled cases,
+not the decisions log. The running agent is the rules baseline, so the report
+does not compare the two.
 """
 
 from __future__ import annotations
@@ -16,12 +19,12 @@ from typing import Any
 import psycopg
 from psycopg.types.json import Json
 
-from services.agent.baseline import decide as decide_agent
 from services.agent.order_agent import AGENT_VERSION
 from services.errors import AppError
 from services.mapping.engine import HEADER_SIMILARITY_RULE, THRESHOLD, assigned_mapping
-from services.rules.engine import RULES_VERSION, decide_rules_only
-from services.text import stable
+
+AGENT_IS_RULES = "agente = regole, nessun confronto possibile"
+_LABEL_ORIGINS = frozenset({"hand_written", "synthetic"})
 
 ROOT = Path(__file__).resolve().parents[1]
 HAND_LABELS = ROOT / "evals" / "hand_labels.json"
@@ -35,13 +38,16 @@ def load_hand_labels() -> list[dict[str, Any]]:
         return []
     payload = json.loads(HAND_LABELS.read_text(encoding="utf-8"))
     origin = payload.get("label_origin")
-    if origin != "hand_written":
-        raise AppError(422, "La fixture deve dichiarare label_origin hand_written")
+    if origin not in _LABEL_ORIGINS:
+        raise AppError(422, "La fixture deve dichiarare label_origin hand_written oppure synthetic")
     cases = []
     for item in payload.get("cases") or []:
-        if item.get("label_origin") not in (None, "hand_written"):
+        item_origin = item.get("label_origin") or origin
+        if item_origin not in _LABEL_ORIGINS:
             raise AppError(422, "Un caso manoscritto non può avere un'altra origine")
-        cases.append(item)
+        copied = dict(item)
+        copied["label_origin"] = item_origin
+        cases.append(copied)
     return cases
 
 
@@ -69,9 +75,9 @@ def build_testset(conn: psycopg.Connection) -> dict[str, Any]:
     for item in mappings:
         _insert_case(conn, version, "mapping", "human_decision", item["decision_id"], item["label"])
     for item in hand_recommendations:
-        _insert_case(conn, version, "recommendation", "hand_written", None, _recommendation_label(item))
+        _insert_case(conn, version, "recommendation", _fixture_origin(item), None, _recommendation_label(item))
     for item in hand_mappings:
-        _insert_case(conn, version, "mapping", "hand_written", None, _mapping_label(item))
+        _insert_case(conn, version, "mapping", _fixture_origin(item), None, _mapping_label(item))
     return {
         "version": int(version),
         "case_count": recommendation_count + mapping_count,
@@ -87,32 +93,35 @@ def evaluate_testset(conn: psycopg.Connection) -> dict[str, Any]:
     current = int(version["version"])
     rows = conn.execute(
         """
-        SELECT case_kind, label
+        SELECT case_kind, label_origin, label
         FROM app.labelled_cases
         WHERE testset_version = %s
         ORDER BY id
         """,
         (current,),
     ).fetchall()
-    mapping_cases = [row["label"] for row in rows if row["case_kind"] == "mapping"]
-    recommendation_cases = [row["label"] for row in rows if row["case_kind"] == "recommendation"]
+    mapping_cases = [
+        row["label"]
+        for row in rows
+        if row["case_kind"] == "mapping" and row["label_origin"] != "synthetic"
+    ]
     mapping_report, threshold_row = _mapping_report(mapping_cases)
     _store_eval(conn, current, "mapping", mapping_report, HEADER_SIMILARITY_RULE)
-    agent_report = _recommendation_report(recommendation_cases, decide_agent)
-    rules_report = _recommendation_report(recommendation_cases, decide_rules_only)
-    _store_eval(conn, current, "agent", agent_report, RULES_VERSION)
-    _store_eval(conn, current, "rules", rules_report, RULES_VERSION)
     _store_threshold(conn, current, threshold_row, mapping_report)
     return {
         "testset_version": current,
         "minimum": MIN_MEASURED_CASES,
         "threshold": threshold_row,
-        "groups": {
-            "agent": agent_report,
-            "rules": rules_report,
-            "mapping": mapping_report,
-        },
+        "confronto": AGENT_IS_RULES,
+        "groups": {"mapping": mapping_report},
     }
+
+
+def _fixture_origin(item: dict[str, Any]) -> str:
+    origin = item.get("label_origin") or "hand_written"
+    if origin not in _LABEL_ORIGINS:
+        raise AppError(422, "Un caso manoscritto non può avere un'altra origine")
+    return origin
 
 
 def _human_recommendation_cases(conn: psycopg.Connection) -> list[dict[str, Any]]:
@@ -312,36 +321,6 @@ def _fallback_threshold(count: int, selection: str, fold_thresholds: list[float]
     }
 
 
-def _recommendation_report(cases: list[dict[str, Any]], decider: Any) -> dict[str, Any]:
-    if not cases:
-        return _empty_metrics("no_cases", separated=True)
-    y_true: list[bool] = []
-    y_pred: list[bool] = []
-    for label in cases:
-        expected = _signature(label.get("actions") or [])
-        predicted = _signature(decider(label.get("context") or {}).get("actions") or [])
-        y_true.append(True)
-        y_pred.append(expected == predicted)
-    return _classification(y_true, y_pred, "same_cases", separated=True)
-
-
-def _signature(actions: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    normalized = []
-    for action in actions:
-        params = action.get("params") or {}
-        normalized.append(
-            {
-                "type": action.get("type"),
-                "supplier": stable(params.get("supplier")),
-                "product": stable(params.get("product")),
-                "quantity": stable(params.get("quantity")),
-                "order": stable(params.get("order")),
-                "customer": stable(params.get("customer")),
-            }
-        )
-    return sorted(normalized, key=lambda item: json.dumps(item, sort_keys=True, default=str))
-
-
 def _classification(y_true: list[bool], y_pred: list[bool], method: str, *, separated: bool) -> dict[str, Any]:
     count = len(y_true)
     tp = sum(1 for truth, pred in zip(y_true, y_pred, strict=True) if truth and pred)
@@ -459,7 +438,11 @@ def _store_eval(
             report["precision_high"],
             report["recall_low"],
             report["recall_high"],
-            Json({"minimum": MIN_MEASURED_CASES, "rules_version": rules_version}),
+            Json({
+                "minimum": MIN_MEASURED_CASES,
+                "rules_version": rules_version,
+                "confronto": AGENT_IS_RULES,
+            }),
         ),
     )
 

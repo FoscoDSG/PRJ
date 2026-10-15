@@ -243,16 +243,23 @@ async function openCustomer(id) {
   const unmask = detail.querySelector("#unmask-pii");
   if (unmask) {
     unmask.addEventListener("click", async () => {
-      const reason = window.prompt("Motivo, almeno 5 caratteri");
-      if (!reason) return;
-      const result = await api("/api/pii/unmask", {
-        method: "POST",
-        body: JSON.stringify({ entity_id: unmask.dataset.entity, reason }),
-      });
-      const target = detail.querySelector("#unmask-result");
-      target.textContent = (result.properties || [])
-        .map((item) => `${item.property}: ${item.value}`)
-        .join("\n");
+      try {
+        const reason = detail.querySelector("[data-reason]").value.trim();
+        if (reason.length < 5) {
+          showFlash("Scrivi un motivo di almeno 5 caratteri.");
+          return;
+        }
+        const result = await api("/api/pii/unmask", {
+          method: "POST",
+          body: JSON.stringify({ entity_id: unmask.dataset.entity, reason }),
+        });
+        const target = detail.querySelector("#unmask-result");
+        target.textContent = (result.properties || [])
+          .map((item) => `${item.property}: ${item.value}`)
+          .join("\n");
+      } catch (err) {
+        showFlash(err.message);
+      }
     });
   }
   detail.querySelectorAll("button[data-order]").forEach((button) => {

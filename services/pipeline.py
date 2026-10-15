@@ -214,7 +214,7 @@ def reject_mapping(conn: psycopg.Connection, mapping_id: str, role: str) -> dict
 
 def confirm_confident(conn: psycopg.Connection, role: str, model: Ontology) -> int:
     _require_mapper(role)
-    threshold, _measured = active_threshold(conn)
+    threshold, _measured, _support = active_threshold(conn)
     rows = conn.execute(
         """
         SELECT id::text, target_type, target_property

@@ -62,6 +62,18 @@ def _audit(conn) -> list[tuple]:
     )
 
 
+def _assert_upgrade_audit(conn, audit_id: str, before_audit: list[tuple]) -> None:
+    rows = _audit(conn)
+    original = [row for row in rows if row[0] == audit_id]
+    masks = [row for row in rows if row[4] == "pii_mask"]
+    assert original == before_audit
+    assert len(masks) == 1
+    payload = json.loads(masks[0][6])
+    assert payload["migration"] == "0005"
+    assert payload["facts"] >= 1
+    assert "Acme" not in masks[0][6]
+
+
 def _catalog(conn) -> dict[str, list[tuple]]:
     return {
         "columns": _rows(
@@ -215,6 +227,43 @@ def test_migration_files_do_not_drop_or_truncate():
     allowed_audit = "ALTER TABLE app.audit_log DROP CONSTRAINT IF EXISTS audit_log_action_check\n"
     assert migration_violation(allowed_audit, "0005_pii_testset_audit.sql") is None
     assert migration_violation(allowed_audit, "0006_later.sql") is not None
+    disable_audit = "ALTER TABLE app.audit_log DISABLE TRIGGER audit_no_update;\n"
+    enable_audit = "ALTER TABLE app.audit_log ENABLE TRIGGER audit_no_update;\n"
+    disable_decisions = "ALTER TABLE app.decisions_log DISABLE TRIGGER decisions_log_no_update;\n"
+    enable_decisions = "ALTER TABLE app.decisions_log ENABLE TRIGGER decisions_log_no_update;\n"
+    for statement in (disable_audit, enable_audit, disable_decisions, enable_decisions):
+        assert migration_violation(statement, "0005_pii_testset_audit.sql") is None
+        assert migration_violation(statement, "0006_later.sql") is not None
+    assert (
+        migration_violation(
+            "ALTER TABLE app.facts DISABLE TRIGGER facts_guard;\n",
+            "0005_pii_testset_audit.sql",
+        )
+        is not None
+    )
+    assert (
+        migration_violation(
+            "ALTER TABLE app.audit_log ENABLE TRIGGER other_trigger;\n",
+            "0005_pii_testset_audit.sql",
+        )
+        is not None
+    )
+    assert (
+        migration_violation(
+            "ALTER TABLE app.facts DISABLE ROW LEVEL SECURITY;\n",
+            "0005_pii_testset_audit.sql",
+        )
+        is not None
+    )
+    assert migration_violation("ENABLE TRIGGER audit_no_update;\n", "0006_later.sql") is not None
+    shield = (MIGRATIONS_DIR / "0005_pii_testset_audit.sql").read_text(encoding="utf-8")
+    assert (
+        migration_violation(
+            shield + "\nALTER TABLE app.audit_log DISABLE TRIGGER extra;\n",
+            "0005_pii_testset_audit.sql",
+        )
+        is not None
+    )
     assert migration_violation(drop_null, "0005_new.sql") is not None
     new_file = "0005_new.sql"
     assert migration_violation("DROP TRIGGER audit_guard ON app.audit_log;\n", new_file) is not None
@@ -472,7 +521,7 @@ def test_upgraded_schema_is_baselined_without_touching_audit():
         assert set(before_oids).issubset(after_oids)
         assert "app.decisions_log" in after_oids
         assert "app.sources" in after_oids
-        assert _audit(conn) == before_audit
+        _assert_upgrade_audit(conn, audit_id, before_audit)
         fact = _rows(
             conn,
             """
@@ -490,7 +539,7 @@ def test_upgraded_schema_is_baselined_without_touching_audit():
             conn.execute("TRUNCATE app.audit_log")
             conn.commit()
         conn.rollback()
-        assert _audit(conn) == before_audit
+        _assert_upgrade_audit(conn, audit_id, before_audit)
         prices = _rows(conn, "SELECT product_source_key FROM app.price_list ORDER BY 1")
     assert applied == [
         {"version": "0001", "name": "initial", "baselined": True},

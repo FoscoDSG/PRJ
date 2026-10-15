@@ -93,6 +93,12 @@ jobs:
                   conn.rollback()
               else:
                   raise SystemExit("ieol_app legge il chiaro dei dati personali")
+              try:
+                  conn.execute("SELECT app.hmac_evidence(ARRAY[]::uuid[], 'chosen-key')")
+              except psycopg.Error:
+                  conn.rollback()
+              else:
+                  raise SystemExit("ieol_app ottiene un HMAC con una chiave a scelta")
           from services.db import pii_connect
           with pii_connect() as pii:
               pii.execute("SELECT value_cleartext FROM app.facts")

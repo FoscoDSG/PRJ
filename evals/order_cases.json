@@ -1,4 +1,6 @@
-[
+{
+  "label_origin": "synthetic",
+  "cases": [
   {
     "id": "shortage-fast-supplier",
     "context": {
@@ -55,4 +57,5 @@
       ]
     }
   }
-]
+  ]
+}

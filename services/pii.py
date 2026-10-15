@@ -1,8 +1,8 @@
 """Personal data: field names, masking for responses and logs, landing staging.
 
-Stored cleartext lives in columns ``ieol_app`` cannot select. This module
-never reads those columns. It only recognizes fields and masks copies that
-are about to leave the process (API, UI, logs).
+Stored cleartext lives in columns ``ieol_app`` cannot select. Every read of
+those columns goes through ``read_cleartext``, which writes an audit row
+without the values and then opens ``ieol_pii``.
 """
 
 from __future__ import annotations
@@ -157,17 +157,17 @@ def landing_rows(conn: Any, batch_id: str) -> list[dict[str, Any]]:
         """,
         (batch_id,),
     ).fetchall()
-    from services.db import pii_connect
-
-    with pii_connect() as pii:
-        extra_rows = pii.execute(
-            """
-            SELECT row_index, data_cleartext
-            FROM app.landing_rows
-            WHERE batch_id = %s
-            """,
-            (batch_id,),
-        ).fetchall()
+    extra_rows = read_cleartext(
+        conn,
+        """
+        SELECT row_index, data_cleartext
+        FROM app.landing_rows
+        WHERE batch_id = %s
+        """,
+        (batch_id,),
+        purpose="landing_overlay",
+        entity_ref=str(batch_id),
+    )
     overlay = {row["row_index"]: row["data_cleartext"] or {} for row in extra_rows}
     merged = []
     for row in rows:
@@ -193,9 +193,49 @@ class _RedactLog(logging.Filter):
         return True
 
 
+def read_cleartext(
+    conn: Any,
+    query: Any,
+    params: Any = None,
+    *,
+    purpose: str,
+    actor: str = "sistema",
+    role: str = "sistema",
+    entity_ref: str | None = None,
+    action: str = "pii_read",
+    summarize: Any = None,
+) -> list[dict[str, Any]]:
+    """Read as ``ieol_pii`` and write one audit row. The payload has no values.
+
+    This is the only function that opens ``pii_connect``. ``summarize`` may
+    add names (properties, reason, purpose) and must not add cleartext.
+    """
+    from services.audit import record
+    from services.db import pii_connect
+
+    with pii_connect() as reader:
+        cursor = reader.execute(query) if params is None else reader.execute(query, params)
+        if cursor.description is None:
+            reader.rollback()
+            raise ValueError("Il connector SQL accetta solo SELECT")
+        rows = [dict(row) for row in cursor.fetchall()]
+        reader.rollback()
+    extra = summarize(rows) if summarize is not None else {}
+    if not isinstance(extra, dict):
+        raise RuntimeError("Il riepilogo della lettura non è un oggetto")
+    record(
+        conn,
+        action=action,
+        actor=actor,
+        role=role,
+        entity_ref=entity_ref,
+        payload={"purpose": purpose, "rows": len(rows), **extra},
+    )
+    return rows
+
+
 def unmask_entity(conn: Any, entity_id: str, reason: str, *, actor: str, role: str) -> dict[str, Any]:
     """Audit the request, then read cleartext as ieol_pii. The audit stores no values."""
-    from services.audit import record
     from services.errors import AppError
     from services.text import stable
 
@@ -208,32 +248,30 @@ def unmask_entity(conn: Any, entity_id: str, reason: str, *, actor: str, role: s
     ).fetchone()
     if entity is None:
         raise AppError(404, "Entità assente")
-    from services.db import pii_connect
 
-    with pii_connect() as reader:
-        rows = reader.execute(
-            """
-            SELECT property, value_cleartext
-            FROM app.facts
-            WHERE entity_id = %s AND valid_to IS NULL AND value_cleartext IS NOT NULL
-            ORDER BY property
-            """,
-            (entity_id,),
-        ).fetchall()
-        reader.rollback()
-    properties = [row["property"] for row in rows]
-    record(
+    def summarize(rows: list[dict[str, Any]]) -> dict[str, Any]:
+        return {
+            "entity_id": entity_id,
+            "entity_type": entity["type"],
+            "properties": [row["property"] for row in rows],
+            "reason": redact_text(reason),
+        }
+
+    rows = read_cleartext(
         conn,
-        action="pii_unmask",
+        """
+        SELECT property, value_cleartext
+        FROM app.facts
+        WHERE entity_id = %s AND valid_to IS NULL AND value_cleartext IS NOT NULL
+        ORDER BY property
+        """,
+        (entity_id,),
+        purpose="unmask",
         actor=actor,
         role=role,
         entity_ref=entity_id,
-        payload={
-            "entity_id": entity_id,
-            "entity_type": entity["type"],
-            "properties": properties,
-            "reason": redact_text(reason),
-        },
+        action="pii_unmask",
+        summarize=summarize,
     )
     return {
         "entity_id": entity_id,

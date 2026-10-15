@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import tempfile
 from contextlib import asynccontextmanager
+from datetime import date
 from pathlib import Path
 
 from typing import Literal
@@ -27,9 +28,9 @@ from apps.api.schemas import (
     UnmaskBody,
 )
 from services.audit_read import list_readable
-from services.db import app_connect, assert_demo_database, authenticate, demo_mode, ensure_ready, pii_connect
+from services.db import app_connect, assert_demo_database, authenticate, demo_mode, ensure_ready
 from services.evidence import evidence_key
-from services.pii import install_log_redaction, unmask_entity
+from services.pii import install_log_redaction, read_cleartext, unmask_entity
 from services.migrate import require_migrated
 from services.errors import AppError
 from services.pipeline import (
@@ -86,12 +87,11 @@ async def lifespan(app: FastAPI):
     install_log_redaction()
     model = load_merged()
     app.state.ontology = model
-    with pii_connect() as pii:
-        pii.execute("SELECT 1")
-        pii.rollback()
     with app_connect() as conn:
         try:
             require_migrated(conn)
+            read_cleartext(conn, "SELECT 1 AS ok", purpose="connessione")
+            conn.commit()
             ensure_ready(conn, model.packages)
         except psycopg.errors.InsufficientPrivilege as exc:
             raise RuntimeError(
@@ -512,8 +512,8 @@ def audit_readable(
     user_filter: str | None = Query(default=None, alias="user"),
     order: str | None = None,
     batch: str | None = None,
-    date_from: str | None = None,
-    date_to: str | None = None,
+    date_from: date | None = None,
+    date_to: date | None = None,
     limit: int = 50,
     offset: int = 0,
     user: dict = Depends(require_user),
@@ -536,19 +536,19 @@ def audit_readable(
 
 
 @app.post("/api/pii/unmask")
-def pii_unmask(body: UnmaskBody, user: dict = Depends(require_user)) -> dict:
+def pii_unmask(body: UnmaskBody, user: dict = Depends(require_user)) -> JSONResponse:
     if user["role"] != "admin":
         raise AppError(403, "Serve il ruolo admin")
     with app_connect() as conn:
         result = unmask_entity(
             conn,
-            body.entity_id,
+            str(body.entity_id),
             body.reason,
             actor=user["username"],
             role=user["role"],
         )
         conn.commit()
-    return _ok(result)
+    return JSONResponse(_ok(result), headers={"Cache-Control": "no-store"})
 
 
 @app.get("/")
