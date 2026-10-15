@@ -11,12 +11,21 @@ import uuid
 import psycopg
 from argon2 import PasswordHasher, Type
 from argon2.exceptions import VerificationError
+from psycopg.conninfo import conninfo_to_dict, make_conninfo
 from psycopg.rows import dict_row
 
 from services.migrate import require_migrated
 
 ROLES = ("admin", "mapper", "operator", "approver")
-SOURCE_RANK = {"unknown": 0, "ai": 1, "manual": 2, "crm": 3, "erp": 4, "calculated": 5}
+# Same vocabulary as SOURCE_CLASSES. Higher rank wins an automatic write.
+SOURCE_RANK = {
+    "unknown": 0,
+    "external": 1,
+    "manual": 2,
+    "operational": 3,
+    "system_of_record": 4,
+}
+DEMO_DATABASE_NAME = "ieol_demo"
 
 # argon2-cffi defaults: argon2id, t=3, m=64 MiB, p=4.
 _HASHER = PasswordHasher(
@@ -77,7 +86,76 @@ def _seed_password(role: str) -> str | None:
 
 
 def connect(url: str | None = None) -> psycopg.Connection:
+    """Owner connection. Migrations and password reset use this."""
     return psycopg.connect(url or database_url(), row_factory=dict_row, autocommit=False)
+
+
+def app_database_url(dbname: str | None = None) -> str:
+    """URL of the least-privilege login. The user in the URL is ieol_app."""
+    raw = os.environ.get("IEOL_APP_DATABASE_URL", "").strip()
+    if raw == "":
+        raise RuntimeError(
+            "IEOL_APP_DATABASE_URL assente. L'API entra come ieol_app. "
+            "DATABASE_URL resta l'owner, solo per ieol migrate e ieol reset-password."
+        )
+    if dbname is None:
+        return raw
+    info = conninfo_to_dict(raw)
+    info["dbname"] = dbname
+    return make_conninfo(**info)
+
+
+def app_connect(url: str | None = None) -> psycopg.Connection:
+    """Application connection. Logs in as ieol_app. Does not change role."""
+    conn = psycopg.connect(url or app_database_url(), row_factory=dict_row, autocommit=False)
+    try:
+        current = conn.execute(
+            "SELECT session_user AS session_user, current_user AS current_user"
+        ).fetchone()
+        if (
+            current is None
+            or current["session_user"] != "ieol_app"
+            or current["current_user"] != "ieol_app"
+        ):
+            raise RuntimeError(
+                "La connessione applicativa deve autenticarsi come ieol_app. "
+                "Controlla IEOL_APP_DATABASE_URL."
+            )
+    except Exception:
+        conn.close()
+        raise
+    return conn
+
+
+def assert_demo_database(conn: psycopg.Connection) -> None:
+    """Refuse demo loads on any database other than ``ieol_demo``."""
+    from services.errors import AppError
+
+    row = conn.execute("SELECT current_database() AS name").fetchone()
+    name = None if row is None else row["name"]
+    if name != DEMO_DATABASE_NAME:
+        raise AppError(409, "Il demo si carica solo sul database ieol_demo")
+
+
+def reset_password(conn: psycopg.Connection, role: str) -> None:
+    """Replace one role password with the hash of ``IEOL_SEED_<ROLE>_PASSWORD``."""
+    if role not in ROLES:
+        raise RuntimeError("Ruolo sconosciuto")
+    password = _seed_password(role)
+    if password is None:
+        raise RuntimeError(f"IEOL_SEED_{role.upper()}_PASSWORD assente")
+    updated = conn.execute(
+        """
+        UPDATE app.users
+        SET password_hash = %s
+        WHERE username = %s AND role = %s
+        RETURNING username
+        """,
+        (password_hash(password), role, role),
+    ).fetchone()
+    if updated is None:
+        raise RuntimeError(f"Utente {role} assente")
+    conn.commit()
 
 
 def seed_users(conn: psycopg.Connection) -> None:

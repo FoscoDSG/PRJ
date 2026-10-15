@@ -9,12 +9,14 @@ changing what gets applied.
 is not executed. Later files still run.
 
 The API does not call ``migrate``. It only asks whether versions are
-pending. ``pg_advisory_xact_lock`` with ``MIGRATE_LOCK_KEY`` keeps two
-overlapping ``migrate`` calls from applying the same version.
+pending, and it refuses to start when a stored checksum does not match
+the file on disk. ``pg_advisory_xact_lock`` with ``MIGRATE_LOCK_KEY``
+keeps two overlapping ``migrate`` calls from applying the same version.
 """
 
 from __future__ import annotations
 
+import hashlib
 import os
 import re
 from dataclasses import dataclass
@@ -34,9 +36,29 @@ DEMO_DATABASE_DEFAULT = "ieol_demo"
 _RESERVED_DATABASES = frozenset({"postgres", "template0", "template1"})
 _DBNAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,62}$")
 _MIGRATION_FILE = re.compile(r"^(\d{4})_[a-z0-9_]+\.sql$")
-# Reject statements that drop or empty relations. BEFORE TRUNCATE and
-# REVOKE TRUNCATE stay allowed: they protect the audit log.
-_DESTRUCTIVE = re.compile(r"(?im)^\s*(DROP\s+(TABLE|SCHEMA|DATABASE)\b|TRUNCATE\b)")
+# Deny by default. Any of these DROP forms is refused, at any position,
+# in any case, after SQL comments are removed. A TRUNCATE statement is
+# refused too. BEFORE TRUNCATE and REVOKE ... TRUNCATE stay: they do not
+# empty a relation.
+_DROP = re.compile(
+    r"(?i)\bDROP\s+(TABLE|SCHEMA|DATABASE|COLUMN|CONSTRAINT|NOT\s+NULL|DEFAULT|INDEX|FUNCTION|TRIGGER)\b"
+)
+_TRUNCATE = re.compile(r"(?i)\bTRUNCATE\b")
+_BEFORE_TRUNCATE = re.compile(r"(?i)\bBEFORE\s+TRUNCATE\b")
+_REVOKE_LINE = re.compile(r"(?i)^\s*REVOKE\b")
+_BLOCK_COMMENT = re.compile(r"/\*.*?\*/", re.DOTALL)
+# Exact statements, whitespace-normalized and without a trailing semicolon,
+# allowed only in the named migration file. The same text in a new file
+# is refused.
+_MIGRATION_ALLOWLIST: dict[str, frozenset[str]] = {
+    "0003_decisions_source_class_checksums.sql": frozenset({
+        "ALTER TABLE app.facts DROP CONSTRAINT IF EXISTS facts_source_class_check",
+    }),
+    "0004_source_vocabulary_decision_sources.sql": frozenset({
+        "ALTER TABLE app.facts DROP CONSTRAINT IF EXISTS facts_source_class_check",
+        "ALTER COLUMN confidence DROP NOT NULL",
+    }),
+}
 
 # Columns created by db/schema.sql. Extra columns still count as the legacy
 # schema; missing ones mean the database is partial and must not be rewritten.
@@ -145,20 +167,51 @@ def pending_migrations(conn: psycopg.Connection) -> list[dict]:
 
 
 def require_migrated(conn: psycopg.Connection) -> None:
-    """Refuse when versions are pending. Does not apply them."""
+    """Refuse when versions are pending or a stored checksum does not match.
+
+    Does not apply migrations and does not fill a missing checksum.
+    """
     pending = pending_migrations(conn)
-    if not pending:
-        return
-    versions = ", ".join(item["version"] for item in pending)
-    name = conn.execute("SELECT current_database() AS name").fetchone()["name"]
-    raise RuntimeError(
-        f"Migrazioni in sospeso ({versions}) sul database {name}. "
-        "Avvio rifiutato. Esegui `ieol migrate`."
+    if pending:
+        versions = ", ".join(item["version"] for item in pending)
+        name = conn.execute("SELECT current_database() AS name").fetchone()["name"]
+        raise RuntimeError(
+            f"Migrazioni in sospeso ({versions}) sul database {name}. "
+            "Avvio rifiutato. Esegui `ieol migrate`."
+        )
+    _assert_recorded_checksums(conn)
+
+
+def migration_violation(script: str, filename: str | None = None) -> str | None:
+    """Return why a migration script is refused, or None when it may run.
+
+    Every DROP of a table, schema, database, column, constraint, NOT NULL,
+    default, index, function, or trigger is refused, wherever it sits in
+    the script and in any letter case. Comments are ignored. TRUNCATE
+    statements are refused too. The only exceptions are the exact
+    statements listed for that migration file.
+    """
+    text = _without_line_comments(_BLOCK_COMMENT.sub("", script))
+    allowed = _MIGRATION_ALLOWLIST.get(filename or "", frozenset())
+    kept = [line for line in text.splitlines() if _normalize_sql(line) not in allowed]
+    body = "\n".join(kept)
+    if _DROP.search(body):
+        return "DROP fuori dall'allowlist"
+    scrubbed = _BEFORE_TRUNCATE.sub(" ", body)
+    without_revoke = "\n".join(
+        line for line in scrubbed.splitlines() if not _REVOKE_LINE.match(line)
     )
+    if _TRUNCATE.search(without_revoke):
+        return "TRUNCATE fuori dall'allowlist"
+    return None
+
+
+def _normalize_sql(line: str) -> str:
+    return " ".join(line.split()).rstrip(";").strip()
 
 
 def migrate(conn: psycopg.Connection) -> list[dict]:
-    """Apply pending migrations and commit. Never drops or truncates.
+    """Apply pending migrations and commit. Never drops tables or truncates.
 
     Takes ``pg_advisory_xact_lock(MIGRATE_LOCK_KEY)`` for the whole
     transaction, so a second caller waits and then sees the versions
@@ -169,6 +222,7 @@ def migrate(conn: psycopg.Connection) -> list[dict]:
         conn.execute("SELECT pg_advisory_xact_lock(%s)", (MIGRATE_LOCK_KEY,))
         _ensure_registry(conn)
         files = migration_files()
+        _verify_checksums(conn, files)
         done = _applied_versions(conn)
         state = _state_for(files, done, conn)
         for item, action in _select_pending(files, done, state, conn):
@@ -281,6 +335,10 @@ def _require_separate_demo(demo_name: str, main_dbname: str) -> None:
         raise RuntimeError("Il database della demo non può essere un database di sistema")
 
 
+def migration_checksum(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
 def _ensure_registry(conn: psycopg.Connection) -> None:
     conn.execute(
         """
@@ -288,10 +346,84 @@ def _ensure_registry(conn: psycopg.Connection) -> None:
           version text PRIMARY KEY,
           name text NOT NULL,
           baselined boolean NOT NULL DEFAULT false,
-          applied_at timestamptz NOT NULL DEFAULT now()
+          applied_at timestamptz NOT NULL DEFAULT now(),
+          checksum text
         )
         """
     )
+    conn.execute("ALTER TABLE public.schema_migrations ADD COLUMN IF NOT EXISTS checksum text")
+
+
+def _verify_checksums(conn: psycopg.Connection, files: list[Migration]) -> None:
+    """Fail when an applied file changed. A missing checksum is recorded once."""
+    if not _checksum_column_ready(conn):
+        return
+    by_version = {item.version: item for item in files}
+    recorded = conn.execute(
+        "SELECT version, checksum FROM public.schema_migrations ORDER BY version"
+    ).fetchall()
+    for row in recorded:
+        item = by_version.get(row["version"])
+        if item is None:
+            raise RuntimeError(
+                f"Migrazione applicata {row['version']} assente dal disco. ieol migrate si ferma."
+            )
+        current = migration_checksum(item.path)
+        stored = row["checksum"]
+        if stored is None:
+            conn.execute(
+                """
+                UPDATE public.schema_migrations
+                SET checksum = %s
+                WHERE version = %s AND checksum IS NULL
+                """,
+                (current, row["version"]),
+            )
+            continue
+        if stored != current:
+            raise RuntimeError(
+                f"La migrazione {item.path.name} è cambiata dopo l'applicazione. "
+                "ieol migrate si ferma."
+            )
+
+
+def _assert_recorded_checksums(conn: psycopg.Connection) -> None:
+    """Read-only check used at startup. Does not fill a missing checksum."""
+    if not _checksum_column_ready(conn):
+        raise RuntimeError("Checksum di migrazione assente. Esegui `ieol migrate`.")
+    files = {item.version: item for item in migration_files()}
+    recorded = conn.execute(
+        "SELECT version, checksum FROM public.schema_migrations ORDER BY version"
+    ).fetchall()
+    for row in recorded:
+        item = files.get(row["version"])
+        if item is None:
+            raise RuntimeError(
+                f"Migrazione applicata {row['version']} assente dal disco. Esegui `ieol migrate`."
+            )
+        if row["checksum"] is None:
+            raise RuntimeError("Checksum di migrazione assente. Esegui `ieol migrate`.")
+        if row["checksum"] != migration_checksum(item.path):
+            raise RuntimeError(
+                f"La migrazione {item.path.name} è cambiata dopo l'applicazione. "
+                "Avvio rifiutato. Esegui `ieol migrate`."
+            )
+
+
+def _checksum_column_ready(conn: psycopg.Connection) -> bool:
+    row = conn.execute("SELECT to_regclass('public.schema_migrations') AS rel").fetchone()
+    if row is None or row["rel"] is None:
+        return False
+    column = conn.execute(
+        """
+        SELECT 1
+        FROM information_schema.columns
+        WHERE table_schema = 'public'
+          AND table_name = 'schema_migrations'
+          AND column_name = 'checksum'
+        """
+    ).fetchone()
+    return column is not None
 
 
 def _recorded_versions(conn: psycopg.Connection) -> set[str]:
@@ -445,11 +577,11 @@ def _quoted_tokens(definition: str) -> list[str]:
 def _record(conn: psycopg.Connection, item: Migration, *, baselined: bool) -> None:
     conn.execute(
         """
-        INSERT INTO public.schema_migrations (version, name, baselined)
-        VALUES (%s, %s, %s)
+        INSERT INTO public.schema_migrations (version, name, baselined, checksum)
+        VALUES (%s, %s, %s, %s)
         ON CONFLICT (version) DO NOTHING
         """,
-        (item.version, item.name, baselined),
+        (item.version, item.name, baselined, migration_checksum(item.path)),
     )
 
 
@@ -459,8 +591,11 @@ def _describe(item: Migration, *, baselined: bool) -> dict:
 
 def _execute_migration(conn: psycopg.Connection, item: Migration) -> None:
     script = item.path.read_text(encoding="utf-8")
-    if _DESTRUCTIVE.search(_without_line_comments(script)):
-        raise RuntimeError(f"La migrazione {item.path.name} contiene DROP o TRUNCATE e non viene applicata")
+    violation = migration_violation(script, item.path.name)
+    if violation is not None:
+        raise RuntimeError(
+            f"La migrazione {item.path.name} contiene {violation} e non viene applicata"
+        )
     conn.execute(script)
 
 

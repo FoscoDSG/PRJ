@@ -2,6 +2,7 @@ import os
 import subprocess
 from pathlib import Path
 
+import psycopg
 import pytest
 from fastapi.testclient import TestClient
 from openpyxl import Workbook
@@ -26,10 +27,21 @@ def login(client: TestClient, role: str) -> None:
     assert response.status_code == 200, response.text
 
 
+def load_demo() -> None:
+    model = load_merged()
+    with connect() as conn:
+        load_fixtures(conn, actor="mapper", role="mapper", model=model)
+        conn.commit()
+
+
+def decide(client: TestClient, item: dict, decision: str = "approve", **extra):
+    body = {"decision": decision, "evidence_hash": item["evidence_hash"], **extra}
+    return client.post(f"/api/recommendations/{item['id']}/{decision}", json=body)
+
+
 def test_mapping_review_identity_and_agent_does_not_execute(client: TestClient):
     login(client, "mapper")
-    loaded = client.post("/api/demo/load")
-    assert loaded.status_code == 200, loaded.text
+    load_demo()
     mappings = client.get("/api/mappings").json()["mappings"]
     by_field = {(item["source_name"], item["source_field"]): item for item in mappings}
     assert by_field[("ordini", "ord_head")]["confidence"] >= 0.75
@@ -76,13 +88,13 @@ def test_mapping_review_identity_and_agent_does_not_execute(client: TestClient):
 
 def test_cfo_approval_dry_run_idempotent_execute_and_masking(client: TestClient):
     login(client, "mapper")
-    assert client.post("/api/demo/load").status_code == 200
+    load_demo()
     recommendation = client.get("/api/inbox").json()["recommendations"][0]
-    denied = client.post(f"/api/recommendations/{recommendation['id']}/approve")
+    denied = decide(client, recommendation)
     assert denied.status_code == 403
 
     login(client, "operator")
-    denied_operator = client.post(f"/api/recommendations/{recommendation['id']}/approve")
+    denied_operator = decide(client, recommendation)
     assert denied_operator.status_code == 403
     assert "approvatore" in denied_operator.json()["detail"]
 
@@ -94,7 +106,7 @@ def test_cfo_approval_dry_run_idempotent_execute_and_masking(client: TestClient)
     vat = next(fact["value"] for fact in customer["facts"] if fact["property"] == "vat")
     assert vat == "IT12345678901"
 
-    approved = client.post(f"/api/recommendations/{recommendation['id']}/approve")
+    approved = decide(client, recommendation)
     assert approved.status_code == 200, approved.text
     payloads = approved.json()["dry_run"]
     purchase = next(item for item in payloads if item["action"] == "createPurchaseOrder")
@@ -129,15 +141,12 @@ def test_cfo_approval_dry_run_idempotent_execute_and_masking(client: TestClient)
 
 def test_modify_changes_dry_run_quantity(client: TestClient):
     login(client, "mapper")
-    client.post("/api/demo/load")
+    load_demo()
     recommendation = client.get("/api/inbox").json()["recommendations"][0]
     login(client, "approver")
-    modified = client.post(
-        f"/api/recommendations/{recommendation['id']}/modify",
-        json={"quantity": 40},
-    )
+    modified = decide(client, recommendation, "modify", quantity=40)
     assert modified.status_code == 200, modified.text
-    approved = client.post(f"/api/recommendations/{recommendation['id']}/approve")
+    approved = decide(client, recommendation)
     purchase = next(item for item in approved.json()["dry_run"] if item["action"] == "createPurchaseOrder")
     assert purchase["quantity"] == 40
 
@@ -147,14 +156,14 @@ def test_reload_is_idempotent_and_drift_is_reviewed(client: TestClient, tmp_path
     first = client.post(
         "/api/ingest/csv",
         files={"file": ("anagrafica.csv", Path("fixtures/anagrafica.csv").read_bytes(), "text/csv")},
-        data={"source_name": "anagrafica"},
+        data={"source_name": "anagrafica", "source_class": "system_of_record"},
     )
     assert first.status_code == 200, first.text
     assert first.json()["skipped"] is False
     second = client.post(
         "/api/ingest/csv",
         files={"file": ("anagrafica.csv", Path("fixtures/anagrafica.csv").read_bytes(), "text/csv")},
-        data={"source_name": "anagrafica"},
+        data={"source_name": "anagrafica", "source_class": "system_of_record"},
     )
     assert second.json()["skipped"] is True
 
@@ -166,7 +175,7 @@ def test_reload_is_idempotent_and_drift_is_reviewed(client: TestClient, tmp_path
     third = client.post(
         "/api/ingest/csv",
         files={"file": ("anagrafica.csv", drifted.read_bytes(), "text/csv")},
-        data={"source_name": "anagrafica"},
+        data={"source_name": "anagrafica", "source_class": "system_of_record"},
     )
     assert third.status_code == 200, third.text
     assert third.json()["drift"]["diff"]["added"] == ["codice_legacy"]
@@ -186,7 +195,7 @@ def test_excel_and_sql_connectors(client: TestClient, tmp_path: Path):
     excel = client.post(
         "/api/ingest/excel",
         files={"file": ("articoli.xlsx", workbook_path.read_bytes(), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
-        data={"source_name": "articoli_xl"},
+        data={"source_name": "articoli_xl", "source_class": "system_of_record"},
     )
     assert excel.status_code == 200, excel.text
     assert any(item["source_field"] == "cod_art" for item in excel.json()["mappings"])
@@ -195,17 +204,23 @@ def test_excel_and_sql_connectors(client: TestClient, tmp_path: Path):
     with connect() as conn:
         seed_src(conn)
         conn.commit()
-    sql = client.post("/api/ingest/sql", json={"table": "src.clienti", "source_name": "clienti_sql"})
+    sql = client.post(
+        "/api/ingest/sql",
+        json={"table": "src.clienti", "source_name": "clienti_sql", "source_class": "system_of_record"},
+    )
     assert sql.status_code == 200, sql.text
     assert any(item["source_field"] == "anag_cli" for item in sql.json()["mappings"])
-    repeated = client.post("/api/ingest/sql", json={"table": "src.clienti", "source_name": "clienti_sql"})
+    repeated = client.post(
+        "/api/ingest/sql",
+        json={"table": "src.clienti", "source_name": "clienti_sql", "source_class": "system_of_record"},
+    )
     assert repeated.json()["skipped"] is True
     del model
 
 
 def test_evidence_expiry_and_audit_is_append_only(client: TestClient):
     login(client, "mapper")
-    client.post("/api/demo/load")
+    load_demo()
     expired = client.post("/api/stock/ART-X", json={"on_hand": 500})
     assert expired.status_code == 200, expired.text
     with connect() as conn:
@@ -225,7 +240,7 @@ def test_evidence_expiry_and_audit_is_append_only(client: TestClient):
     inbox = client.get("/api/inbox").json()["recommendations"]
     assert inbox[0]["status"] == "expired"
     login(client, "approver")
-    denied = client.post(f"/api/recommendations/{inbox[0]['id']}/approve")
+    denied = decide(client, inbox[0])
     assert denied.status_code == 409
 
     with connect() as conn:
@@ -248,7 +263,7 @@ def test_demo_load_is_closed_without_the_flag(client: TestClient, monkeypatch: p
 
 def test_inbox_previews_the_payload_before_approval(client: TestClient):
     login(client, "mapper")
-    client.post("/api/demo/load")
+    load_demo()
     login(client, "approver")
     item = client.get("/api/inbox").json()["recommendations"][0]
     assert item["status"] == "proposed"
@@ -258,7 +273,7 @@ def test_inbox_previews_the_payload_before_approval(client: TestClient):
 
 def test_similar_names_stay_apart_until_review(client: TestClient, tmp_path: Path):
     login(client, "mapper")
-    client.post("/api/demo/load")
+    load_demo()
     path = tmp_path / "rossi.csv"
     path.write_text(
         "ANAG_CLI,RAGIONE_SOCIALE,PIVA\nR1,Mario Rossi Srl,IT11111111111\nR2,M. Rossi SRL,IT22222222222\n",
@@ -267,7 +282,7 @@ def test_similar_names_stay_apart_until_review(client: TestClient, tmp_path: Pat
     uploaded = client.post(
         "/api/ingest/csv",
         files={"file": ("rossi.csv", path.read_bytes(), "text/csv")},
-        data={"source_name": "rossi"},
+        data={"source_name": "rossi", "source_class": "external"},
     )
     assert uploaded.status_code == 200, uploaded.text
     assert client.post("/api/mappings/confirm-confident").status_code == 200
@@ -292,22 +307,19 @@ def test_similar_names_stay_apart_until_review(client: TestClient, tmp_path: Pat
 
 def test_app_role_cannot_rewrite_audit_or_drop(client: TestClient):
     login(client, "mapper")
-    client.post("/api/demo/load")
-    with connect() as conn:
-        conn.execute("SET ROLE ieol_app")
-        with pytest.raises(Exception):
-            conn.execute("UPDATE app.audit_log SET actor = 'x'")
-        conn.rollback()
-    with connect() as conn:
-        conn.execute("SET ROLE ieol_app")
-        with pytest.raises(Exception):
-            conn.execute("TRUNCATE app.audit_log")
-        conn.rollback()
-    with connect() as conn:
-        conn.execute("SET ROLE ieol_app")
-        with pytest.raises(Exception):
-            conn.execute("DROP TABLE app.users")
-        conn.rollback()
+    load_demo()
+    from services.db import app_connect
+
+    for statement in (
+        "UPDATE app.audit_log SET actor = 'x'",
+        "TRUNCATE app.audit_log",
+        "DROP TABLE app.users",
+    ):
+        with app_connect() as conn:
+            conn.execute("RESET ROLE")
+            with pytest.raises(psycopg.errors.InsufficientPrivilege):
+                conn.execute(statement)
+            conn.rollback()
 
 
 def test_migrations_apply_twice():
@@ -322,8 +334,7 @@ def test_migrations_apply_twice():
 
 def test_facts_keep_optional_confidence_and_unknown_provenance(client: TestClient):
     login(client, "mapper")
-    loaded = client.post("/api/demo/load")
-    assert loaded.status_code == 200, loaded.text
+    load_demo()
     with connect() as conn:
         rows = conn.execute(
             """
@@ -347,7 +358,7 @@ def test_facts_keep_optional_confidence_and_unknown_provenance(client: TestClien
     assert any(row["missing"] for row in rows)
     assert all(row["confidence_method"] == "unknown" for row in rows if row["missing"])
     assert all(row["confidence_method"] == "rule" for row in rows if not row["missing"])
-    assert any(not row["missing"] and row["source_class"] == "unknown" for row in rows)
+    assert any(not row["missing"] and row["source_class"] == "system_of_record" for row in rows)
 
     order = next(item for item in client.get("/api/orders").json()["orders"] if item["business_key"] == "1024")
     detail = client.get(f"/api/orders/{order['id']}").json()
@@ -356,10 +367,11 @@ def test_facts_keep_optional_confidence_and_unknown_provenance(client: TestClien
     assert shortage["confidence"] is None
     assert shortage["confidence_method"] == "unknown"
     assert shortage["confidence_rule"] is None
-    assert shortage["source_class"] == "calculated"
+    assert shortage["source_class"] == "system_of_record"
+    assert shortage["origin"] == "calculated"
     assert status["confidence_method"] == "rule"
     assert status["confidence_rule"] == "mapping.header_similarity@v1"
-    assert status["source_class"] == "unknown"
+    assert status["source_class"] == "system_of_record"
     assert status["confidence"] not in (None, 1)
     assert all(
         row["confidence_rule"] == "mapping.header_similarity@v1"
@@ -380,7 +392,7 @@ def test_facts_keep_optional_confidence_and_unknown_provenance(client: TestClien
 
 
 _FACT_LABEL_SCRIPT = r"""
-const { orderDetail, customerDetail } = require("./apps/web/escape.js");
+const { orderDetail, customerDetail, recommendationConfidence, showFixtureButton, inboxCard } = require("./apps/web/escape.js");
 function linesOf(html, property) {
   const item = html.split("<li>").find((part) => part.includes(`<code>${property}</code>`));
   if (!item) return [];
@@ -405,18 +417,31 @@ if (unknown.includes("%") || unknown.includes("manuale")) {
 const calculated = orderDetail({
   business_key: "1024",
   stock_formula: "disponibile",
-  facts: [{ property: "shortage_qty", value: 80, source_class: "calculated", confidence: null, confidence_method: "unknown" }],
+  facts: [{ property: "shortage_qty", value: 80, source_class: "operational", confidence: null, confidence_method: "unknown" }],
   lines: [],
   edges: [],
 });
 const calculatedLines = linesOf(calculated, "shortage_qty");
-if (calculatedLines[0] !== "calcolata" || calculatedLines[1] !== "confidenza non disponibile") {
+if (calculatedLines[0] !== "operativa" || calculatedLines[1] !== "confidenza non disponibile") {
   console.error(calculated);
   process.exit(4);
 }
 if (calculated.includes("%") || calculated.includes("manuale") || calculated.includes("provenienza sconosciuta")) {
   console.error(calculated);
   process.exit(5);
+}
+for (const legacy of ["erp", "crm", "ai", "calculated"]) {
+  const retired = orderDetail({
+    business_key: "1024",
+    stock_formula: "disponibile",
+    facts: [{ property: "status", value: "open", source_class: legacy, confidence: null, confidence_method: "unknown" }],
+    lines: [],
+    edges: [],
+  });
+  if (linesOf(retired, "status")[0] !== "provenienza sconosciuta") {
+    console.error(legacy, retired);
+    process.exit(16);
+  }
 }
 const scored = orderDetail({
   business_key: "1024",
@@ -461,6 +486,86 @@ if (known.includes("%") || known.includes("provenienza sconosciuta") || known.in
   console.error(known);
   process.exit(10);
 }
+if (recommendationConfidence(null) !== "confidenza non disponibile" || recommendationConfidence(0.86) !== "0,86") {
+  process.exit(11);
+}
+if (String(recommendationConfidence(0.86)).includes("%")) {
+  process.exit(12);
+}
+const card = inboxCard({
+  id: "1",
+  status: "proposed",
+  risk: "high",
+  order_key: "1024",
+  problem: "Ordine 1024",
+  confidence: null,
+  evidence_hash: "abc",
+  evidence: [{ property: "status", value: "open", source_class: "unknown" }],
+  actions: [],
+  requires_cfo: false,
+  preview: { formula: "disponibile = giacenza − impegnato", payloads: [{ action: "createPurchaseOrder" }] },
+}, "approver");
+if (!card.includes("Anteprima di approvazione") || !card.includes("Cosa verrà approvato")) {
+  console.error(card);
+  process.exit(13);
+}
+if (!card.includes("provenienza sconosciuta") || !card.includes("confidenza non disponibile") || card.includes("%")) {
+  console.error(card);
+  process.exit(14);
+}
+if (!showFixtureButton("admin", true) || showFixtureButton("mapper", true) || showFixtureButton("admin", false)) {
+  process.exit(15);
+}
+const scoredCard = inboxCard({
+  id: "2",
+  status: "proposed",
+  risk: "high",
+  order_key: "1024",
+  problem: "Ordine 1024",
+  confidence: 0.93,
+  confidence_method: "rule",
+  confidence_rule: "order-agent.baseline@v1",
+  evidence_hash: "abc",
+  evidence: [],
+  actions: [{ type: "createPurchaseOrder", params: { quantity: 1 } }],
+  requires_cfo: false,
+  preview: { formula: "disponibile", payloads: [] },
+}, "approver");
+if (!scoredCard.includes("0,93 · punteggio di regola, non calibrato · order-agent.baseline@v1")) {
+  console.error(scoredCard);
+  process.exit(17);
+}
+if (scoredCard.includes("%") || scoredCard.includes('data-act="approve" disabled')) {
+  console.error(scoredCard);
+  process.exit(18);
+}
+if (!scoredCard.includes("data-reason") || !scoredCard.includes("required") || !scoredCard.includes('minlength="5"')) {
+  console.error(scoredCard);
+  process.exit(19);
+}
+const blockedCard = inboxCard({
+  id: "3",
+  status: "proposed",
+  risk: "high",
+  order_key: "1024",
+  problem: "Ordine 1024",
+  confidence: null,
+  confidence_method: "unknown",
+  evidence_hash: "abc",
+  evidence: [],
+  actions: [],
+  requires_cfo: false,
+  blocked_reason: "provenienza sconosciuta",
+  preview: { formula: "disponibile", payloads: [] },
+}, "approver");
+if (!blockedCard.includes('data-act="approve" disabled') || !blockedCard.includes("provenienza sconosciuta")) {
+  console.error(blockedCard);
+  process.exit(20);
+}
+if (!blockedCard.includes("confidenza non disponibile")) {
+  console.error(blockedCard);
+  process.exit(21);
+}
 process.stdout.write("ok\n");
 """
 
@@ -499,7 +604,7 @@ def test_operator_cannot_rebuild_or_upload_without_limit(client: TestClient, mon
     oversized = client.post(
         "/api/ingest/csv",
         files={"file": ("big.csv", b"0123456789", "text/csv")},
-        data={"source_name": "big"},
+        data={"source_name": "big", "source_class": "manual"},
     )
     assert oversized.status_code == 413
 
@@ -509,7 +614,7 @@ def test_email_and_pdf_orders_enter_the_same_model(client: TestClient, tmp_path:
     from pypdf.generic import DictionaryObject, NameObject, StreamObject
 
     login(client, "mapper")
-    assert client.post("/api/demo/load").status_code == 200
+    load_demo()
     email = client.post(
         "/api/ingest/document",
         files={"file": ("ordine_email.txt", Path("fixtures/ordine_email.txt").read_bytes(), "text/plain")},
@@ -561,13 +666,16 @@ def test_email_and_pdf_orders_enter_the_same_model(client: TestClient, tmp_path:
 
 def test_sql_connector_rejects_application_tables(client: TestClient):
     login(client, "mapper")
-    denied = client.post("/api/ingest/sql", json={"table": "app.users", "source_name": "users"})
+    denied = client.post(
+        "/api/ingest/sql",
+        json={"table": "app.users", "source_name": "users", "source_class": "system_of_record"},
+    )
     assert denied.status_code == 400
 
 
 def test_operator_inbox_hides_confidential_evidence(client: TestClient):
     login(client, "mapper")
-    assert client.post("/api/demo/load").status_code == 200
+    load_demo()
     login(client, "operator")
     evidence = client.get("/api/inbox").json()["recommendations"][0]["evidence"]
     amount = next(item for item in evidence if item["property"] == "amount")
@@ -584,10 +692,10 @@ def test_operator_inbox_hides_confidential_evidence(client: TestClient):
 
 def test_executed_order_is_not_proposed_again(client: TestClient):
     login(client, "mapper")
-    client.post("/api/demo/load")
+    load_demo()
     recommendation = client.get("/api/inbox").json()["recommendations"][0]
     login(client, "approver")
-    assert client.post(f"/api/recommendations/{recommendation['id']}/approve").status_code == 200
+    assert decide(client, recommendation).status_code == 200
     assert client.post(f"/api/recommendations/{recommendation['id']}/execute").status_code == 200
     login(client, "mapper")
     again = client.post("/api/agent/run")
@@ -600,10 +708,10 @@ def test_executed_order_is_not_proposed_again(client: TestClient):
 
 def test_execute_keeps_expired_status(client: TestClient):
     login(client, "mapper")
-    client.post("/api/demo/load")
-    recommendation = client.get("/api/inbox").json()["recommendations"][0]["id"]
+    load_demo()
+    recommendation = client.get("/api/inbox").json()["recommendations"][0]
     login(client, "approver")
-    assert client.post(f"/api/recommendations/{recommendation}/approve").status_code == 200
+    assert decide(client, recommendation).status_code == 200
     with connect() as conn:
         conn.execute(
             """
@@ -613,7 +721,7 @@ def test_execute_keeps_expired_status(client: TestClient):
             """
         )
         conn.commit()
-    denied = client.post(f"/api/recommendations/{recommendation}/execute")
+    denied = client.post(f"/api/recommendations/{recommendation['id']}/execute")
     assert denied.status_code == 409
     status = client.get("/api/inbox").json()["recommendations"][0]["status"]
     assert status == "expired"
@@ -621,10 +729,10 @@ def test_execute_keeps_expired_status(client: TestClient):
 
 def test_failed_execution_is_audited(client: TestClient, monkeypatch: pytest.MonkeyPatch):
     login(client, "mapper")
-    client.post("/api/demo/load")
-    recommendation = client.get("/api/inbox").json()["recommendations"][0]["id"]
+    load_demo()
+    recommendation = client.get("/api/inbox").json()["recommendations"][0]
     login(client, "approver")
-    assert client.post(f"/api/recommendations/{recommendation}/approve").status_code == 200
+    assert decide(client, recommendation).status_code == 200
 
     def boom(*_args, **_kwargs):
         raise RuntimeError("sandbox down")
@@ -632,11 +740,11 @@ def test_failed_execution_is_audited(client: TestClient, monkeypatch: pytest.Mon
     monkeypatch.setattr("services.actions.executor._sandbox", boom)
     with connect() as conn:
         with pytest.raises(AppError, match="Esecuzione fallita"):
-            execute(conn, load_merged(), recommendation, actor="approver", role="approver")
+            execute(conn, load_merged(), recommendation["id"], actor="approver", role="approver")
     with connect() as conn:
         status = conn.execute(
             "SELECT status FROM app.recommendations WHERE id = %s",
-            (recommendation,),
+            (recommendation["id"],),
         ).fetchone()
         assert status["status"] == "failed"
         outcome = conn.execute(
@@ -644,6 +752,6 @@ def test_failed_execution_is_audited(client: TestClient, monkeypatch: pytest.Mon
             SELECT 1 FROM app.audit_log
             WHERE action = 'outcome' AND entity_ref = %s
             """,
-            (recommendation,),
+            (recommendation["id"],),
         ).fetchone()
         assert outcome is not None

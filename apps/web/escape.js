@@ -52,11 +52,10 @@
   }
 
   const PROVENANCE_LABELS = {
-    erp: "ERP",
-    crm: "CRM",
+    system_of_record: "sistema di riferimento",
+    operational: "operativa",
+    external: "esterna",
     manual: "manuale",
-    ai: "AI",
-    calculated: "calcolata",
   };
 
   function provenanceLabel(sourceClass) {
@@ -86,6 +85,21 @@
       }
     }
     return "confidenza non disponibile";
+  }
+
+  function recommendationConfidence(confidence) {
+    if (confidence == null || confidence === "") {
+      return "confidenza non disponibile";
+    }
+    const number = Number(confidence);
+    if (!Number.isFinite(number)) {
+      return "confidenza non disponibile";
+    }
+    return number.toFixed(2).replace(".", ",");
+  }
+
+  function showFixtureButton(role, demoMode) {
+    return role === "admin" && demoMode === true;
   }
 
   function mappingConfidence(confidence) {
@@ -182,34 +196,41 @@
   }
 
   function inboxCard(item, role) {
-    const purchase = item.actions.find((action) => action.type === "createPurchaseOrder");
+    const purchase = (item.actions || []).find((action) => action.type === "createPurchaseOrder");
     const qty = purchase?.params.quantity ?? "";
     const preview = item.preview || {};
     const payloads = preview.payloads || item.dry_run || [];
     const evidence = (item.evidence || [])
-      .map((fact) => `<li>${escapeHtml(fact.property)}: ${escapeHtml(fact.value)}</li>`)
+      .map((fact) => `<li>${escapeHtml(fact.property)}: ${escapeHtml(fact.value)}<p>${escapeHtml(provenanceLabel(fact.source_class))}</p></li>`)
       .join("");
     const canDecide = role === "approver" || role === "admin";
     const cfo = item.requires_cfo ? '<span class="pill high">CFO</span>' : "";
+    const blocked = item.blocked_reason ? String(item.blocked_reason) : "";
     const executeButton = item.status === "dry_run_ok" || item.status === "executed"
       ? '<button type="button" data-act="execute">Esegui</button>'
       : "";
+    const approveButton = blocked
+      ? `<button type="button" data-act="approve" disabled>Approva</button> <span>${escapeHtml(blocked)}</span>`
+      : `<button type="button" data-act="approve">Approva</button>`;
     const buttons = canDecide
       ? `<label>Quantità acquisto <input data-qty value="${escapeHtml(qty)}" /></label>
+      <label>Motivo del rifiuto <input data-reason required minlength="5" maxlength="500" /></label>
       <div>
-        <button type="button" data-act="approve">Approva</button>
+        ${approveButton}
         <button type="button" class="ghost" data-act="modify">Modifica</button>
         <button type="button" class="ghost" data-act="reject">Rifiuta</button>
         ${executeButton}
       </div>`
       : "<p>Sola lettura: l'operatore non approva.</p>";
-    return `<article class="card" data-id="${escapeHtml(item.id)}">
+    return `<article class="card" data-id="${escapeHtml(item.id)}" data-hash="${escapeHtml(item.evidence_hash)}">
       <div class="meta">${pill(item.status)}${cfo}<span class="pill">${escapeHtml(item.risk)}</span></div>
       <h3>Ordine ${escapeHtml(item.order_key)}</h3>
+      <h3>Anteprima di approvazione</h3>
       <p>${escapeHtml(item.problem)}</p>
+      <p>${escapeHtml(confidenceLabel(item))}</p>
       <p class="formula">${escapeHtml(preview.formula || "")}</p>
       <ul>${evidence}</ul>
-      <h3>Payload ERP / email</h3>
+      <h3>Cosa verrà approvato</h3>
       <pre>${escapeHtml(JSON.stringify(payloads, null, 2))}</pre>
       ${buttons}
     </article>`;
@@ -225,6 +246,8 @@
     pill,
     provenanceLabel,
     confidenceLabel,
+    recommendationConfidence,
+    showFixtureButton,
     factList,
     driftCard,
     mappingRow,

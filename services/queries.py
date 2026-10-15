@@ -115,7 +115,8 @@ def list_inbox(conn: psycopg.Connection, role: str) -> list[dict]:
         """
         SELECT r.id::text, r.order_entity_id::text, e.business_key AS order_key,
                r.problem, r.evidence, r.evidence_hash, r.actions, r.expected_impact,
-               r.risk, r.confidence, r.status, r.requires_cfo, r.created_at
+               r.risk, r.confidence, r.confidence_method, r.confidence_rule,
+               r.status, r.requires_cfo, r.created_at
         FROM app.recommendations r
         JOIN app.entities e ON e.id = r.order_entity_id
         ORDER BY r.created_at DESC
@@ -132,7 +133,11 @@ def list_inbox(conn: psycopg.Connection, role: str) -> list[dict]:
             (row["id"],),
         ).fetchone()
         item = dict(row)
-        item["evidence"] = _mask_evidence(item["evidence"], role)
+        item["confidence"] = stable(item["confidence"])
+        evidence = _mask_evidence(item["evidence"], role)
+        classes = _fact_classes(conn, _fact_ids(evidence))
+        item["evidence"] = _with_provenance(evidence, classes)
+        item["blocked_reason"] = _blocked_reason(item, classes)
         from services.actions.executor import payloads_for
 
         preview_payloads = payloads["payloads"] if payloads else payloads_for(conn, item)
@@ -160,6 +165,57 @@ def list_audit(conn: psycopg.Connection, role: str) -> list[dict]:
         item["payload"] = _mask_tree(item["payload"], role)
         visible.append(item)
     return visible
+
+
+def _fact_ids(evidence: Any) -> list[str]:
+    if not isinstance(evidence, list):
+        return []
+    return [
+        item.get("fact_id")
+        for item in evidence
+        if isinstance(item, dict) and item.get("fact_id")
+    ]
+
+
+def _fact_classes(conn: psycopg.Connection, fact_ids: list[str]) -> dict[str, str | None]:
+    if not fact_ids:
+        return {}
+    rows = conn.execute(
+        "SELECT id::text AS id, source_class FROM app.facts WHERE id = ANY(%s::uuid[])",
+        (fact_ids,),
+    ).fetchall()
+    return {row["id"]: row["source_class"] for row in rows}
+
+
+def _blocked_reason(item: dict, classes: dict[str, str | None]) -> str | None:
+    """Why approval is refused. Reads only: the inbox does not write."""
+    if item["status"] not in ("proposed", "modified"):
+        return None
+    fact_ids = _fact_ids(item["evidence"])
+    if not fact_ids:
+        return "provenienza sconosciuta"
+    if len(classes) != len(set(fact_ids)) or any(
+        classes.get(fact_id) in (None, "unknown") for fact_id in fact_ids
+    ):
+        return "provenienza sconosciuta"
+    return None
+
+
+def _with_provenance(evidence: Any, classes: dict[str, str | None]) -> Any:
+    """Attach the stored source class for display. It is not part of the evidence hash."""
+    if not isinstance(evidence, list) or not classes:
+        return evidence
+    enriched = []
+    for item in evidence:
+        if not isinstance(item, dict):
+            enriched.append(item)
+            continue
+        copy = dict(item)
+        fact_id = copy.get("fact_id")
+        if fact_id in classes:
+            copy["source_class"] = classes[fact_id]
+        enriched.append(copy)
+    return enriched
 
 
 def _mask_evidence(evidence: Any, role: str) -> Any:

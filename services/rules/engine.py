@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+RULES_VERSION = "rules.cfo_amount@v1"
 CFO_THRESHOLD = 50_000
 
 

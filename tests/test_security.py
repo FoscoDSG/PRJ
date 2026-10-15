@@ -187,7 +187,11 @@ def test_legacy_sha256_login_rehashes_to_argon2(client: TestClient):
     assert stored == legacy
     allowed = client.post("/api/login", json={"username": "legacy-user", "password": password})
     assert allowed.status_code == 200, allowed.text
-    assert allowed.json() == {"username": "legacy-user", "role": "operator"}
+    body = allowed.json()
+    assert body["username"] == "legacy-user"
+    assert body["role"] == "operator"
+    assert isinstance(body["demo_mode"], bool)
+    assert set(body) == {"username", "role", "demo_mode"}
     with connect() as conn:
         upgraded = conn.execute(
             "SELECT password_hash FROM app.users WHERE username = %s",
@@ -230,7 +234,7 @@ def test_malicious_csv_value_renders_inert(client: TestClient):
     ingested = client.post(
         "/api/ingest/csv",
         files={"file": ("xss_customer.csv", (ROOT / "fixtures" / "xss_customer.csv").read_bytes(), "text/csv")},
-        data={"source_name": "xss_clienti"},
+        data={"source_name": "xss_clienti", "source_class": "external"},
     )
     assert ingested.status_code == 200, ingested.text
     mappings = client.get("/api/mappings").json()["mappings"]

@@ -11,6 +11,7 @@ from psycopg.types.json import Json
 
 from ontology.loader import Ontology
 from services.graph.projection import project_graph
+from services.sources import weakest_source_class
 from services.text import coerce_number, stable
 
 PROFILE_ORDER = {
@@ -253,13 +254,20 @@ def _calculate(conn: psycopg.Connection, ontology: Ontology) -> int:
     written = 0
     stocks = _entities_of_type(conn, "StockPosition")
     available_by_product: dict[str, int | float] = {}
+    available_classes: dict[str, list[str]] = {}
     for stock in stocks:
-        facts = _open_map(conn, stock["id"])
-        on_hand = _num(facts.get("on_hand"))
-        reserved = _num(facts.get("reserved"))
-        if on_hand is None:
+        facts = _open_facts(conn, stock["id"])
+        on_hand = facts.get("on_hand")
+        on_hand_n = _num(on_hand["value"]) if on_hand else None
+        if on_hand_n is None:
             continue
-        available = on_hand - (reserved or 0)
+        reserved = facts.get("reserved")
+        reserved_n = _num(reserved["value"]) if reserved else None
+        classes = [on_hand["source_class"]]
+        if reserved is not None:
+            classes.append(reserved["source_class"])
+        available_class = weakest_source_class(classes)
+        available = on_hand_n - (reserved_n or 0)
         written += _write_facts(
             conn,
             ontology,
@@ -269,26 +277,44 @@ def _calculate(conn: psycopg.Connection, ontology: Ontology) -> int:
             "on_hand - reserved",
             {},
             origin="calculated",
+            source_classes={"available": available_class},
         )
-        product_key = facts.get("product_source_key")
-        if product_key:
-            available_by_product[str(product_key)] = available_by_product.get(str(product_key), 0) + available
+        product = facts.get("product_source_key")
+        if product and product["value"] not in (None, ""):
+            product_key = str(product["value"])
+            available_by_product[product_key] = available_by_product.get(product_key, 0) + available
+            available_classes.setdefault(product_key, []).append(available_class)
     lines = _entities_of_type(conn, "OrderLine")
     shortage_by_order: dict[str, int | float] = {}
+    shortage_classes: dict[str, list[str]] = {}
     revenue_by_order: dict[str, float] = {}
     cost_by_order: dict[str, float] = {}
+    margin_classes: dict[str, list[str]] = {}
     priced_orders: set[str] = set()
     remaining = dict(available_by_product)
     for line in lines:
-        facts = _open_map(conn, line["id"])
-        quantity = _num(facts.get("quantity"))
-        product_key = facts.get("product_source_key")
-        order_key = facts.get("order_source_key")
-        if quantity is None or not product_key or not order_key:
+        facts = _open_facts(conn, line["id"])
+        quantity_fact = facts.get("quantity")
+        quantity = _num(quantity_fact["value"]) if quantity_fact else None
+        product = facts.get("product_source_key")
+        order = facts.get("order_source_key")
+        if (
+            quantity is None
+            or product is None
+            or product["value"] in (None, "")
+            or order is None
+            or order["value"] in (None, "")
+        ):
             continue
-        available = remaining.get(str(product_key), 0)
+        product_key = str(product["value"])
+        order_key = str(order["value"])
+        available = remaining.get(product_key, 0)
         shortage = max(0, quantity - available)
-        remaining[str(product_key)] = max(0, available - quantity)
+        remaining[product_key] = max(0, available - quantity)
+        inputs = [quantity_fact["source_class"]]
+        if product_key in available_classes:
+            inputs.extend(available_classes[product_key])
+        shortage_class = weakest_source_class(inputs)
         written += _write_facts(
             conn,
             ontology,
@@ -298,33 +324,44 @@ def _calculate(conn: psycopg.Connection, ontology: Ontology) -> int:
             "quantity - available",
             {},
             origin="calculated",
+            source_classes={"shortage": shortage_class},
         )
-        order_id = str(order_key)
-        shortage_by_order[order_id] = shortage_by_order.get(order_id, 0) + shortage
-        price = _num(facts.get("unit_price"))
-        product = _resolve(conn, "Product", str(product_key))
-        cost = None
-        if product:
-            cost = _num(_open_map(conn, product).get("cost"))
+        shortage_by_order[order_key] = shortage_by_order.get(order_key, 0) + shortage
+        shortage_classes.setdefault(order_key, []).append(shortage_class)
+        price_fact = facts.get("unit_price")
+        price = _num(price_fact["value"]) if price_fact else None
+        product_id = _resolve(conn, "Product", product_key)
+        cost_fact = _open_facts(conn, product_id).get("cost") if product_id else None
+        cost = _num(cost_fact["value"]) if cost_fact else None
         if price is not None and cost is not None:
-            revenue_by_order[order_id] = revenue_by_order.get(order_id, 0) + quantity * price
-            cost_by_order[order_id] = cost_by_order.get(order_id, 0) + quantity * cost
-            priced_orders.add(order_id)
-    for order in _entities_of_type(conn, "Order"):
-        order_key = order["business_key"]
+            revenue_by_order[order_key] = revenue_by_order.get(order_key, 0) + quantity * price
+            cost_by_order[order_key] = cost_by_order.get(order_key, 0) + quantity * cost
+            priced_orders.add(order_key)
+            margin_classes.setdefault(order_key, []).extend(
+                [
+                    price_fact["source_class"],
+                    quantity_fact["source_class"],
+                    cost_fact["source_class"],
+                ]
+            )
+    for order_row in _entities_of_type(conn, "Order"):
+        order_key = order_row["business_key"]
         payload: dict[str, Any] = {"shortage_qty": shortage_by_order.get(order_key, 0)}
+        classes = {"shortage_qty": weakest_source_class(shortage_classes.get(order_key, []))}
         if order_key in priced_orders and revenue_by_order.get(order_key):
             revenue = revenue_by_order[order_key]
             payload["margin"] = round((revenue - cost_by_order[order_key]) / revenue, 4)
+            classes["margin"] = weakest_source_class(margin_classes.get(order_key, []))
         written += _write_facts(
             conn,
             ontology,
-            order["id"],
+            order_row["id"],
             "Order",
             payload,
             "calculated",
             {},
             origin="calculated",
+            source_classes=classes,
         )
     return written
 
@@ -406,6 +443,7 @@ def _write_facts(
     confidence: dict[str, float],
     origin: str | None = None,
     confidence_rules: dict[str, str] | None = None,
+    source_classes: dict[str, str] | None = None,
 ) -> int:
     written = 0
     for name, value in values.items():
@@ -422,6 +460,10 @@ def _write_facts(
             fact_confidence = float(raw_confidence)
             method = "rule"
             rule = (confidence_rules or {}).get(name)
+        if source_classes and name in source_classes:
+            fact_class = source_classes[name]
+        else:
+            fact_class = _source_class(conn, source, fact_origin)
         if _put_fact(
             conn,
             entity_id=entity_id,
@@ -431,7 +473,7 @@ def _write_facts(
             origin=fact_origin,
             source=source,
             confidence=fact_confidence,
-            source_class=_source_class(source, fact_origin),
+            source_class=fact_class,
             confidence_method=method,
             confidence_rule=rule,
         ):
@@ -453,11 +495,19 @@ def _put_fact(
     confidence_method: str = "unknown",
     confidence_rule: str | None = None,
 ) -> bool:
-    if origin == "inferred" and source_class not in (None, "ai"):
+    if origin == "inferred" and source_class not in (None, "unknown"):
         raise ValueError("origin inferred è riservata a un modello")
-    fact_class = source_class or _source_class(source or "", origin)
+    fact_class = source_class or _source_class(conn, source or "", origin)
     if origin == "inferred":
-        fact_class = "ai"
+        fact_class = "unknown"
+    declared_rule = confidence_rule.strip() if isinstance(confidence_rule, str) else ""
+    if origin == "calculated" and not (declared_rule and confidence is not None):
+        confidence = None
+        confidence_method = "unknown"
+        confidence_rule = None
+    elif origin == "calculated":
+        confidence_method = "rule"
+        confidence_rule = declared_rule
     if confidence_method not in ("rule", "human", "unknown"):
         raise ValueError(f"confidence_method non ammesso: {confidence_method}")
     method = confidence_method
@@ -466,20 +516,30 @@ def _put_fact(
         method = "unknown"
     current = conn.execute(
         """
-        SELECT id, value, source_class FROM app.facts
+        SELECT id, value, source_class, confidence, confidence_method, confidence_rule, origin
+        FROM app.facts
         WHERE entity_id = %s AND property = %s AND valid_to IS NULL
         """,
         (entity_id, name),
     ).fetchone()
     if current is not None and stable(current["value"]) == stable(value):
-        return False
-    if current is not None and origin != "calculated":
-        from services.db import SOURCE_RANK
-
-        current_rank = SOURCE_RANK.get(current["source_class"] or "unknown", 0)
-        new_rank = SOURCE_RANK.get(fact_class, 0)
-        if new_rank < current_rank:
+        if origin != "calculated" or _calculated_meta_matches(current, fact_class, confidence, method, rule):
             return False
+    if current is not None and origin != "calculated":
+        # A human correction stays until another human correction replaces it.
+        # A calculated fact stays until another calculation or a human correction.
+        # Automatic ingest does not overwrite either, even from a higher source class.
+        if current["confidence_method"] == "human" and confidence_method != "human":
+            return False
+        if current["origin"] == "calculated" and confidence_method != "human":
+            return False
+        if confidence_method != "human":
+            from services.db import SOURCE_RANK
+
+            current_rank = SOURCE_RANK.get(current["source_class"] or "unknown", 0)
+            new_rank = SOURCE_RANK.get(fact_class, 0)
+            if new_rank < current_rank:
+                return False
     if current is not None:
         conn.execute("UPDATE app.facts SET valid_to = now() WHERE id = %s", (current["id"],))
     conn.execute(
@@ -507,19 +567,44 @@ def _put_fact(
     return True
 
 
-def _source_class(source: str, origin: str) -> str:
+def _calculated_meta_matches(
+    current: dict,
+    fact_class: str,
+    confidence: float | None,
+    method: str,
+    rule: str | None,
+) -> bool:
+    if (current["source_class"] or "unknown") != fact_class:
+        return False
+    if (current["confidence_method"] or "unknown") != method:
+        return False
+    if current["confidence_rule"] != rule:
+        return False
+    left = current["confidence"]
+    if left is None or confidence is None:
+        return left is None and confidence is None
+    return float(left) == float(confidence)
+
+
+def _source_class(conn: psycopg.Connection, source: str, origin: str) -> str:
+    """Provenance comes from the registered source, not from its name.
+
+    The class is one of system_of_record, operational, external, manual,
+    unknown. A calculated origin without declared inputs is unknown: the
+    writer passes the weakest input class instead. An inferred origin is
+    unknown. A connector that was never registered stays unknown.
+    """
     if origin == "calculated":
-        return "calculated"
+        return "unknown"
     if origin == "inferred":
-        return "ai"
-    lowered = (source or "").lower()
-    if lowered.startswith("src.") or lowered.endswith("_sql") or lowered.startswith("erp"):
-        return "erp"
-    if "crm" in lowered:
-        return "crm"
-    if lowered in {"manual", "human", "adjustment"} or lowered.startswith("manual"):
-        return "manual"
-    return "unknown"
+        return "unknown"
+    row = conn.execute(
+        "SELECT source_class FROM app.sources WHERE name = %s",
+        (source,),
+    ).fetchone()
+    if row is None:
+        return "unknown"
+    return row["source_class"]
 
 
 def _has_fact(conn: psycopg.Connection, entity_id: str, name: str) -> bool:
@@ -534,14 +619,24 @@ def _has_fact(conn: psycopg.Connection, entity_id: str, name: str) -> bool:
 
 
 def _open_map(conn: psycopg.Connection, entity_id: str) -> dict[str, Any]:
+    return {name: fact["value"] for name, fact in _open_facts(conn, entity_id).items()}
+
+
+def _open_facts(conn: psycopg.Connection, entity_id: str) -> dict[str, dict[str, Any]]:
     rows = conn.execute(
         """
-        SELECT property, value FROM app.facts
+        SELECT property, value, source_class FROM app.facts
         WHERE entity_id = %s AND valid_to IS NULL
         """,
         (entity_id,),
     ).fetchall()
-    return {row["property"]: stable(row["value"]) for row in rows}
+    return {
+        row["property"]: {
+            "value": stable(row["value"]),
+            "source_class": row["source_class"] or "unknown",
+        }
+        for row in rows
+    }
 
 
 def _entities_of_type(conn: psycopg.Connection, type_name: str) -> list[dict]:

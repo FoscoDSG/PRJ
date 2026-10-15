@@ -8,9 +8,11 @@ from typing import Any
 import psycopg
 from psycopg.types.json import Json
 
-from services.agent.order_agent import build_context
+from services.agent.order_agent import AGENT_VERSION, build_context
 from services.audit import record
 from services.errors import AppError
+from services.mapping.engine import THRESHOLD
+from services.rules.engine import CFO_THRESHOLD, RULES_VERSION
 
 OPEN_STATES = ("detected", "proposed", "approved", "modified", "dry_run_ok")
 DECISION_ROLES = {"admin", "approver"}
@@ -30,15 +32,20 @@ def propose(
     requires_cfo: bool,
     actor: str | None,
     role: str | None,
+    confidence_method: str = "rule",
+    confidence_rule: str | None = None,
 ) -> str:
+    _stored, method, rule = _score(confidence, confidence_method, confidence_rule)
+    del _stored
     recommendation_id = str(uuid.uuid4())
     conn.execute(
         """
         INSERT INTO app.recommendations (
           id, order_entity_id, problem, evidence, evidence_hash, actions,
-          expected_impact, risk, confidence, status, requires_cfo
+          expected_impact, risk, confidence, status, requires_cfo,
+          confidence_method, confidence_rule
         )
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, 'detected', %s)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, 'detected', %s, %s, %s)
         """,
         (
             recommendation_id,
@@ -51,6 +58,8 @@ def propose(
             risk,
             confidence,
             requires_cfo,
+            method,
+            rule,
         ),
     )
     _transition(conn, recommendation_id, None, "detected", actor)
@@ -77,10 +86,12 @@ def modify(
     quantity: int,
     actor: str,
     role: str,
+    evidence_hash: str,
 ) -> dict:
     _require_role(role)
     row = _lock(conn, recommendation_id)
     _ensure_fresh(conn, row)
+    _require_presented_hash(conn, row, evidence_hash)
     if row["status"] not in ("proposed", "modified"):
         raise AppError(409, "La raccomandazione non è modificabile")
     if quantity <= 0:
@@ -104,6 +115,7 @@ def modify(
         """,
         (str(uuid.uuid4()), recommendation_id, Json(previous), Json(quantity), actor),
     )
+    _record_decision(conn, row, decision="modify", actor=actor, role=role)
     conn.execute(
         "UPDATE app.recommendations SET actions = %s, status = 'modified' WHERE id = %s",
         (Json(actions), recommendation_id),
@@ -120,9 +132,18 @@ def modify(
     return _get(conn, recommendation_id)
 
 
-def reject(conn: psycopg.Connection, recommendation_id: str, *, reason: str, actor: str, role: str) -> dict:
+def reject(
+    conn: psycopg.Connection,
+    recommendation_id: str,
+    *,
+    reason: str,
+    actor: str,
+    role: str,
+    evidence_hash: str,
+) -> dict:
     _require_role(role)
     row = _lock(conn, recommendation_id)
+    _require_presented_hash(conn, row, evidence_hash)
     if row["status"] in ("executed", "rejected", "expired", "failed"):
         raise AppError(409, "La raccomandazione non è rifiutabile")
     conn.execute(
@@ -130,6 +151,7 @@ def reject(conn: psycopg.Connection, recommendation_id: str, *, reason: str, act
         (recommendation_id,),
     )
     _transition(conn, recommendation_id, row["status"], "rejected", actor)
+    _record_decision(conn, row, decision="reject", actor=actor, role=role)
     record(
         conn,
         action="human_decision",
@@ -141,19 +163,29 @@ def reject(conn: psycopg.Connection, recommendation_id: str, *, reason: str, act
     return _get(conn, recommendation_id)
 
 
-def mark_approved(conn: psycopg.Connection, recommendation_id: str, *, actor: str, role: str) -> dict:
+def mark_approved(
+    conn: psycopg.Connection,
+    recommendation_id: str,
+    *,
+    actor: str,
+    role: str,
+    evidence_hash: str,
+) -> dict:
     _require_role(role)
     row = _lock(conn, recommendation_id)
     _ensure_fresh(conn, row)
+    _require_presented_hash(conn, row, evidence_hash)
     if row["requires_cfo"] and role not in DECISION_ROLES:
         raise AppError(403, "Serve l'approvazione CFO")
     if row["status"] not in ("proposed", "modified"):
         raise AppError(409, "La raccomandazione non è approvabile")
+    _refuse_unknown_provenance(conn, row)
     conn.execute(
         "UPDATE app.recommendations SET status = 'approved' WHERE id = %s",
         (recommendation_id,),
     )
     _transition(conn, recommendation_id, row["status"], "approved", actor)
+    _record_decision(conn, row, decision="approve", actor=actor, role=role)
     record(
         conn,
         action="human_decision",
@@ -246,6 +278,164 @@ def expire_stale(conn: psycopg.Connection) -> list[str]:
             _transition(conn, row["id"], row["status"], "expired", "system")
             expired.append(row["id"])
     return expired
+
+
+def _require_presented_hash(conn: psycopg.Connection, row: dict, evidence_hash: str) -> None:
+    stored = row["evidence_hash"]
+    try:
+        current = build_context(conn, str(row["order_entity_id"]))["evidence_hash"]
+    except ValueError:
+        current = None
+    if evidence_hash != stored or evidence_hash != current:
+        raise AppError(409, "Le evidenze sono cambiate")
+
+
+def _refuse_unknown_provenance(conn: psycopg.Connection, row: dict) -> None:
+    evidence = row["evidence"] if isinstance(row["evidence"], list) else []
+    fact_ids = [
+        item["fact_id"]
+        for item in evidence
+        if isinstance(item, dict) and item.get("fact_id")
+    ]
+    if not fact_ids:
+        raise AppError(422, "Approvazione rifiutata: provenienza sconosciuta")
+    found = conn.execute(
+        "SELECT source_class FROM app.facts WHERE id = ANY(%s::uuid[])",
+        (fact_ids,),
+    ).fetchall()
+    if len(found) != len(set(fact_ids)) or any(item["source_class"] in (None, "unknown") for item in found):
+        raise AppError(422, "Approvazione rifiutata: provenienza sconosciuta")
+
+
+def _score(
+    confidence: float | None,
+    confidence_method: str | None,
+    confidence_rule: str | None,
+) -> tuple[float | None, str, str | None]:
+    """A null score is allowed only with method unknown."""
+    method = confidence_method or "unknown"
+    if method not in ("rule", "human", "unknown"):
+        method = "unknown"
+    if confidence is None:
+        return None, "unknown", None
+    rule = confidence_rule if method == "rule" else None
+    return confidence, method, rule
+
+
+def _record_decision(
+    conn: psycopg.Connection,
+    row: dict,
+    *,
+    decision: str,
+    actor: str,
+    role: str,
+) -> None:
+    """Persist who decided and when. Recommendation and confidence come from the row."""
+    header = _source_row(conn, str(row["order_entity_id"]))
+    sources = _source_rows(conn, str(row["order_entity_id"]))
+    confidence, method, rule = _score(
+        row["confidence"],
+        row.get("confidence_method"),
+        row.get("confidence_rule"),
+    )
+    decision_id = str(uuid.uuid4())
+    conn.execute(
+        """
+        INSERT INTO app.decisions_log (
+          id, recommendation_id, batch_id, row_index, decision, evidence_hash,
+          recommendation, confidence, confidence_method, confidence_rule,
+          actor, actor_role, agent_version, rules_version,
+          confidence_threshold, amount_threshold_eur
+        )
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        """,
+        (
+            decision_id,
+            str(row["id"]),
+            header["batch_id"],
+            header["row_index"],
+            decision,
+            row["evidence_hash"],
+            row["problem"],
+            confidence,
+            method,
+            rule,
+            actor,
+            role,
+            AGENT_VERSION,
+            RULES_VERSION,
+            THRESHOLD,
+            CFO_THRESHOLD,
+        ),
+    )
+    for source in sources:
+        conn.execute(
+            """
+            INSERT INTO app.decisions_log_sources (decision_id, batch_id, row_index)
+            VALUES (%s, %s, %s)
+            ON CONFLICT DO NOTHING
+            """,
+            (decision_id, source["batch_id"], source["row_index"]),
+        )
+
+
+def _source_rows(conn: psycopg.Connection, order_entity_id: str) -> list[dict]:
+    """Every landing row of the order header and of its lines."""
+    order = conn.execute(
+        "SELECT business_key FROM app.entities WHERE id = %s",
+        (order_entity_id,),
+    ).fetchone()
+    if order is None:
+        raise AppError(422, "Decisione rifiutata: riga di origine assente")
+    rows = conn.execute(
+        """
+        SELECT lr.batch_id::text AS batch_id, lr.row_index
+        FROM app.landing_rows lr
+        JOIN app.landing_batches lb ON lb.id = lr.batch_id
+        JOIN app.field_mappings fm
+          ON fm.source_name = lb.source_name
+         AND fm.valid_to IS NULL
+         AND (
+              (fm.target_type = 'Order' AND fm.target_property = 'source_key')
+           OR (fm.target_type = 'OrderLine' AND fm.target_property = 'order_source_key')
+         )
+        WHERE lr.data ->> fm.source_field = %s
+        GROUP BY lr.batch_id, lr.row_index
+        ORDER BY lr.batch_id, lr.row_index
+        """,
+        (str(order["business_key"]),),
+    ).fetchall()
+    if not rows:
+        raise AppError(422, "Decisione rifiutata: riga di origine assente")
+    return list(rows)
+
+
+def _source_row(conn: psycopg.Connection, order_entity_id: str) -> dict:
+    order = conn.execute(
+        "SELECT business_key FROM app.entities WHERE id = %s",
+        (order_entity_id,),
+    ).fetchone()
+    if order is None:
+        raise AppError(422, "Decisione rifiutata: riga di origine assente")
+    found = conn.execute(
+        """
+        SELECT lr.batch_id::text AS batch_id, lr.row_index
+        FROM app.landing_rows lr
+        JOIN app.landing_batches lb ON lb.id = lr.batch_id
+        JOIN app.field_mappings fm
+          ON fm.source_name = lb.source_name
+         AND fm.target_type = 'Order'
+         AND fm.target_property = 'source_key'
+         AND fm.valid_to IS NULL
+        WHERE lr.data ->> fm.source_field = %s
+        ORDER BY lb.loaded_at DESC, lr.row_index
+        LIMIT 1
+        """,
+        (str(order["business_key"]),),
+    ).fetchone()
+    if found is None:
+        raise AppError(422, "Decisione rifiutata: riga di origine assente")
+    return found
 
 
 def _ensure_fresh(conn: psycopg.Connection, row: dict) -> None:

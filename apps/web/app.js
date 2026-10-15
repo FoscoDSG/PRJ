@@ -10,7 +10,13 @@ async function api(path, options = {}) {
   }
   const response = await fetch(path, { credentials: "same-origin", ...options, headers });
   const data = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(data.detail || "Richiesta non riuscita");
+  if (!response.ok) {
+    const detail = data.detail;
+    const message = typeof detail === "string" ? detail : "Richiesta non riuscita";
+    const error = new Error(message);
+    error.status = response.status;
+    throw error;
+  }
   return data;
 }
 
@@ -23,6 +29,7 @@ const {
   customerDetail,
   inboxCard,
   auditCard,
+  showFixtureButton,
 } = globalThis.ieolEscape;
 
 function showFlash(message) {
@@ -47,7 +54,7 @@ function enter(me) {
   state.demoMode = Boolean(me.demo_mode);
   document.querySelector("#session").hidden = false;
   document.querySelector("#who").textContent = `${me.username} · ${me.role}`;
-  document.querySelector("#load-fixture").hidden = !state.demoMode;
+  document.querySelector("#load-fixture").hidden = !showFixtureButton(state.role, state.demoMode);
   show("mapping");
 }
 
@@ -249,13 +256,32 @@ async function loadInbox() {
 
 async function act(id, action, card) {
   try {
+    const evidenceHash = card.dataset.hash;
     if (action === "modify") {
       const quantity = Number(card.querySelector("[data-qty]").value);
-      await api(`/api/recommendations/${id}/modify`, { method: "POST", body: JSON.stringify({ quantity }) });
+      await api(`/api/recommendations/${id}/modify`, {
+        method: "POST",
+        body: JSON.stringify({ decision: "modify", evidence_hash: evidenceHash, quantity }),
+      });
     } else if (action === "reject") {
-      await api(`/api/recommendations/${id}/reject`, { method: "POST", body: JSON.stringify({ reason: "rifiutata dall'operatore" }) });
+      const reason = card.querySelector("[data-reason]").value.trim();
+      if (reason.length < 5) {
+        showFlash("Scrivi un motivo di almeno 5 caratteri.");
+        return;
+      }
+      await api(`/api/recommendations/${id}/reject`, {
+        method: "POST",
+        body: JSON.stringify({
+          decision: "reject",
+          evidence_hash: evidenceHash,
+          reason,
+        }),
+      });
     } else if (action === "approve") {
-      const result = await api(`/api/recommendations/${id}/approve`, { method: "POST" });
+      const result = await api(`/api/recommendations/${id}/approve`, {
+        method: "POST",
+        body: JSON.stringify({ decision: "approve", evidence_hash: evidenceHash }),
+      });
       showFlash("Dry-run pronto. Il payload è nella scheda, nessuna scrittura ERP.");
       if (result.dry_run) {
         const block = document.createElement("pre");
@@ -269,6 +295,9 @@ async function act(id, action, card) {
     loadInbox();
   } catch (err) {
     showFlash(err.message);
+    if (err.status === 409) {
+      await loadInbox();
+    }
   }
 }
 

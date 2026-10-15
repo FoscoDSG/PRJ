@@ -12,6 +12,7 @@ from psycopg.types.json import Json
 
 from ontology.loader import Ontology, load_merged
 from services.actions.executor import dry_run, execute
+from services.agent.baseline import BASELINE_CONFIDENCE_RULE
 from services.agent.order_agent import build_context, run_order_agent
 from services.agent.stub_model import StubOrderModel
 from services.canonical.store import _put_fact, materialize
@@ -25,6 +26,7 @@ from services.ingest.sql_connector import extract_sql
 from services.mapping.engine import THRESHOLD
 from services.rules.engine import requires_cfo
 from services.text import coerce_number
+from services.sources import register_source
 from services.workflow.engine import expire_stale, mark_approved, propose
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -41,6 +43,16 @@ FIXTURE_FILES = {
     "ambiguo": "ambiguo.csv",
 }
 
+FIXTURE_SOURCE_CLASS = {
+    "anagrafica": "system_of_record",
+    "ordini": "system_of_record",
+    "righe": "system_of_record",
+    "articoli": "system_of_record",
+    "giacenze": "system_of_record",
+    "fornitori": "system_of_record",
+    "ambiguo": "external",
+}
+
 SRC_TABLES = {
     "anagrafica": "src.clienti",
     "ordini": "src.ordini",
@@ -55,13 +67,29 @@ def ontology() -> Ontology:
     return load_merged()
 
 
-def ingest_csv(conn: psycopg.Connection, path: Path, source_name: str, actor: str, role: str) -> dict:
+def ingest_csv(
+    conn: psycopg.Connection,
+    path: Path,
+    source_name: str,
+    actor: str,
+    role: str,
+    source_class: str,
+) -> dict:
     _require_mapper(role)
+    register_source(conn, source_name, source_class)
     return land(conn, source_name=source_name, extracted=read_csv(path), actor=actor, role=role)
 
 
-def ingest_excel(conn: psycopg.Connection, path: Path, source_name: str, actor: str, role: str) -> dict:
+def ingest_excel(
+    conn: psycopg.Connection,
+    path: Path,
+    source_name: str,
+    actor: str,
+    role: str,
+    source_class: str,
+) -> dict:
     _require_mapper(role)
+    register_source(conn, source_name, source_class)
     return land(conn, source_name=source_name, extracted=read_excel(path), actor=actor, role=role)
 
 
@@ -75,6 +103,7 @@ def ingest_document(conn: psycopg.Connection, path: Path, actor: str, role: str,
     reasons = document_reasons(document["customer"], document["lines"], conn)
     landed = []
     for source_name, extracted in document["sources"]:
+        register_source(conn, source_name, "external")
         landed.append({"source": source_name, **land(conn, source_name=source_name, extracted=extracted, actor=actor, role=role)})
         conn.execute(
             """
@@ -131,8 +160,16 @@ def release_document(conn: psycopg.Connection, quarantine_id: str, role: str, mo
     return {"id": quarantine_id, "status": "released", "canonical": counts, "recommendations": recommendations}
 
 
-def ingest_sql(conn: psycopg.Connection, table: str, source_name: str, actor: str, role: str) -> dict:
+def ingest_sql(
+    conn: psycopg.Connection,
+    table: str,
+    source_name: str,
+    actor: str,
+    role: str,
+    source_class: str,
+) -> dict:
     _require_mapper(role)
+    register_source(conn, source_name, source_class)
     try:
         extracted = extract_sql(conn, table)
     except ValueError as exc:
@@ -238,6 +275,8 @@ def run_agents(conn: psycopg.Connection, *, actor: str, role: str, model: Any | 
             expected_impact=result["expected_impact"],
             risk=result["risk"],
             confidence=result["confidence"],
+            confidence_method="rule",
+            confidence_rule=BASELINE_CONFIDENCE_RULE,
             requires_cfo=requires_cfo(result["amount"]),
             actor=actor,
             role=role,
@@ -246,8 +285,14 @@ def run_agents(conn: psycopg.Connection, *, actor: str, role: str, model: Any | 
     return created
 
 
-def approve(conn: psycopg.Connection, recommendation_id: str, actor: str, role: str) -> dict:
-    mark_approved(conn, recommendation_id, actor=actor, role=role)
+def approve(
+    conn: psycopg.Connection,
+    recommendation_id: str,
+    actor: str,
+    role: str,
+    evidence_hash: str,
+) -> dict:
+    mark_approved(conn, recommendation_id, actor=actor, role=role, evidence_hash=evidence_hash)
     payloads = dry_run(conn, recommendation_id, actor=actor, role=role)
     return {"id": recommendation_id, "status": "dry_run_ok", "dry_run": payloads}
 
@@ -264,7 +309,14 @@ def load_fixtures(conn: psycopg.Connection, actor: str, role: str, model: Ontolo
     _require_mapper(role)
     loaded = []
     for source_name, filename in FIXTURE_FILES.items():
-        result = ingest_csv(conn, FIXTURES / filename, source_name, actor, role)
+        result = ingest_csv(
+            conn,
+            FIXTURES / filename,
+            source_name,
+            actor,
+            role,
+            FIXTURE_SOURCE_CLASS[source_name],
+        )
         loaded.append({"source": source_name, **result})
     seed_src(conn)
     seed_price_list(conn)
@@ -299,7 +351,7 @@ def seed_price_list(conn: psycopg.Connection) -> None:
 
 def seed_src(conn: psycopg.Connection) -> None:
     for source_name, table in SRC_TABLES.items():
-        conn.execute(f"TRUNCATE {table}")
+        conn.execute(f"DELETE FROM {table}")
         path = FIXTURES / FIXTURE_FILES[source_name]
         with path.open(encoding="utf-8-sig", newline="") as handle:
             reader = csv.DictReader(handle)

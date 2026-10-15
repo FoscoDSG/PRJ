@@ -33,6 +33,7 @@ jobs:
     env:
       DATABASE_URL: postgresql://postgres:ci-test-password@127.0.0.1:5432/ieol_test
       TEST_DATABASE_URL: postgresql://postgres:ci-test-password@127.0.0.1:5432/ieol_test
+      IEOL_APP_DATABASE_URL: postgresql://ieol_app:ieol-app-test-password@127.0.0.1:5432/ieol_test
       IEOL_SESSION_SECRET: ci-test-session-secret
       IEOL_SEED_ADMIN_PASSWORD: ci-test-admin-password
       IEOL_SEED_MAPPER_PASSWORD: ci-test-mapper-password
@@ -51,6 +52,34 @@ jobs:
           python -m pip install pip-audit
       - name: Migrate test database
         run: ieol migrate
+      - name: App role logs in as ieol_app
+        run: |
+          python - <<'PY'
+          import os
+          import psycopg
+          from psycopg import sql
+          from services.db import app_connect
+          with psycopg.connect(os.environ["DATABASE_URL"], autocommit=True) as owner:
+              owner.execute(
+                  sql.SQL("ALTER ROLE ieol_app WITH LOGIN PASSWORD {}").format(
+                      sql.Literal("ieol-app-test-password")
+                  )
+              )
+              owner.execute("GRANT CONNECT ON DATABASE ieol_test TO ieol_app")
+          with app_connect() as conn:
+              conn.execute("RESET ROLE")
+              row = conn.execute(
+                  "SELECT session_user AS session_user, current_user AS current_user"
+              ).fetchone()
+              if row["session_user"] != "ieol_app" or row["current_user"] != "ieol_app":
+                  raise SystemExit(str(row))
+              try:
+                  conn.execute("UPDATE app.audit_log SET actor = 'x'")
+              except psycopg.errors.InsufficientPrivilege:
+                  conn.rollback()
+              else:
+                  raise SystemExit("RESET ROLE ha concesso un update sull'audit")
+          PY
       - name: Pytest
         run: pytest
       - name: pip-audit
