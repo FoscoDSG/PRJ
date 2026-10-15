@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import tempfile
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -36,6 +37,7 @@ from services.text import jsonable
 from services.workflow.engine import expire_stale, modify, reject
 
 WEB = Path(__file__).resolve().parents[1] / "web"
+MAX_UPLOAD_BYTES = 5 * 1024 * 1024
 
 
 @asynccontextmanager
@@ -47,8 +49,17 @@ async def lifespan(app: FastAPI):
     yield
 
 
+_SESSION_SECRET = os.environ.get("IEOL_SESSION_SECRET")
+if not _SESSION_SECRET:
+    raise RuntimeError("IEOL_SESSION_SECRET is required")
+
 app = FastAPI(title="Intelligent Enterprise Operating Layer", lifespan=lifespan)
-app.add_middleware(SessionMiddleware, secret_key="ieol-dev-secret", same_site="lax")
+app.add_middleware(
+    SessionMiddleware,
+    secret_key=_SESSION_SECRET,
+    same_site="lax",
+    https_only=os.environ.get("IEOL_INSECURE_COOKIES") != "1",
+)
 app.mount("/assets", StaticFiles(directory=WEB), name="assets")
 
 
@@ -123,11 +134,20 @@ async def ingest_excel_route(
 
 async def _ingest_upload(file: UploadFile, source_name: str | None, user: dict, excel: bool) -> dict:
     suffix = Path(file.filename or "upload").suffix
-    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as temporary:
-        temporary.write(await file.read())
-        path = Path(temporary.name)
-    name = source_name or Path(file.filename or "upload").stem
+    path: Path | None = None
     try:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as temporary:
+            path = Path(temporary.name)
+            size = 0
+            while True:
+                chunk = await file.read(1024 * 1024)
+                if not chunk:
+                    break
+                size += len(chunk)
+                if size > MAX_UPLOAD_BYTES:
+                    raise AppError(413, "File troppo grande")
+                temporary.write(chunk)
+        name = source_name or Path(file.filename or "upload").stem
         with connect() as conn:
             if excel:
                 result = ingest_excel(conn, path, name, user["username"], user["role"])
@@ -135,7 +155,8 @@ async def _ingest_upload(file: UploadFile, source_name: str | None, user: dict, 
                 result = ingest_csv(conn, path, name, user["username"], user["role"])
             conn.commit()
     finally:
-        path.unlink(missing_ok=True)
+        if path is not None:
+            path.unlink(missing_ok=True)
     return _ok(result)
 
 
@@ -151,9 +172,8 @@ def ingest_sql_route(body: dict, user: dict = Depends(require_user)) -> dict:
 
 @app.get("/api/mappings")
 def mappings(user: dict = Depends(require_user)) -> dict:
-    del user
     with connect() as conn:
-        return _ok({"mappings": list_mappings(conn), "drift": list_drift(conn)})
+        return _ok({"mappings": list_mappings(conn, user["role"], ontology()), "drift": list_drift(conn)})
 
 
 @app.post("/api/mappings/{mapping_id}/confirm")
@@ -184,6 +204,8 @@ def confirm_high(user: dict = Depends(require_user)) -> dict:
 
 @app.post("/api/drift/{drift_id}/acknowledge")
 def ack_drift(drift_id: str, user: dict = Depends(require_user)) -> dict:
+    if user["role"] not in ("admin", "mapper"):
+        raise AppError(403, "Serve il ruolo mapper")
     with connect() as conn:
         result = acknowledge_drift(conn, drift_id, user["role"])
         conn.commit()
@@ -192,7 +214,8 @@ def ack_drift(drift_id: str, user: dict = Depends(require_user)) -> dict:
 
 @app.post("/api/materialize")
 def materialize_route(user: dict = Depends(require_user)) -> dict:
-    del user
+    if user["role"] not in ("admin", "mapper"):
+        raise AppError(403, "Serve il ruolo mapper")
     with connect() as conn:
         counts = refresh_canonical(conn, ontology())
         conn.commit()
@@ -233,10 +256,9 @@ def customer_detail(customer_id: str, user: dict = Depends(require_user)) -> dic
 
 @app.get("/api/inbox")
 def inbox(user: dict = Depends(require_user)) -> dict:
-    del user
     with connect() as conn:
         expire_stale(conn)
-        rows = list_inbox(conn)
+        rows = list_inbox(conn, user["role"])
         conn.commit()
     return _ok({"recommendations": rows})
 
@@ -309,9 +331,8 @@ def adjust_stock(product_key: str, body: dict, user: dict = Depends(require_user
 
 @app.get("/api/audit")
 def audit(user: dict = Depends(require_user)) -> dict:
-    del user
     with connect() as conn:
-        return _ok({"events": list_audit(conn)})
+        return _ok({"events": list_audit(conn, user["role"])})
 
 
 @app.get("/")

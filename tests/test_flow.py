@@ -5,9 +5,11 @@ from fastapi.testclient import TestClient
 from openpyxl import Workbook
 
 from apps.api.main import app
-from services.db import connect
-from services.pipeline import load_fixtures, seed_src
 from ontology.loader import load_merged
+from services.actions.executor import execute
+from services.db import connect
+from services.errors import AppError
+from services.pipeline import load_fixtures, seed_src
 
 
 @pytest.fixture
@@ -32,10 +34,14 @@ def test_mapping_review_identity_and_agent_does_not_execute(client: TestClient):
     assert by_field[("articoli", "cod_art")]["target_type"] == "Product"
     assert by_field[("ambiguo", "doc_01")]["status"] == "proposed"
     assert by_field[("ambiguo", "doc_01")]["confidence"] < 0.75
+    assert by_field[("anagrafica", "piva")]["samples"] == ["••••", "••••", "••••"]
 
     with connect() as conn:
-        customers = conn.execute("SELECT count(*) AS n FROM app.entities WHERE type = 'Customer'").fetchone()
-        assert customers["n"] == 2
+        customers = conn.execute(
+            "SELECT business_key FROM app.entities WHERE type = 'Customer'"
+        ).fetchall()
+        assert len(customers) == 2
+        assert all(not row["business_key"].startswith("IT") for row in customers)
         edges = conn.execute(
             """
             SELECT rel, count(*) AS n FROM app.graph_edges
@@ -226,3 +232,107 @@ def test_direct_fixture_pipeline_records_detected_state():
             (summary["recommendations"][0],),
         ).fetchall()
         assert [row["to_status"] for row in events[:2]] == ["detected", "proposed"]
+
+
+def test_operator_cannot_rebuild_or_upload_without_limit(client: TestClient, monkeypatch: pytest.MonkeyPatch):
+    login(client, "operator")
+    denied = client.post("/api/materialize")
+    assert denied.status_code == 403
+    login(client, "mapper")
+    monkeypatch.setattr("apps.api.main.MAX_UPLOAD_BYTES", 8)
+    oversized = client.post(
+        "/api/ingest/csv",
+        files={"file": ("big.csv", b"0123456789", "text/csv")},
+        data={"source_name": "big"},
+    )
+    assert oversized.status_code == 413
+
+
+def test_sql_connector_rejects_application_tables(client: TestClient):
+    login(client, "mapper")
+    denied = client.post("/api/ingest/sql", json={"table": "app.users", "source_name": "users"})
+    assert denied.status_code == 400
+
+
+def test_operator_inbox_hides_confidential_evidence(client: TestClient):
+    login(client, "mapper")
+    assert client.post("/api/demo/load").status_code == 200
+    login(client, "operator")
+    evidence = client.get("/api/inbox").json()["recommendations"][0]["evidence"]
+    amount = next(item for item in evidence if item["property"] == "amount")
+    vat = next(item for item in evidence if item["property"] == "vat")
+    assert amount["value"] == "••••"
+    assert vat["value"] == "••••"
+    login(client, "approver")
+    visible = client.get("/api/inbox").json()["recommendations"][0]["evidence"]
+    assert next(item for item in visible if item["property"] == "amount")["value"] == 60000
+    samples = client.get("/api/mappings").json()["mappings"]
+    piva = next(item for item in samples if item["source_field"] == "piva")
+    assert "IT12345678901" in piva["samples"]
+
+
+def test_executed_order_is_not_proposed_again(client: TestClient):
+    login(client, "mapper")
+    client.post("/api/demo/load")
+    recommendation = client.get("/api/inbox").json()["recommendations"][0]
+    login(client, "approver")
+    assert client.post(f"/api/recommendations/{recommendation['id']}/approve").status_code == 200
+    assert client.post(f"/api/recommendations/{recommendation['id']}/execute").status_code == 200
+    login(client, "mapper")
+    again = client.post("/api/agent/run")
+    assert again.status_code == 200, again.text
+    assert again.json()["recommendations"] == []
+    with connect() as conn:
+        count = conn.execute("SELECT count(*) AS n FROM app.sandbox_documents WHERE kind = 'purchase_order'").fetchone()
+        assert count["n"] == 1
+
+
+def test_execute_keeps_expired_status(client: TestClient):
+    login(client, "mapper")
+    client.post("/api/demo/load")
+    recommendation = client.get("/api/inbox").json()["recommendations"][0]["id"]
+    login(client, "approver")
+    assert client.post(f"/api/recommendations/{recommendation}/approve").status_code == 200
+    with connect() as conn:
+        conn.execute(
+            """
+            UPDATE app.facts
+            SET value = '999'::jsonb
+            WHERE property = 'on_hand' AND valid_to IS NULL
+            """
+        )
+        conn.commit()
+    denied = client.post(f"/api/recommendations/{recommendation}/execute")
+    assert denied.status_code == 409
+    status = client.get("/api/inbox").json()["recommendations"][0]["status"]
+    assert status == "expired"
+
+
+def test_failed_execution_is_audited(client: TestClient, monkeypatch: pytest.MonkeyPatch):
+    login(client, "mapper")
+    client.post("/api/demo/load")
+    recommendation = client.get("/api/inbox").json()["recommendations"][0]["id"]
+    login(client, "approver")
+    assert client.post(f"/api/recommendations/{recommendation}/approve").status_code == 200
+
+    def boom(*_args, **_kwargs):
+        raise RuntimeError("sandbox down")
+
+    monkeypatch.setattr("services.actions.executor._sandbox", boom)
+    with connect() as conn:
+        with pytest.raises(AppError, match="Esecuzione fallita"):
+            execute(conn, load_merged(), recommendation, actor="approver", role="approver")
+    with connect() as conn:
+        status = conn.execute(
+            "SELECT status FROM app.recommendations WHERE id = %s",
+            (recommendation,),
+        ).fetchone()
+        assert status["status"] == "failed"
+        outcome = conn.execute(
+            """
+            SELECT 1 FROM app.audit_log
+            WHERE action = 'outcome' AND entity_ref = %s
+            """,
+            (recommendation,),
+        ).fetchone()
+        assert outcome is not None

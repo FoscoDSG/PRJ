@@ -11,20 +11,26 @@ from psycopg import sql
 from services.ingest.base import rows_from_dicts
 from services.text import digest, stable
 
-_IDENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)?")
+_IDENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\.[A-Za-z_][A-Za-z0-9_]*")
+ALLOWED_SCHEMAS = {"src"}
+
+
+def _validated(table: str) -> tuple[str, str]:
+    if not _IDENT.fullmatch(table):
+        raise ValueError(f"Tabella non valida: {table}")
+    schema, name = table.split(".")
+    if schema not in ALLOWED_SCHEMAS:
+        raise ValueError(f"Tabella non valida: {table}")
+    return schema, name
 
 
 def _table(table: str) -> sql.Composed:
-    if not _IDENT.fullmatch(table):
-        raise ValueError(f"Tabella non valida: {table}")
-    parts = table.split(".")
-    return sql.SQL(".").join(sql.Identifier(part) for part in parts)
+    schema, name = _validated(table)
+    return sql.SQL(".").join(sql.Identifier(part) for part in (schema, name))
 
 
 def discover_sql(conn: psycopg.Connection, table: str) -> list[dict[str, str]]:
-    if not _IDENT.fullmatch(table):
-        raise ValueError(f"Tabella non valida: {table}")
-    schema, name = table.split(".") if "." in table else ("public", table)
+    schema, name = _validated(table)
     rows = conn.execute(
         """
         SELECT column_name, data_type

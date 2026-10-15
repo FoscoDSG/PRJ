@@ -18,8 +18,18 @@ function showFlash(message) {
   flash.textContent = message;
 }
 
+function esc(value) {
+  return String(value ?? "").replace(/[&<>"']/g, (character) => ({
+    "&": "&amp;",
+    "<": "&lt;",
+    ">": "&gt;",
+    '"': "&quot;",
+    "'": "&#39;",
+  }[character]));
+}
+
 function pill(text) {
-  return `<span class="pill ${text}">${text}</span>`;
+  return `<span class="pill ${esc(text)}">${esc(text)}</span>`;
 }
 
 async function boot() {
@@ -114,7 +124,7 @@ async function loadMappings() {
   const drift = document.querySelector("#drift");
   drift.innerHTML = data.drift
     .filter((item) => item.status === "open")
-    .map((item) => `<article class="card"><strong>Schema drift su ${item.source_name}</strong><pre>${JSON.stringify(item.diff, null, 2)}</pre><button type="button" data-drift="${item.id}">Segna visto</button></article>`)
+    .map((item) => `<article class="card"><strong>Schema drift su ${esc(item.source_name)}</strong><pre>${esc(JSON.stringify(item.diff, null, 2))}</pre><button type="button" data-drift="${esc(item.id)}">Segna visto</button></article>`)
     .join("");
   drift.querySelectorAll("button[data-drift]").forEach((button) => {
     button.addEventListener("click", async () => {
@@ -126,13 +136,13 @@ async function loadMappings() {
   body.innerHTML = data.mappings
     .map((item) => {
       const actions = item.status === "proposed"
-        ? `<button type="button" data-confirm="${item.id}">Conferma</button> <button type="button" class="ghost" data-reject="${item.id}">Rifiuta</button>`
+        ? `<button type="button" data-confirm="${esc(item.id)}">Conferma</button> <button type="button" class="ghost" data-reject="${esc(item.id)}">Rifiuta</button>`
         : "";
       return `<tr>
-        <td>${item.source_name}</td>
-        <td><code>${item.source_field}</code></td>
-        <td>${item.target_type}.${item.target_property}</td>
-        <td>${Number(item.confidence).toFixed(2)}</td>
+        <td>${esc(item.source_name)}</td>
+        <td><code>${esc(item.source_field)}</code></td>
+        <td>${esc(item.target_type)}.${esc(item.target_property)}</td>
+        <td>${esc(Number(item.confidence).toFixed(2))}</td>
         <td>${pill(item.status)}</td>
         <td>${actions}</td>
       </tr>`;
@@ -159,10 +169,10 @@ async function loadOrders() {
   list.hidden = false;
   list.innerHTML = data.orders
     .map((order) => `<article class="card">
-      <h3>Ordine ${order.business_key}</h3>
-      <div class="meta">${pill(order.status || "n/d")}<span class="pill">shortage ${order.shortage_qty ?? 0}</span></div>
-      <p>${order.customer_name || "Cliente non collegato"} · importo ${order.amount} · margine ${order.margin ?? "n/d"}</p>
-      <button type="button" data-order="${order.id}">Apri scheda</button>
+      <h3>Ordine ${esc(order.business_key)}</h3>
+      <div class="meta">${pill(order.status || "n/d")}<span class="pill">shortage ${esc(order.shortage_qty ?? 0)}</span></div>
+      <p>${esc(order.customer_name || "Cliente non collegato")} · importo ${esc(order.amount)} · margine ${esc(order.margin ?? "n/d")}</p>
+      <button type="button" data-order="${esc(order.id)}">Apri scheda</button>
     </article>`)
     .join("") || "<p>Nessun ordine. Carica la fixture e aggiorna il modello.</p>";
   list.querySelectorAll("button[data-order]").forEach((button) => {
@@ -176,24 +186,24 @@ async function openOrder(id) {
   const detail = document.querySelector("#order-detail");
   detail.hidden = false;
   const edges = order.edges
-    .map((edge) => `<li>${edge.direction === "in" ? "←" : "→"} ${edge.rel} ${edge.other_type} ${edge.other_key}</li>`)
+    .map((edge) => `<li>${edge.direction === "in" ? "←" : "→"} ${esc(edge.rel)} ${esc(edge.other_type)} ${esc(edge.other_key)}</li>`)
     .join("");
   const lines = order.lines
-    .map((line) => `<li>${line.product}: quantità ${line.quantity}, shortage ${line.shortage}. Stock disponibile ${line.stock ? line.stock.available : "n/d"} <span class="formula">(${line.stock ? line.stock.formula : order.stock_formula})</span></li>`)
+    .map((line) => `<li>${esc(line.product)}: quantità ${esc(line.quantity)}, shortage ${esc(line.shortage)}. Stock disponibile ${esc(line.stock ? line.stock.available : "n/d")} <span class="formula">(${esc(line.stock ? line.stock.formula : order.stock_formula)})</span></li>`)
     .join("");
   const customer = order.customer_id
-    ? `<button type="button" id="open-customer" data-customer="${order.customer_id}">Scheda cliente</button>`
+    ? `<button type="button" id="open-customer" data-customer="${esc(order.customer_id)}">Scheda cliente</button>`
     : "";
   detail.innerHTML = `
     <p><button type="button" id="back-orders" class="ghost">Torna agli ordini</button></p>
-    <h2>Ordine ${order.business_key}</h2>
-    <p class="formula">${order.stock_formula}</p>
+    <h2>Ordine ${esc(order.business_key)}</h2>
+    <p class="formula">${esc(order.stock_formula)}</p>
     <ul>${lines}</ul>
     <h3>Grafo</h3>
     <ul class="edges">${edges || "<li>Nessun arco</li>"}</ul>
     ${customer}
     <h3>Fatti</h3>
-    <pre>${JSON.stringify(order.facts, null, 2)}</pre>
+    <pre>${esc(JSON.stringify(order.facts, null, 2))}</pre>
   `;
   detail.querySelector("#back-orders").addEventListener("click", loadOrders);
   const customerButton = detail.querySelector("#open-customer");
@@ -207,14 +217,14 @@ async function openCustomer(id) {
   const detail = document.querySelector("#order-detail");
   document.querySelector("#order-list").hidden = true;
   detail.hidden = false;
-  const orders = customer.orders.map((order) => `<li><button type="button" data-order="${order.id}">Ordine ${order.business_key}</button></li>`).join("");
+  const orders = customer.orders.map((order) => `<li><button type="button" data-order="${esc(order.id)}">Ordine ${esc(order.business_key)}</button></li>`).join("");
   detail.innerHTML = `
     <p><button type="button" id="back-orders" class="ghost">Torna agli ordini</button></p>
-    <h2>${customer.company_name || customer.business_key}</h2>
+    <h2>${esc(customer.company_name || customer.business_key)}</h2>
     <ul>${orders}</ul>
     <h3>Grafo</h3>
-    <ul class="edges">${customer.edges.map((edge) => `<li>${edge.rel} ${edge.other_type} ${edge.other_key}</li>`).join("")}</ul>
-    <pre>${JSON.stringify(customer.facts, null, 2)}</pre>
+    <ul class="edges">${customer.edges.map((edge) => `<li>${esc(edge.rel)} ${esc(edge.other_type)} ${esc(edge.other_key)}</li>`).join("")}</ul>
+    <pre>${esc(JSON.stringify(customer.facts, null, 2))}</pre>
   `;
   detail.querySelector("#back-orders").addEventListener("click", loadOrders);
   detail.querySelectorAll("button[data-order]").forEach((button) => {
@@ -226,13 +236,13 @@ async function loadInbox() {
   const data = await api("/api/inbox");
   const root = document.querySelector("#inbox");
   root.innerHTML = data.recommendations.map((item) => `
-    <article class="card" data-id="${item.id}">
-      <div class="meta">${pill(item.status)}${item.requires_cfo ? '<span class="pill high">CFO</span>' : ""}<span class="pill">${item.risk}</span></div>
-      <h3>Ordine ${item.order_key}</h3>
-      <p>${item.problem}</p>
-      <p>Impatto atteso: ${item.expected_impact}. Confidence ${item.confidence}.</p>
-      ${item.dry_run ? `<h3>Payload ERP</h3><pre>${JSON.stringify(item.dry_run, null, 2)}</pre>` : ""}
-      <label>Quantità acquisto <input data-qty value="${item.actions.find((action) => action.type === "createPurchaseOrder")?.params.quantity || ""}" /></label>
+    <article class="card" data-id="${esc(item.id)}">
+      <div class="meta">${pill(item.status)}${item.requires_cfo ? '<span class="pill high">CFO</span>' : ""}<span class="pill">${esc(item.risk)}</span></div>
+      <h3>Ordine ${esc(item.order_key)}</h3>
+      <p>${esc(item.problem)}</p>
+      <p>Impatto atteso: ${esc(item.expected_impact)}. Confidence ${esc(item.confidence)}.</p>
+      ${item.dry_run ? `<h3>Payload ERP</h3><pre>${esc(JSON.stringify(item.dry_run, null, 2))}</pre>` : ""}
+      <label>Quantità acquisto <input data-qty value="${esc(item.actions.find((action) => action.type === "createPurchaseOrder")?.params.quantity || "")}" /></label>
       <div>
         <button type="button" data-act="approve">Approva</button>
         <button type="button" class="ghost" data-act="modify">Modifica</button>
@@ -276,7 +286,7 @@ async function act(id, action, card) {
 async function loadAudit() {
   const data = await api("/api/audit");
   document.querySelector("#audit").innerHTML = data.events
-    .map((event) => `<article class="card"><div class="meta">${pill(event.action)}<span class="pill">${event.actor || "system"}</span></div><pre>${JSON.stringify(event.payload, null, 2)}</pre></article>`)
+    .map((event) => `<article class="card"><div class="meta">${pill(event.action)}<span class="pill">${esc(event.actor || "system")}</span></div><pre>${esc(JSON.stringify(event.payload, null, 2))}</pre></article>`)
     .join("") || "<p>Nessun evento.</p>";
 }
 

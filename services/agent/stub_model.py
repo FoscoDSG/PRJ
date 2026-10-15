@@ -22,8 +22,8 @@ class StubOrderModel:
                 "risk": "low",
                 "confidence": 0.9,
             }
-        shortage = sum(line["shortage"] for line in short_lines)
         product = short_lines[0]["product"]
+        shortage = sum(line["shortage"] for line in short_lines if line["product"] == product)
         suppliers = [item for item in context["suppliers"] if item["product"] == product]
         chosen = min(suppliers, key=lambda item: item["delay_days"]) if suppliers else None
         actions: list[dict[str, Any]] = []

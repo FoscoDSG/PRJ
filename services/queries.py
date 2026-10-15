@@ -10,20 +10,28 @@ from services.text import stable
 
 MASK = "••••"
 STOCK_FORMULA = "disponibile = giacenza − impegnato"
+PRIVILEGED = {"admin", "approver"}
+SENSITIVE_KEYS = {"vat", "amount", "cost", "margin", "piva", "costo", "importo"}
 
 
-def list_mappings(conn: psycopg.Connection) -> list[dict]:
-    return list(
-        conn.execute(
-            """
-            SELECT id::text, source_name, source_field, target_type, target_property,
-                   confidence, status, samples, profile
-            FROM app.field_mappings
-            WHERE valid_to IS NULL
-            ORDER BY source_name, confidence DESC, source_field
-            """
-        ).fetchall()
-    )
+def list_mappings(conn: psycopg.Connection, role: str, ontology: Any) -> list[dict]:
+    rows = conn.execute(
+        """
+        SELECT id::text, source_name, source_field, target_type, target_property,
+               confidence, status, samples, profile
+        FROM app.field_mappings
+        WHERE valid_to IS NULL
+        ORDER BY source_name, confidence DESC, source_field
+        """
+    ).fetchall()
+    visible = []
+    for row in rows:
+        item = dict(row)
+        prop = ontology.prop(item["target_type"], item["target_property"]) if ontology else None
+        if role not in PRIVILEGED and prop is not None and prop.classification == "confidential":
+            item["samples"] = [MASK for _ in (item["samples"] or [])]
+        visible.append(item)
+    return visible
 
 
 def list_drift(conn: psycopg.Connection) -> list[dict]:
@@ -102,7 +110,7 @@ def get_customer(conn: psycopg.Connection, customer_id: str, role: str) -> dict 
     }
 
 
-def list_inbox(conn: psycopg.Connection) -> list[dict]:
+def list_inbox(conn: psycopg.Connection, role: str) -> list[dict]:
     rows = conn.execute(
         """
         SELECT r.id::text, r.order_entity_id::text, e.business_key AS order_key,
@@ -124,22 +132,63 @@ def list_inbox(conn: psycopg.Connection) -> list[dict]:
             (row["id"],),
         ).fetchone()
         item = dict(row)
-        item["dry_run"] = payloads["payloads"] if payloads else None
+        item["evidence"] = _mask_evidence(item["evidence"], role)
+        item["dry_run"] = _mask_tree(payloads["payloads"], role) if payloads else None
         inbox.append(item)
     return inbox
 
 
-def list_audit(conn: psycopg.Connection) -> list[dict]:
-    return list(
-        conn.execute(
-            """
-            SELECT id::text, at, actor, role, action, entity_ref, payload
-            FROM app.audit_log
-            ORDER BY at DESC
-            LIMIT 200
-            """
-        ).fetchall()
-    )
+def list_audit(conn: psycopg.Connection, role: str) -> list[dict]:
+    rows = conn.execute(
+        """
+        SELECT id::text, at, actor, role, action, entity_ref, payload
+        FROM app.audit_log
+        ORDER BY at DESC
+        LIMIT 200
+        """
+    ).fetchall()
+    visible = []
+    for row in rows:
+        item = dict(row)
+        item["payload"] = _mask_tree(item["payload"], role)
+        visible.append(item)
+    return visible
+
+
+def _mask_evidence(evidence: Any, role: str) -> Any:
+    if role in PRIVILEGED or not isinstance(evidence, list):
+        return evidence
+    masked = []
+    for item in evidence:
+        if not isinstance(item, dict):
+            masked.append(item)
+            continue
+        copy = dict(item)
+        if copy.get("classification") == "confidential" or copy.get("property") in SENSITIVE_KEYS:
+            copy["value"] = MASK
+            copy["masked"] = True
+        masked.append(copy)
+    return masked
+
+
+def _mask_tree(value: Any, role: str) -> Any:
+    if role in PRIVILEGED:
+        return value
+    if isinstance(value, list):
+        return [_mask_tree(item, role) for item in value]
+    if isinstance(value, dict):
+        classification = value.get("classification")
+        prop = value.get("property")
+        masked = {}
+        for key, item in value.items():
+            if key == "value" and (classification == "confidential" or prop in SENSITIVE_KEYS):
+                masked[key] = MASK
+            elif key in SENSITIVE_KEYS:
+                masked[key] = MASK
+            else:
+                masked[key] = _mask_tree(item, role)
+        return masked
+    return value
 
 
 def _order_summary(conn: psycopg.Connection, row: dict, role: str) -> dict:
