@@ -296,11 +296,11 @@ def test_app_role_cannot_rewrite_audit_or_drop(client: TestClient):
 
 
 def test_migrations_apply_twice():
-    from services.db import migrate
+    from services.migrate import migrate
 
     with connect() as conn:
         again = migrate(conn)
-        count = conn.execute("SELECT count(*) AS n FROM app.schema_migrations").fetchone()
+        count = conn.execute("SELECT count(*) AS n FROM public.schema_migrations").fetchone()
     assert again == []
     assert count["n"] >= 2
 

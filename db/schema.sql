@@ -1,4 +1,7 @@
--- Superseded by db/migrations. Apply changes with `ieol migrate`.
+-- Schema storico della V1. Non va più applicato a mano: usare `ieol migrate`.
+-- db/migrations/0001_initial.sql lo riproduce. Un database già creato con
+-- questo file viene adottato come baseline della 0001, senza ricreare le tabelle.
+-- Le modifiche successive sono in db/migrations/0002_provenance_audit_quality.sql.
 CREATE SCHEMA IF NOT EXISTS app;
 CREATE SCHEMA IF NOT EXISTS src;
 

@@ -1,4 +1,4 @@
-"""PostgreSQL connection, schema bootstrap, and demo users."""
+"""PostgreSQL connection, migrations, and users."""
 
 from __future__ import annotations
 
@@ -7,15 +7,13 @@ import hmac
 import os
 import secrets
 import uuid
-from pathlib import Path
 
 import psycopg
 from argon2 import PasswordHasher, Type
 from argon2.exceptions import VerificationError
 from psycopg.rows import dict_row
 
-ROOT = Path(__file__).resolve().parents[1]
-MIGRATIONS = ROOT / "db" / "migrations"
+from services.migrate import require_migrated
 
 ROLES = ("admin", "mapper", "operator", "approver")
 SOURCE_RANK = {"ai": 1, "manual": 2, "crm": 3, "erp": 4, "calculated": 5}
@@ -82,42 +80,6 @@ def connect(url: str | None = None) -> psycopg.Connection:
     return psycopg.connect(url or database_url(), row_factory=dict_row, autocommit=False)
 
 
-def migrate(conn: psycopg.Connection) -> list[str]:
-    conn.execute("CREATE SCHEMA IF NOT EXISTS app")
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS app.schema_migrations (
-          version text PRIMARY KEY,
-          applied_at timestamptz NOT NULL DEFAULT now()
-        )
-        """
-    )
-    applied = []
-    for path in sorted(MIGRATIONS.glob("*.sql")):
-        version = path.stem
-        done = conn.execute(
-            "SELECT 1 FROM app.schema_migrations WHERE version = %s",
-            (version,),
-        ).fetchone()
-        if done:
-            continue
-        conn.execute(path.read_text(encoding="utf-8"))
-        conn.execute("INSERT INTO app.schema_migrations (version) VALUES (%s)", (version,))
-        applied.append(version)
-    conn.commit()
-    return applied
-
-
-def apply_schema(conn: psycopg.Connection, *, seed_demo: bool = False) -> None:
-    conn.execute("DROP SCHEMA IF EXISTS app CASCADE")
-    conn.execute("DROP SCHEMA IF EXISTS src CASCADE")
-    conn.commit()
-    migrate(conn)
-    if seed_demo:
-        seed_users(conn)
-        conn.commit()
-
-
 def seed_users(conn: psycopg.Connection) -> None:
     for role in ROLES:
         password = _seed_password(role)
@@ -146,7 +108,7 @@ def seed_users(conn: psycopg.Connection) -> None:
 
 
 def ensure_ready(conn: psycopg.Connection, packages: list) -> None:
-    migrate(conn)
+    require_migrated(conn)
     seed_users(conn)
     for package in packages:
         found = conn.execute(

@@ -17,11 +17,16 @@ for _role in ("admin", "mapper", "operator", "approver"):
 
 import pytest
 
-from services.db import apply_schema, connect
+from services.db import connect, seed_users
+from services.migrate import migrate
+from tests.helpers import wipe_test_database
 
 
 @pytest.fixture(autouse=True)
 def fresh_database():
     with connect() as conn:
-        apply_schema(conn, seed_demo=True)
+        wipe_test_database(conn)
+        migrate(conn)
+        seed_users(conn)
+        conn.commit()
     yield

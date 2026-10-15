@@ -1,11 +1,27 @@
+-- Provenance, append-only audit against TRUNCATE, and the V1 quality tables.
+-- Safe to re-run: columns and tables are created only when missing, and
+-- existing fact and audit rows are kept. A database that already has these
+-- objects is baselined and this file is not executed.
+
 ALTER TABLE app.facts ADD COLUMN IF NOT EXISTS source_class text NOT NULL DEFAULT 'manual';
 UPDATE app.facts SET confidence = 1 WHERE confidence IS NULL;
 ALTER TABLE app.facts ALTER COLUMN confidence SET NOT NULL;
 
-DROP TRIGGER IF EXISTS audit_no_truncate ON app.audit_log;
-CREATE TRIGGER audit_no_truncate
-BEFORE TRUNCATE ON app.audit_log
-FOR EACH STATEMENT EXECUTE FUNCTION app.prevent_audit_mutation();
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1
+    FROM pg_trigger
+    WHERE tgname = 'audit_no_truncate'
+      AND tgrelid = 'app.audit_log'::regclass
+      AND NOT tgisinternal
+  ) THEN
+    CREATE TRIGGER audit_no_truncate
+    BEFORE TRUNCATE ON app.audit_log
+    FOR EACH STATEMENT EXECUTE FUNCTION app.prevent_audit_mutation();
+  END IF;
+END;
+$$;
 
 CREATE TABLE IF NOT EXISTS app.identity_reviews (
   id uuid PRIMARY KEY,

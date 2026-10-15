@@ -1,3 +1,7 @@
+-- Schema iniziale, equivalente a db/schema.sql.
+-- Rieseguire questo file non cancella righe: gli oggetti si creano solo se mancano.
+-- Un database già creato con db/schema.sql non passa da qui: il runner lo marca come baseline.
+
 CREATE SCHEMA IF NOT EXISTS app;
 CREATE SCHEMA IF NOT EXISTS src;
 
@@ -28,10 +32,21 @@ BEGIN
 END;
 $$;
 
-DROP TRIGGER IF EXISTS audit_no_update ON app.audit_log;
-CREATE TRIGGER audit_no_update
-BEFORE UPDATE OR DELETE ON app.audit_log
-FOR EACH ROW EXECUTE FUNCTION app.prevent_audit_mutation();
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1
+    FROM pg_trigger
+    WHERE tgname = 'audit_no_update'
+      AND tgrelid = 'app.audit_log'::regclass
+      AND NOT tgisinternal
+  ) THEN
+    CREATE TRIGGER audit_no_update
+    BEFORE UPDATE OR DELETE ON app.audit_log
+    FOR EACH ROW EXECUTE FUNCTION app.prevent_audit_mutation();
+  END IF;
+END;
+$$;
 
 CREATE TABLE IF NOT EXISTS app.ontology_versions (
   id uuid PRIMARY KEY,
