@@ -343,7 +343,7 @@ def adjust_on_hand(conn: psycopg.Connection, model: Ontology, product_key: str, 
         source="adjustment",
         confidence=None,
         source_class="manual",
-        confidence_method="unknown",
+        confidence_method="human",
     )
     materialize(conn, model)
     return expire_stale(conn)

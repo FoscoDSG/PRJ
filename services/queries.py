@@ -276,7 +276,7 @@ def _facts(conn: psycopg.Connection, entity_id: str, role: str) -> list[dict]:
     rows = conn.execute(
         """
         SELECT id::text, property, value, classification, origin, source,
-               confidence, source_class, confidence_method, valid_from
+               confidence, source_class, confidence_method, confidence_rule, valid_from
         FROM app.facts
         WHERE entity_id = %s AND valid_to IS NULL
         ORDER BY property

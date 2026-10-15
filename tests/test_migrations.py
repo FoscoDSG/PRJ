@@ -411,7 +411,7 @@ def test_upgraded_schema_is_baselined_without_touching_audit():
         fact = _rows(
             conn,
             """
-            SELECT confidence::text AS confidence, source_class, confidence_method
+            SELECT confidence::text AS confidence, source_class, confidence_method, confidence_rule
             FROM app.facts
             WHERE id = %s
             """,
@@ -432,7 +432,7 @@ def test_upgraded_schema_is_baselined_without_touching_audit():
         {"version": "0002", "name": "provenance_audit_quality", "baselined": True},
     ]
     assert again == []
-    assert fact == [("0.42", "erp", "unknown")]
+    assert fact == [("0.42", "erp", "unknown", None)]
     assert prices == []
     assert registry == [
         ("0001", "initial", True),
@@ -449,6 +449,7 @@ def test_provenance_file_does_not_backfill_or_seed_the_price_list():
     assert "DEFAULT 'manual'" not in code
     assert "DEFAULT 'unknown'" in code
     assert "confidence_method" in code
+    assert "confidence_rule text" in code
     assert "'unknown'" in code
 
 
@@ -475,7 +476,7 @@ def test_legacy_facts_stay_unknown_without_a_filled_confidence():
         applied = migrate(conn)
         row = conn.execute(
             """
-            SELECT confidence::text AS confidence, source_class, confidence_method
+            SELECT confidence::text AS confidence, source_class, confidence_method, confidence_rule
             FROM app.facts
             WHERE id = %s
             """,
@@ -493,6 +494,7 @@ def test_legacy_facts_stay_unknown_without_a_filled_confidence():
     assert row["confidence"] is None
     assert row["source_class"] == "unknown"
     assert row["confidence_method"] == "unknown"
+    assert row["confidence_rule"] is None
     assert prices == 0
     assert nullable == "YES"
 

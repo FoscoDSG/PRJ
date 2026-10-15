@@ -367,7 +367,7 @@ def _provenance_complete(conn: psycopg.Connection) -> bool:
         if not columns.issubset(found.get(relation, set())):
             return False
     facts = found.get("app.facts", set())
-    if not {"source_class", "confidence_method"}.issubset(facts):
+    if not {"source_class", "confidence_method", "confidence_rule"}.issubset(facts):
         return False
     columns = conn.execute(
         """
@@ -375,7 +375,7 @@ def _provenance_complete(conn: psycopg.Connection) -> bool:
         FROM information_schema.columns
         WHERE table_schema = 'app'
           AND table_name = 'facts'
-          AND column_name IN ('source_class', 'confidence', 'confidence_method')
+          AND column_name IN ('source_class', 'confidence', 'confidence_method', 'confidence_rule')
         """
     ).fetchall()
     by_name = {row["column_name"]: row for row in columns}
@@ -383,6 +383,7 @@ def _provenance_complete(conn: psycopg.Connection) -> bool:
         "source_class": ("NO", "unknown"),
         "confidence": ("YES", None),
         "confidence_method": ("NO", "unknown"),
+        "confidence_rule": ("YES", None),
     }
     for name, (nullable, default) in expected.items():
         column = by_name.get(name)

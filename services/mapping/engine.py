@@ -12,6 +12,8 @@ from services.audit import record
 from services.text import digest
 
 THRESHOLD = 0.75
+HEADER_SIMILARITY_RULE = "mapping.header_similarity@v1"
+UNKNOWN_HEADER_RULE = "mapping.unknown_header@v1"
 
 # profile -> normalized column -> (target type, property, confidence)
 PROFILES: dict[str, dict[str, tuple[str, str, float]]] = {
@@ -141,7 +143,6 @@ def propose_mappings(
                 """,
                 (source_name, removed),
             )
-    known = PROFILES.get(profile, {})
     created = []
     for column in columns:
         existing = conn.execute(
@@ -153,10 +154,7 @@ def propose_mappings(
         ).fetchone()
         if existing:
             continue
-        if column in known:
-            target_type, target_property, confidence = known[column]
-        else:
-            target_type, target_property, confidence = ("Document", "title", 0.42)
+        target_type, target_property, confidence, _rule = assigned_mapping(profile, column)
         mapping_id = str(uuid.uuid4())
         conn.execute(
             """
@@ -197,3 +195,16 @@ def propose_mappings(
             payload={"kind": "schema_drift", "diff": drift["diff"]},
         )
     return {"profile": profile, "mappings": created, "drift": drift, "column_hash": column_hash}
+
+
+def assigned_mapping(profile: str, column: str) -> tuple[str, str, float, str]:
+    """Target and rule id for one source column. The rule id includes its version."""
+    known = PROFILES.get(profile, {})
+    if column in known:
+        target_type, target_property, confidence = known[column]
+        return target_type, target_property, confidence, HEADER_SIMILARITY_RULE
+    return "Document", "title", 0.42, UNKNOWN_HEADER_RULE
+
+
+def rule_id_for(profile: str, column: str) -> str:
+    return assigned_mapping(profile, column)[3]

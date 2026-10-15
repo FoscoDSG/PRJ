@@ -211,7 +211,7 @@ def test_evidence_expiry_and_audit_is_append_only(client: TestClient):
     with connect() as conn:
         adjusted = conn.execute(
             """
-            SELECT f.source_class, f.confidence IS NULL AS missing, f.confidence_method
+            SELECT f.source_class, f.confidence IS NULL AS missing, f.confidence_method, f.confidence_rule
             FROM app.facts f
             JOIN app.entities e ON e.id = f.entity_id
             WHERE f.property = 'on_hand' AND f.valid_to IS NULL
@@ -220,7 +220,8 @@ def test_evidence_expiry_and_audit_is_append_only(client: TestClient):
         ).fetchone()
     assert adjusted["source_class"] == "manual"
     assert adjusted["missing"] is True
-    assert adjusted["confidence_method"] == "unknown"
+    assert adjusted["confidence_method"] == "human"
+    assert adjusted["confidence_rule"] is None
     inbox = client.get("/api/inbox").json()["recommendations"]
     assert inbox[0]["status"] == "expired"
     login(client, "approver")
@@ -326,12 +327,12 @@ def test_facts_keep_optional_confidence_and_unknown_provenance(client: TestClien
     with connect() as conn:
         rows = conn.execute(
             """
-            SELECT source_class, confidence_method,
+            SELECT source_class, confidence_method, confidence_rule,
                    confidence IS NULL AS missing,
                    count(*) AS n
             FROM app.facts
             WHERE valid_to IS NULL
-            GROUP BY 1, 2, 3
+            GROUP BY 1, 2, 3, 4
             """
         ).fetchall()
         prices = {
@@ -354,10 +355,18 @@ def test_facts_keep_optional_confidence_and_unknown_provenance(client: TestClien
     status = next(fact for fact in detail["facts"] if fact["property"] == "status")
     assert shortage["confidence"] is None
     assert shortage["confidence_method"] == "unknown"
+    assert shortage["confidence_rule"] is None
     assert shortage["source_class"] == "calculated"
     assert status["confidence_method"] == "rule"
+    assert status["confidence_rule"] == "mapping.header_similarity@v1"
     assert status["source_class"] == "unknown"
     assert status["confidence"] not in (None, 1)
+    assert all(
+        row["confidence_rule"] == "mapping.header_similarity@v1"
+        for row in rows
+        if row["confidence_method"] == "rule"
+    )
+    assert all(row["confidence_rule"] is None for row in rows if row["confidence_method"] != "rule")
 
     rendered = subprocess.run(
         ["node", "-e", _FACT_LABEL_SCRIPT],
@@ -372,65 +381,85 @@ def test_facts_keep_optional_confidence_and_unknown_provenance(client: TestClien
 
 _FACT_LABEL_SCRIPT = r"""
 const { orderDetail, customerDetail } = require("./apps/web/escape.js");
+function linesOf(html, property) {
+  const item = html.split("<li>").find((part) => part.includes(`<code>${property}</code>`));
+  if (!item) return [];
+  return [...item.matchAll(/<p>([^<]*)<\/p>/g)].map((match) => match[1]);
+}
 const unknown = orderDetail({
   business_key: "1024",
   stock_formula: "disponibile",
-  facts: [{ property: "status", value: "open", source_class: "unknown", confidence: null }],
+  facts: [{ property: "status", value: "open", source_class: "unknown", confidence: null, confidence_method: "unknown" }],
   lines: [],
   edges: [],
 });
-if (!unknown.includes("provenienza sconosciuta") || !unknown.includes("confidenza non disponibile")) {
+const unknownLines = linesOf(unknown, "status");
+if (unknownLines[0] !== "provenienza sconosciuta" || unknownLines[1] !== "confidenza non disponibile") {
   console.error(unknown);
   process.exit(2);
 }
-if (unknown.includes("100%") || unknown.includes("manuale")) {
+if (unknown.includes("%") || unknown.includes("manuale")) {
   console.error(unknown);
   process.exit(3);
 }
 const calculated = orderDetail({
   business_key: "1024",
   stock_formula: "disponibile",
-  facts: [{ property: "shortage_qty", value: 80, source_class: "calculated", confidence: null }],
+  facts: [{ property: "shortage_qty", value: 80, source_class: "calculated", confidence: null, confidence_method: "unknown" }],
   lines: [],
   edges: [],
 });
-if (!calculated.includes("calcolata") || !calculated.includes("confidenza non disponibile")) {
+const calculatedLines = linesOf(calculated, "shortage_qty");
+if (calculatedLines[0] !== "calcolata" || calculatedLines[1] !== "confidenza non disponibile") {
   console.error(calculated);
   process.exit(4);
 }
-if (calculated.includes("100%") || calculated.includes("manuale") || calculated.includes("provenienza sconosciuta")) {
+if (calculated.includes("%") || calculated.includes("manuale") || calculated.includes("provenienza sconosciuta")) {
   console.error(calculated);
   process.exit(5);
 }
 const scored = orderDetail({
   business_key: "1024",
   stock_formula: "disponibile",
-  facts: [{ property: "status", value: "open", source_class: "unknown", confidence: 0.86 }],
+  facts: [{
+    property: "status",
+    value: "open",
+    source_class: "unknown",
+    confidence: 0.93,
+    confidence_method: "rule",
+    confidence_rule: "mapping.header_similarity@v1",
+  }],
   lines: [],
   edges: [],
 });
-if (!scored.includes("provenienza sconosciuta") || !scored.includes("86%")) {
+const scoredLines = linesOf(scored, "status");
+if (scoredLines[0] !== "provenienza sconosciuta") {
   console.error(scored);
   process.exit(6);
 }
-if (scored.includes("confidenza non disponibile") || scored.includes("100%") || scored.includes("manuale")) {
-  console.error(scored);
+if (scoredLines[1] !== "0,93 · punteggio di regola, non calibrato · mapping.header_similarity@v1") {
+  console.error(scoredLines[1]);
   process.exit(7);
+}
+if (scored.includes("%") || scored.includes("manuale") || scored.includes("confidenza non disponibile")) {
+  console.error(scored);
+  process.exit(8);
 }
 const known = customerDetail({
   company_name: "ACME",
   business_key: "C1",
   orders: [],
   edges: [],
-  facts: [{ property: "note", value: "bozza", source_class: "manual", confidence: 1 }],
+  facts: [{ property: "note", value: "bozza", source_class: "manual", confidence: null, confidence_method: "human" }],
 });
-if (!known.includes("manuale") || !known.includes("100%")) {
-  console.error(known);
-  process.exit(8);
-}
-if (known.includes("provenienza sconosciuta") || known.includes("confidenza non disponibile")) {
+const knownLines = linesOf(known, "note");
+if (knownLines[0] !== "manuale" || knownLines[1] !== "rettifica manuale") {
   console.error(known);
   process.exit(9);
+}
+if (known.includes("%") || known.includes("provenienza sconosciuta") || known.includes("confidenza non disponibile")) {
+  console.error(known);
+  process.exit(10);
 }
 process.stdout.write("ok\n");
 """

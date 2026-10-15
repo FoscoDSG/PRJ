@@ -2,13 +2,17 @@
 -- Safe to re-run: columns and tables are created only when missing, and
 -- existing fact and audit rows are kept. Confidence stays nullable: nothing
 -- backfills it to 1, and nothing marks an existing fact as manual.
--- source_class and confidence_method default to unknown. A database that
--- already has these objects is baselined and this file is not executed.
+-- source_class and confidence_method default to unknown.
+-- confidence_rule is nullable: it records the rule id and version, for
+-- example mapping.header_similarity@v1, and is left null when no rule scored
+-- the fact. A database that already has these objects is baselined and this
+-- file is not executed.
 
 ALTER TABLE app.facts ADD COLUMN IF NOT EXISTS source_class text NOT NULL DEFAULT 'unknown';
 ALTER TABLE app.facts ALTER COLUMN source_class SET DEFAULT 'unknown';
 ALTER TABLE app.facts ADD COLUMN IF NOT EXISTS confidence_method text NOT NULL DEFAULT 'unknown';
 ALTER TABLE app.facts ALTER COLUMN confidence_method SET DEFAULT 'unknown';
+ALTER TABLE app.facts ADD COLUMN IF NOT EXISTS confidence_rule text;
 
 DO $$
 BEGIN

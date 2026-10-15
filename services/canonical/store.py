@@ -92,12 +92,15 @@ def _materialize_source(conn: psycopg.Connection, ontology: Ontology, source_nam
         (batch["id"],),
     ).fetchall()
     profile = mappings[0]["profile"] if mappings else "unknown"
+    from services.mapping.engine import rule_id_for
+
     entities = 0
     facts = 0
     for row in rows:
         data = row["data"]
         values: dict[str, Any] = {}
         confidence: dict[str, float] = {}
+        confidence_rules: dict[str, str] = {}
         target_type = None
         for mapping in mappings:
             raw = data.get(mapping["source_field"])
@@ -112,17 +115,29 @@ def _materialize_source(conn: psycopg.Connection, ontology: Ontology, source_nam
                 continue
             values[mapping["target_property"]] = cast
             confidence[mapping["target_property"]] = float(mapping["confidence"])
+            confidence_rules[mapping["target_property"]] = rule_id_for(
+                mapping["profile"], mapping["source_field"]
+            )
         if not values:
             continue
         if profile == "unknown":
             title = values.get("title")
             if title:
                 facts += _write_entity(
-                    conn, ontology, "Document", str(title), {"title": title}, source_name, confidence
+                    conn,
+                    ontology,
+                    "Document",
+                    str(title),
+                    {"title": title},
+                    source_name,
+                    confidence,
+                    confidence_rules,
                 )
                 entities += 1
             continue
-        written = _write_profile(conn, ontology, profile, values, source_name, confidence)
+        written = _write_profile(
+            conn, ontology, profile, values, source_name, confidence, confidence_rules
+        )
         entities += written[0]
         facts += written[1]
     return {"entities": entities, "facts": facts}
@@ -135,6 +150,7 @@ def _write_profile(
     values: dict[str, Any],
     source: str,
     confidence: dict[str, float],
+    confidence_rules: dict[str, str] | None = None,
 ) -> tuple[int, int]:
     if profile == "customer":
         source_key = _text(values.get("source_key"))
@@ -151,14 +167,18 @@ def _write_profile(
             payload["source_key"] = source_key
         if "source_key" in payload and _has_fact(conn, entity_id, "source_key"):
             payload.pop("source_key")
-        return 1, _write_facts(conn, ontology, entity_id, "Customer", payload, source, confidence)
+        return 1, _write_facts(
+            conn, ontology, entity_id, "Customer", payload, source, confidence, confidence_rules=confidence_rules
+        )
     if profile == "product":
         source_key = _text(values.get("source_key"))
         if not source_key:
             return 0, 0
         entity_id = _ensure_entity(conn, "Product", source_key)
         _alias(conn, "Product", source_key, entity_id)
-        return 1, _write_facts(conn, ontology, entity_id, "Product", values, source, confidence)
+        return 1, _write_facts(
+            conn, ontology, entity_id, "Product", values, source, confidence, confidence_rules=confidence_rules
+        )
     if profile == "supplier":
         source_key = _text(values.get("source_key"))
         if not source_key:
@@ -168,14 +188,18 @@ def _write_profile(
         product_key = _text(values.get("product_source_key"))
         if product_key:
             _ensure_shell(conn, ontology, "Product", product_key, source)
-        return 1, _write_facts(conn, ontology, entity_id, "Supplier", values, source, confidence)
+        return 1, _write_facts(
+            conn, ontology, entity_id, "Supplier", values, source, confidence, confidence_rules=confidence_rules
+        )
     if profile == "order":
         source_key = _text(values.get("source_key"))
         if not source_key:
             return 0, 0
         entity_id = _ensure_entity(conn, "Order", source_key)
         _alias(conn, "Order", source_key, entity_id)
-        return 1, _write_facts(conn, ontology, entity_id, "Order", values, source, confidence)
+        return 1, _write_facts(
+            conn, ontology, entity_id, "Order", values, source, confidence, confidence_rules=confidence_rules
+        )
     if profile == "order_line":
         order_key = _text(values.get("order_source_key"))
         product_key = _text(values.get("product_source_key"))
@@ -187,7 +211,9 @@ def _write_profile(
         _alias(conn, "OrderLine", business_key, entity_id)
         _ensure_shell(conn, ontology, "Order", order_key, source)
         _ensure_shell(conn, ontology, "Product", product_key, source)
-        return 1, _write_facts(conn, ontology, entity_id, "OrderLine", values, source, confidence)
+        return 1, _write_facts(
+            conn, ontology, entity_id, "OrderLine", values, source, confidence, confidence_rules=confidence_rules
+        )
     if profile == "stock":
         product_key = _text(values.get("product_source_key"))
         warehouse_key = _text(values.get("warehouse_source_key")) or "DEFAULT"
@@ -210,7 +236,16 @@ def _write_profile(
             source,
             {},
         )
-        return 1, _write_facts(conn, ontology, entity_id, "StockPosition", values, source, confidence)
+        return 1, _write_facts(
+            conn,
+            ontology,
+            entity_id,
+            "StockPosition",
+            values,
+            source,
+            confidence,
+            confidence_rules=confidence_rules,
+        )
     return 0, 0
 
 
@@ -302,10 +337,13 @@ def _write_entity(
     values: dict[str, Any],
     source: str,
     confidence: dict[str, float],
+    confidence_rules: dict[str, str] | None = None,
 ) -> int:
     entity_id = _ensure_entity(conn, type_name, business_key)
     _alias(conn, type_name, business_key, entity_id)
-    return _write_facts(conn, ontology, entity_id, type_name, values, source, confidence)
+    return _write_facts(
+        conn, ontology, entity_id, type_name, values, source, confidence, confidence_rules=confidence_rules
+    )
 
 
 def _ensure_shell(
@@ -367,6 +405,7 @@ def _write_facts(
     source: str,
     confidence: dict[str, float],
     origin: str | None = None,
+    confidence_rules: dict[str, str] | None = None,
 ) -> int:
     written = 0
     for name, value in values.items():
@@ -378,9 +417,11 @@ def _write_facts(
         if raw_confidence is None:
             fact_confidence = None
             method = "unknown"
+            rule = None
         else:
             fact_confidence = float(raw_confidence)
             method = "rule"
+            rule = (confidence_rules or {}).get(name)
         if _put_fact(
             conn,
             entity_id=entity_id,
@@ -392,6 +433,7 @@ def _write_facts(
             confidence=fact_confidence,
             source_class=_source_class(source, fact_origin),
             confidence_method=method,
+            confidence_rule=rule,
         ):
             written += 1
     return written
@@ -409,18 +451,19 @@ def _put_fact(
     confidence: float | None,
     source_class: str | None = None,
     confidence_method: str = "unknown",
+    confidence_rule: str | None = None,
 ) -> bool:
     if origin == "inferred" and source_class not in (None, "ai"):
         raise ValueError("origin inferred è riservata a un modello")
     fact_class = source_class or _source_class(source or "", origin)
     if origin == "inferred":
         fact_class = "ai"
-    if confidence is None:
-        method = "unknown"
-    elif confidence_method not in ("rule", "human", "unknown"):
+    if confidence_method not in ("rule", "human", "unknown"):
         raise ValueError(f"confidence_method non ammesso: {confidence_method}")
-    else:
-        method = confidence_method
+    method = confidence_method
+    rule = confidence_rule if method == "rule" and confidence is not None else None
+    if method == "rule" and confidence is None:
+        method = "unknown"
     current = conn.execute(
         """
         SELECT id, value, source_class FROM app.facts
@@ -443,9 +486,9 @@ def _put_fact(
         """
         INSERT INTO app.facts (
           id, entity_id, property, value, classification, origin, source,
-          confidence, source_class, confidence_method
+          confidence, source_class, confidence_method, confidence_rule
         )
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         """,
         (
             str(uuid.uuid4()),
@@ -458,6 +501,7 @@ def _put_fact(
             confidence,
             fact_class,
             method,
+            rule,
         ),
     )
     return True

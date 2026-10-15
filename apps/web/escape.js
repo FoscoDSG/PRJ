@@ -66,15 +66,26 @@
     return PROVENANCE_LABELS[sourceClass] || "provenienza sconosciuta";
   }
 
-  function confidenceLabel(confidence) {
-    if (confidence == null || confidence === "") {
-      return "confidenza non disponibile";
-    }
+  function decimalScore(confidence) {
     const number = Number(confidence);
-    if (!Number.isFinite(number)) {
-      return "confidenza non disponibile";
+    if (!Number.isFinite(number)) return null;
+    return number.toFixed(2).replace(".", ",");
+  }
+
+  function confidenceLabel(fact) {
+    const method = fact && typeof fact === "object" ? fact.confidence_method : null;
+    if (method === "human") {
+      return "rettifica manuale";
     }
-    return `${Math.round(number * 100)}%`;
+    const confidence = fact && typeof fact === "object" ? fact.confidence : fact;
+    if (method === "rule" && confidence != null && confidence !== "") {
+      const score = decimalScore(confidence);
+      if (score != null) {
+        const rule = fact.confidence_rule ? ` · ${fact.confidence_rule}` : "";
+        return `${score} · punteggio di regola, non calibrato${rule}`;
+      }
+    }
+    return "confidenza non disponibile";
   }
 
   function mappingConfidence(confidence) {
@@ -97,7 +108,7 @@
 
   function factList(facts) {
     const items = (facts || []).map((fact) => {
-      return `<li><code>${escapeHtml(fact.property)}</code>: ${escapeHtml(factValue(fact.value))} · ${escapeHtml(provenanceLabel(fact.source_class))} · ${escapeHtml(confidenceLabel(fact.confidence))}</li>`;
+      return `<li><code>${escapeHtml(fact.property)}</code>: ${escapeHtml(factValue(fact.value))}<p>${escapeHtml(provenanceLabel(fact.source_class))}</p><p>${escapeHtml(confidenceLabel(fact))}</p></li>`;
     });
     return `<ul class="edges">${items.join("") || "<li>Nessun fatto</li>"}</ul>`;
   }
