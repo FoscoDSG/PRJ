@@ -39,6 +39,27 @@ from services.workflow.engine import expire_stale, modify, reject
 
 WEB = Path(__file__).resolve().parents[1] / "web"
 MAX_UPLOAD_BYTES = 5 * 1024 * 1024
+_DEV_SESSION_SECRET = "ieol-dev-only-not-for-production"
+
+
+def _configured_secret() -> str | None:
+    for name in ("IEOL_SESSION_SECRET", "SESSION_SECRET"):
+        value = os.environ.get(name)
+        if value is not None and value.strip() != "":
+            return value
+    return None
+
+
+def session_secret() -> str:
+    secret = _configured_secret()
+    if secret is not None:
+        return secret
+    if os.environ.get("IEOL_DEV") == "1":
+        return _DEV_SESSION_SECRET
+    raise RuntimeError(
+        "IEOL_SESSION_SECRET assente: avvio rifiutato. "
+        "Imposta IEOL_SESSION_SECRET o SESSION_SECRET, oppure IEOL_DEV=1 solo in sviluppo locale."
+    )
 
 
 @asynccontextmanager
@@ -50,14 +71,10 @@ async def lifespan(app: FastAPI):
     yield
 
 
-_SESSION_SECRET = os.environ.get("IEOL_SESSION_SECRET")
-if not _SESSION_SECRET:
-    raise RuntimeError("IEOL_SESSION_SECRET is required")
-
 app = FastAPI(title="Intelligent Enterprise Operating Layer", lifespan=lifespan)
 app.add_middleware(
     SessionMiddleware,
-    secret_key=_SESSION_SECRET,
+    secret_key=session_secret(),
     same_site="lax",
     https_only=os.environ.get("IEOL_INSECURE_COOKIES") != "1",
 )

@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 
 import pytest
@@ -19,7 +20,8 @@ def client():
 
 
 def login(client: TestClient, role: str) -> None:
-    response = client.post("/api/login", json={"username": role, "password": role})
+    password = os.environ[f"IEOL_SEED_{role.upper()}_PASSWORD"]
+    response = client.post("/api/login", json={"username": role, "password": password})
     assert response.status_code == 200, response.text
 
 

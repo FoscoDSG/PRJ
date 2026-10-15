@@ -20,10 +20,10 @@
 
   <section id="login" class="panel login">
     <h2>Accesso</h2>
-    <p class="lede">Quattro ruoli di prova. La password coincide con il nome del ruolo.</p>
+    <p class="lede">Accedi con utente e password assegnati.</p>
     <form id="login-form">
-      <label>Utente <input name="username" autocomplete="username" required value="mapper" /></label>
-      <label>Password <input name="password" type="password" autocomplete="current-password" required value="mapper" /></label>
+      <label>Utente <input name="username" autocomplete="username" required /></label>
+      <label>Password <input name="password" type="password" autocomplete="current-password" required /></label>
       <button type="submit">Entra</button>
     </form>
     <ul class="accounts">
@@ -87,6 +87,7 @@
       <div id="audit" class="stack"></div>
     </section>
   </div>
+  <script src="/assets/escape.js"></script>
   <script src="/assets/app.js"></script>
 </body>
 </html>
