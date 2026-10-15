@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import tempfile
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -36,6 +37,19 @@ from services.text import jsonable
 from services.workflow.engine import expire_stale, modify, reject
 
 WEB = Path(__file__).resolve().parents[1] / "web"
+_DEV_SESSION_SECRET = "ieol-dev-only-not-for-production"
+
+
+def session_secret() -> str:
+    secret = os.environ.get("SESSION_SECRET")
+    if secret is not None and secret.strip() != "":
+        return secret
+    if os.environ.get("IEOL_DEV") == "1":
+        return _DEV_SESSION_SECRET
+    raise RuntimeError(
+        "SESSION_SECRET assente: avvio rifiutato. "
+        "Imposta SESSION_SECRET, oppure IEOL_DEV=1 solo in sviluppo locale."
+    )
 
 
 @asynccontextmanager
@@ -48,7 +62,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Intelligent Enterprise Operating Layer", lifespan=lifespan)
-app.add_middleware(SessionMiddleware, secret_key="ieol-dev-secret", same_site="lax")
+app.add_middleware(SessionMiddleware, secret_key=session_secret(), same_site="lax")
 app.mount("/assets", StaticFiles(directory=WEB), name="assets")
 
 

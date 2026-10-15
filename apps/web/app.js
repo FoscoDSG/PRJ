@@ -13,13 +13,19 @@ async function api(path, options = {}) {
   return data;
 }
 
+const {
+  driftCard,
+  mappingRow,
+  orderCard,
+  orderDetail,
+  customerDetail,
+  inboxCard,
+  auditCard,
+} = globalThis.ieolEscape;
+
 function showFlash(message) {
   flash.hidden = false;
   flash.textContent = message;
-}
-
-function pill(text) {
-  return `<span class="pill ${text}">${text}</span>`;
 }
 
 async function boot() {
@@ -114,7 +120,7 @@ async function loadMappings() {
   const drift = document.querySelector("#drift");
   drift.innerHTML = data.drift
     .filter((item) => item.status === "open")
-    .map((item) => `<article class="card"><strong>Schema drift su ${item.source_name}</strong><pre>${JSON.stringify(item.diff, null, 2)}</pre><button type="button" data-drift="${item.id}">Segna visto</button></article>`)
+    .map(driftCard)
     .join("");
   drift.querySelectorAll("button[data-drift]").forEach((button) => {
     button.addEventListener("click", async () => {
@@ -123,21 +129,7 @@ async function loadMappings() {
     });
   });
   const body = document.querySelector("#mappings");
-  body.innerHTML = data.mappings
-    .map((item) => {
-      const actions = item.status === "proposed"
-        ? `<button type="button" data-confirm="${item.id}">Conferma</button> <button type="button" class="ghost" data-reject="${item.id}">Rifiuta</button>`
-        : "";
-      return `<tr>
-        <td>${item.source_name}</td>
-        <td><code>${item.source_field}</code></td>
-        <td>${item.target_type}.${item.target_property}</td>
-        <td>${Number(item.confidence).toFixed(2)}</td>
-        <td>${pill(item.status)}</td>
-        <td>${actions}</td>
-      </tr>`;
-    })
-    .join("");
+  body.innerHTML = data.mappings.map(mappingRow).join("");
   body.querySelectorAll("button[data-confirm]").forEach((button) => {
     button.addEventListener("click", async () => {
       await api(`/api/mappings/${button.dataset.confirm}/confirm`, { method: "POST" });
@@ -157,14 +149,7 @@ async function loadOrders() {
   const list = document.querySelector("#order-list");
   document.querySelector("#order-detail").hidden = true;
   list.hidden = false;
-  list.innerHTML = data.orders
-    .map((order) => `<article class="card">
-      <h3>Ordine ${order.business_key}</h3>
-      <div class="meta">${pill(order.status || "n/d")}<span class="pill">shortage ${order.shortage_qty ?? 0}</span></div>
-      <p>${order.customer_name || "Cliente non collegato"} · importo ${order.amount} · margine ${order.margin ?? "n/d"}</p>
-      <button type="button" data-order="${order.id}">Apri scheda</button>
-    </article>`)
-    .join("") || "<p>Nessun ordine. Carica la fixture e aggiorna il modello.</p>";
+  list.innerHTML = data.orders.map(orderCard).join("") || "<p>Nessun ordine. Carica la fixture e aggiorna il modello.</p>";
   list.querySelectorAll("button[data-order]").forEach((button) => {
     button.addEventListener("click", () => openOrder(button.dataset.order));
   });
@@ -175,26 +160,7 @@ async function openOrder(id) {
   document.querySelector("#order-list").hidden = true;
   const detail = document.querySelector("#order-detail");
   detail.hidden = false;
-  const edges = order.edges
-    .map((edge) => `<li>${edge.direction === "in" ? "←" : "→"} ${edge.rel} ${edge.other_type} ${edge.other_key}</li>`)
-    .join("");
-  const lines = order.lines
-    .map((line) => `<li>${line.product}: quantità ${line.quantity}, shortage ${line.shortage}. Stock disponibile ${line.stock ? line.stock.available : "n/d"} <span class="formula">(${line.stock ? line.stock.formula : order.stock_formula})</span></li>`)
-    .join("");
-  const customer = order.customer_id
-    ? `<button type="button" id="open-customer" data-customer="${order.customer_id}">Scheda cliente</button>`
-    : "";
-  detail.innerHTML = `
-    <p><button type="button" id="back-orders" class="ghost">Torna agli ordini</button></p>
-    <h2>Ordine ${order.business_key}</h2>
-    <p class="formula">${order.stock_formula}</p>
-    <ul>${lines}</ul>
-    <h3>Grafo</h3>
-    <ul class="edges">${edges || "<li>Nessun arco</li>"}</ul>
-    ${customer}
-    <h3>Fatti</h3>
-    <pre>${JSON.stringify(order.facts, null, 2)}</pre>
-  `;
+  detail.innerHTML = orderDetail(order);
   detail.querySelector("#back-orders").addEventListener("click", loadOrders);
   const customerButton = detail.querySelector("#open-customer");
   if (customerButton) {
@@ -207,15 +173,7 @@ async function openCustomer(id) {
   const detail = document.querySelector("#order-detail");
   document.querySelector("#order-list").hidden = true;
   detail.hidden = false;
-  const orders = customer.orders.map((order) => `<li><button type="button" data-order="${order.id}">Ordine ${order.business_key}</button></li>`).join("");
-  detail.innerHTML = `
-    <p><button type="button" id="back-orders" class="ghost">Torna agli ordini</button></p>
-    <h2>${customer.company_name || customer.business_key}</h2>
-    <ul>${orders}</ul>
-    <h3>Grafo</h3>
-    <ul class="edges">${customer.edges.map((edge) => `<li>${edge.rel} ${edge.other_type} ${edge.other_key}</li>`).join("")}</ul>
-    <pre>${JSON.stringify(customer.facts, null, 2)}</pre>
-  `;
+  detail.innerHTML = customerDetail(customer);
   detail.querySelector("#back-orders").addEventListener("click", loadOrders);
   detail.querySelectorAll("button[data-order]").forEach((button) => {
     button.addEventListener("click", () => openOrder(button.dataset.order));
@@ -225,22 +183,7 @@ async function openCustomer(id) {
 async function loadInbox() {
   const data = await api("/api/inbox");
   const root = document.querySelector("#inbox");
-  root.innerHTML = data.recommendations.map((item) => `
-    <article class="card" data-id="${item.id}">
-      <div class="meta">${pill(item.status)}${item.requires_cfo ? '<span class="pill high">CFO</span>' : ""}<span class="pill">${item.risk}</span></div>
-      <h3>Ordine ${item.order_key}</h3>
-      <p>${item.problem}</p>
-      <p>Impatto atteso: ${item.expected_impact}. Confidence ${item.confidence}.</p>
-      ${item.dry_run ? `<h3>Payload ERP</h3><pre>${JSON.stringify(item.dry_run, null, 2)}</pre>` : ""}
-      <label>Quantità acquisto <input data-qty value="${item.actions.find((action) => action.type === "createPurchaseOrder")?.params.quantity || ""}" /></label>
-      <div>
-        <button type="button" data-act="approve">Approva</button>
-        <button type="button" class="ghost" data-act="modify">Modifica</button>
-        <button type="button" class="ghost" data-act="reject">Rifiuta</button>
-        <button type="button" data-act="execute">Esegui</button>
-      </div>
-    </article>
-  `).join("") || "<p>Nessuna eccezione in inbox.</p>";
+  root.innerHTML = data.recommendations.map(inboxCard).join("") || "<p>Nessuna eccezione in inbox.</p>";
   root.querySelectorAll("article").forEach((card) => {
     card.querySelectorAll("button[data-act]").forEach((button) => {
       button.addEventListener("click", () => act(card.dataset.id, button.dataset.act, card));
@@ -275,9 +218,7 @@ async function act(id, action, card) {
 
 async function loadAudit() {
   const data = await api("/api/audit");
-  document.querySelector("#audit").innerHTML = data.events
-    .map((event) => `<article class="card"><div class="meta">${pill(event.action)}<span class="pill">${event.actor || "system"}</span></div><pre>${JSON.stringify(event.payload, null, 2)}</pre></article>`)
-    .join("") || "<p>Nessun evento.</p>";
+  document.querySelector("#audit").innerHTML = data.events.map(auditCard).join("") || "<p>Nessun evento.</p>";
 }
 
 boot();

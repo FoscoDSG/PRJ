@@ -12,6 +12,7 @@ dependencies = [
   "jsonschema>=4.23",
   "python-multipart>=0.0.12",
   "itsdangerous>=2.2",
+  "argon2-cffi>=23.1",
 ]
 
 [project.optional-dependencies]
