@@ -9,6 +9,7 @@ from pathlib import Path
 
 from typing import Literal
 
+import psycopg
 from fastapi import Depends, FastAPI, File, Form, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -17,7 +18,7 @@ from starlette.middleware.sessions import SessionMiddleware
 from ontology.loader import load_merged
 from services.actions.executor import compensate
 from apps.api.schemas import ApproveBody, LoginBody, ModifyBody, RejectBody, SqlIngestBody, StockBody
-from services.db import app_connect, assert_demo_database, authenticate, connect, demo_mode, ensure_ready
+from services.db import app_connect, assert_demo_database, authenticate, demo_mode, ensure_ready
 from services.migrate import require_migrated
 from services.errors import AppError
 from services.pipeline import (
@@ -40,7 +41,7 @@ from services.pipeline import (
 )
 from services.queries import get_customer, get_order, list_audit, list_drift, list_inbox, list_mappings, list_orders
 from services.text import jsonable
-from services.workflow.engine import expire_stale, modify, reject
+from services.workflow.engine import modify, reject
 
 WEB = Path(__file__).resolve().parents[1] / "web"
 MAX_UPLOAD_BYTES = 5 * 1024 * 1024
@@ -72,9 +73,14 @@ def session_secret() -> str:
 async def lifespan(app: FastAPI):
     model = load_merged()
     app.state.ontology = model
-    with connect() as conn:
-        require_migrated(conn)
-        ensure_ready(conn, model.packages)
+    with app_connect() as conn:
+        try:
+            require_migrated(conn)
+            ensure_ready(conn, model.packages)
+        except psycopg.errors.InsufficientPrivilege as exc:
+            raise RuntimeError(
+                "Privilegi di ieol_app assenti. Avvio rifiutato. Esegui `ieol migrate`."
+            ) from exc
     yield
 
 
@@ -375,53 +381,77 @@ def customer_detail(customer_id: str, user: dict = Depends(require_user)) -> dic
 @app.get("/api/inbox")
 def inbox(user: dict = Depends(require_user)) -> dict:
     with app_connect() as conn:
-        expire_stale(conn)
         rows = list_inbox(conn, user["role"])
-        conn.commit()
     return _ok({"recommendations": rows})
+
+
+def _finish_decision(conn, result, error: AppError | None):
+    """A 409 from a stale recommendation must keep the expiry already written."""
+    if error is not None and error.status == 409:
+        conn.commit()
+        raise error
+    if error is not None:
+        raise error
+    conn.commit()
+    return result
 
 
 @app.post("/api/recommendations/{recommendation_id}/approve")
 def approve_route(recommendation_id: str, body: ApproveBody, user: dict = Depends(require_user)) -> dict:
     with app_connect() as conn:
-        result = approve(
-            conn,
-            recommendation_id,
-            user["username"],
-            user["role"],
-            body.evidence_hash,
-        )
-        conn.commit()
+        error = None
+        result = None
+        try:
+            result = approve(
+                conn,
+                recommendation_id,
+                user["username"],
+                user["role"],
+                body.evidence_hash,
+            )
+        except AppError as exc:
+            error = exc
+        result = _finish_decision(conn, result, error)
     return _ok(result)
 
 
 @app.post("/api/recommendations/{recommendation_id}/modify")
 def modify_route(recommendation_id: str, body: ModifyBody, user: dict = Depends(require_user)) -> dict:
     with app_connect() as conn:
-        result = modify(
-            conn,
-            recommendation_id,
-            quantity=body.quantity,
-            actor=user["username"],
-            role=user["role"],
-            evidence_hash=body.evidence_hash,
-        )
-        conn.commit()
+        error = None
+        result = None
+        try:
+            result = modify(
+                conn,
+                recommendation_id,
+                quantity=body.quantity,
+                actor=user["username"],
+                role=user["role"],
+                evidence_hash=body.evidence_hash,
+            )
+        except AppError as exc:
+            error = exc
+        result = _finish_decision(conn, result, error)
     return _ok(result)
 
 
 @app.post("/api/recommendations/{recommendation_id}/reject")
 def reject_route(recommendation_id: str, body: RejectBody, user: dict = Depends(require_user)) -> dict:
     with app_connect() as conn:
-        result = reject(
-            conn,
-            recommendation_id,
-            reason=body.reason,
-            actor=user["username"],
-            role=user["role"],
-            evidence_hash=body.evidence_hash,
-        )
-        conn.commit()
+        error = None
+        result = None
+        try:
+            result = reject(
+                conn,
+                recommendation_id,
+                reason=body.reason,
+                actor=user["username"],
+                role=user["role"],
+                evidence_hash=body.evidence_hash,
+            )
+        except AppError as exc:
+            error = exc
+        result = _finish_decision(conn, result, error)
     return _ok(result)
 
 

@@ -453,11 +453,11 @@ def _put_fact(
     confidence_method: str = "unknown",
     confidence_rule: str | None = None,
 ) -> bool:
-    if origin == "inferred" and source_class not in (None, "ai"):
+    if origin == "inferred" and source_class not in (None, "unknown"):
         raise ValueError("origin inferred è riservata a un modello")
     fact_class = source_class or _source_class(conn, source or "", origin)
     if origin == "inferred":
-        fact_class = "ai"
+        fact_class = "unknown"
     if confidence_method not in ("rule", "human", "unknown"):
         raise ValueError(f"confidence_method non ammesso: {confidence_method}")
     method = confidence_method
@@ -466,7 +466,7 @@ def _put_fact(
         method = "unknown"
     current = conn.execute(
         """
-        SELECT id, value, source_class, confidence_method FROM app.facts
+        SELECT id, value, source_class, confidence_method, origin FROM app.facts
         WHERE entity_id = %s AND property = %s AND valid_to IS NULL
         """,
         (entity_id, name),
@@ -475,8 +475,11 @@ def _put_fact(
         return False
     if current is not None and origin != "calculated":
         # A human correction stays until another human correction replaces it.
-        # Automatic ingest does not overwrite it, even from a higher source class.
+        # A calculated fact stays until another calculation or a human correction.
+        # Automatic ingest does not overwrite either, even from a higher source class.
         if current["confidence_method"] == "human" and confidence_method != "human":
+            return False
+        if current["origin"] == "calculated" and confidence_method != "human":
             return False
         if confidence_method != "human":
             from services.db import SOURCE_RANK
@@ -515,13 +518,15 @@ def _put_fact(
 def _source_class(conn: psycopg.Connection, source: str, origin: str) -> str:
     """Provenance comes from the registered source, not from its name.
 
-    Calculated and inferred origins keep their own classes. A connector that
-    was never registered, or that was registered as unknown, stays unknown.
+    The class is one of system_of_record, operational, external, manual,
+    unknown. A calculated origin is operational: the value is produced by
+    the process, and the origin column stays ``calculated``. An inferred
+    origin is unknown. A connector that was never registered stays unknown.
     """
     if origin == "calculated":
-        return "calculated"
+        return "operational"
     if origin == "inferred":
-        return "ai"
+        return "unknown"
     row = conn.execute(
         "SELECT source_class FROM app.sources WHERE name = %s",
         (source,),

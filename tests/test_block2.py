@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import uuid
 from pathlib import Path
 
 import psycopg
@@ -11,16 +12,17 @@ from fastapi.testclient import TestClient
 
 from apps.api.main import app
 from apps.cli import main
+from services.agent.baseline import BASELINE_CONFIDENCE_RULE
 from services.agent.order_agent import AGENT_VERSION, build_context, run_order_agent
 from services.agent.stub_model import StubOrderModel
 from services.canonical.store import _source_class
-from services.db import app_connect, assert_demo_database, connect, database_url, reset_password
+from services.db import SOURCE_RANK, app_connect, assert_demo_database, connect, database_url, reset_password
 from services.errors import AppError
 from services.ingest.landing import MAX_LANDING_ROWS
 from services.mapping.engine import THRESHOLD
 from services.migrate import demo_database_url, ensure_database, migrate, migration_checksum, require_migrated
 from services.rules.engine import CFO_THRESHOLD, RULES_VERSION
-from services.sources import register_source
+from services.sources import SOURCE_CLASSES, register_source
 from tests.test_flow import decide, load_demo, login
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -36,6 +38,10 @@ def test_decision_log_uses_the_database_and_rejects_a_stale_hash(client: TestCli
     load_demo()
     login(client, "approver")
     item = client.get("/api/inbox").json()["recommendations"][0]
+    assert item["confidence_method"] == "rule"
+    assert item["confidence_rule"] == BASELINE_CONFIDENCE_RULE
+    assert item["blocked_reason"] is None
+    assert item["confidence"] == 0.86
     extra = client.post(
         f"/api/recommendations/{item['id']}/approve",
         json={
@@ -67,8 +73,8 @@ def test_decision_log_uses_the_database_and_rejects_a_stale_hash(client: TestCli
     with connect() as conn:
         logged = conn.execute(
             """
-            SELECT recommendation, confidence::text AS confidence, actor, actor_role,
-                   evidence_hash, agent_version, rules_version,
+            SELECT recommendation, confidence::text AS confidence, confidence_method, confidence_rule,
+                   actor, actor_role, evidence_hash, agent_version, rules_version,
                    confidence_threshold::text AS confidence_threshold,
                    amount_threshold_eur::text AS amount_threshold_eur,
                    batch_id::text AS batch_id, row_index, decided_at
@@ -90,8 +96,20 @@ def test_decision_log_uses_the_database_and_rejects_a_stale_hash(client: TestCli
             WHERE lb.source_name = 'ordini' AND lr.data ->> 'ord_head' = '1024'
             """
         ).fetchone()
+        sources = conn.execute(
+            """
+            SELECT lb.source_name, ls.row_index
+            FROM app.decisions_log_sources ls
+            JOIN app.landing_batches lb ON lb.id = ls.batch_id
+            JOIN app.decisions_log d ON d.id = ls.decision_id
+            """
+        ).fetchall()
     assert logged["recommendation"] == stored["problem"]
     assert logged["confidence"] == stored["confidence"]
+    assert logged["confidence_method"] == "rule"
+    assert logged["confidence_rule"] == BASELINE_CONFIDENCE_RULE
+    assert {row["source_name"] for row in sources} == {"ordini", "righe"}
+    assert all(row["row_index"] == 0 for row in sources)
     assert logged["evidence_hash"] == stored["evidence_hash"]
     assert logged["actor"] == "approver"
     assert logged["actor_role"] == "approver"
@@ -103,6 +121,24 @@ def test_decision_log_uses_the_database_and_rejects_a_stale_hash(client: TestCli
     assert CFO_THRESHOLD == 50_000
     assert logged["batch_id"] == landing["batch_id"]
     assert logged["row_index"] == landing["row_index"]
+    with connect() as conn:
+        with pytest.raises(psycopg.errors.CheckViolation):
+            conn.execute(
+                """
+                INSERT INTO app.decisions_log (
+                  id, recommendation_id, batch_id, row_index, decision, evidence_hash,
+                  recommendation, confidence, confidence_method, actor, actor_role,
+                  agent_version, rules_version, confidence_threshold, amount_threshold_eur
+                )
+                SELECT gen_random_uuid(), id, %s, %s, 'approve', evidence_hash,
+                       problem, NULL, 'rule', 'x', 'approver', 'v', 'v', 0.75, 50000
+                FROM app.recommendations
+                LIMIT 1
+                """,
+                (landing["batch_id"], landing["row_index"]),
+            )
+            conn.commit()
+        conn.rollback()
 
 
 def test_unknown_provenance_cannot_be_approved(client: TestClient):
@@ -116,6 +152,9 @@ def test_unknown_provenance_cannot_be_approved(client: TestClient):
             (fact_id,),
         )
         conn.commit()
+    blocked = client.get("/api/inbox").json()["recommendations"][0]
+    assert blocked["status"] == "proposed"
+    assert blocked["blocked_reason"] == "provenienza sconosciuta"
     denied = decide(client, item)
     assert denied.status_code == 422
     assert denied.json()["detail"] == "Approvazione rifiutata: provenienza sconosciuta"
@@ -159,7 +198,9 @@ def test_source_class_is_declared_and_not_inferred_from_the_name(client: TestCli
         assert _source_class(conn, "manual_adjustment", "original") == "unknown"
         register_source(conn, "erp_clienti", "operational")
         assert _source_class(conn, "erp_clienti", "original") == "operational"
-        assert _source_class(conn, "erp_clienti", "calculated") == "calculated"
+        assert _source_class(conn, "erp_clienti", "calculated") == "operational"
+        assert _source_class(conn, "erp_clienti", "inferred") == "unknown"
+        assert set(SOURCE_RANK) == set(SOURCE_CLASSES)
         with pytest.raises(AppError, match="altra provenienza"):
             register_source(conn, "erp_clienti", "manual")
         conn.rollback()
@@ -174,7 +215,7 @@ def test_migration_checksum_mismatch_stops_migrate():
         ).fetchall()
         files = list((ROOT / "db" / "migrations").glob("*.sql"))
         by_version = {path.name.split("_", 1)[0]: path for path in files}
-        assert [row["version"] for row in recorded] == ["0001", "0002", "0003"]
+        assert [row["version"] for row in recorded] == ["0001", "0002", "0003", "0004"]
         for row in recorded:
             assert row["checksum"] == migration_checksum(by_version[row["version"]])
         conn.execute(
@@ -244,11 +285,23 @@ def test_ieol_app_cannot_update_or_truncate_audit_or_decisions(client: TestClien
         "TRUNCATE app.agent_overrides",
     )
     for statement in statements:
-        with connect() as conn:
-            conn.execute("SET ROLE ieol_app")
+        with app_connect() as conn:
+            conn.execute("RESET ROLE")
+            who = conn.execute(
+                "SELECT session_user AS session_user, current_user AS current_user"
+            ).fetchone()
+            assert who["session_user"] == "ieol_app"
+            assert who["current_user"] == "ieol_app"
             with pytest.raises(psycopg.errors.InsufficientPrivilege):
                 conn.execute(statement)
             conn.rollback()
+    with app_connect() as conn:
+        with pytest.raises(psycopg.errors.InsufficientPrivilege):
+            conn.execute("UPDATE app.decisions_log_sources SET row_index = 1")
+        conn.rollback()
+        with pytest.raises(psycopg.errors.InsufficientPrivilege):
+            conn.execute("TRUNCATE app.decisions_log_sources")
+        conn.rollback()
     with connect() as conn:
         with pytest.raises(psycopg.Error, match="append-only"):
             conn.execute("DELETE FROM app.decisions_log")
@@ -258,14 +311,18 @@ def test_ieol_app_cannot_update_or_truncate_audit_or_decisions(client: TestClien
             conn.execute("TRUNCATE app.agent_overrides")
             conn.commit()
         conn.rollback()
+        with pytest.raises(psycopg.Error, match="append-only"):
+            conn.execute("DELETE FROM app.decisions_log_sources")
+            conn.commit()
+        conn.rollback()
 
 
 def test_new_tables_grant_ieol_app_by_default():
     with connect() as conn:
         conn.execute("CREATE TABLE app.privilege_probe (id integer PRIMARY KEY)")
         conn.commit()
-    with connect() as conn:
-        conn.execute("SET ROLE ieol_app")
+    with app_connect() as conn:
+        conn.execute("RESET ROLE")
         conn.execute("INSERT INTO app.privilege_probe (id) VALUES (1)")
         with pytest.raises(psycopg.errors.InsufficientPrivilege):
             conn.execute("TRUNCATE app.privilege_probe")
@@ -374,3 +431,141 @@ def test_agent_does_not_read_or_learn_from_the_decisions_log():
         assert result["problem"] != "train on this"
         assert "train on this" not in str(result)
         conn.rollback()
+
+
+def test_legacy_source_classes_use_one_vocabulary():
+    from services.migrate import MIGRATIONS_DIR, migrate
+    from tests.helpers import wipe_test_database
+
+    initial = (MIGRATIONS_DIR / "0001_initial.sql").read_text(encoding="utf-8")
+    upgrade = (MIGRATIONS_DIR / "0002_provenance_audit_quality.sql").read_text(encoding="utf-8")
+    expected = {
+        "erp": "system_of_record",
+        "crm": "operational",
+        "ai": "unknown",
+        "calculated": "operational",
+        "manual": "manual",
+        "unknown": "unknown",
+    }
+    with connect() as conn:
+        wipe_test_database(conn)
+        conn.execute(initial)
+        conn.execute(upgrade)
+        entity_id = str(uuid.uuid4())
+        conn.execute(
+            "INSERT INTO app.entities (id, type, business_key) VALUES (%s, 'Customer', 'LEG')",
+            (entity_id,),
+        )
+        for legacy in expected:
+            conn.execute(
+                """
+                INSERT INTO app.facts (
+                  id, entity_id, property, value, classification, origin, source_class
+                )
+                VALUES (%s, %s, %s, '"x"'::jsonb, 'internal', 'original', %s)
+                """,
+                (str(uuid.uuid4()), entity_id, legacy, legacy),
+            )
+        conn.commit()
+        migrate(conn)
+        rows = conn.execute(
+            "SELECT property, source_class FROM app.facts WHERE entity_id = %s",
+            (entity_id,),
+        ).fetchall()
+        assert {row["property"]: row["source_class"] for row in rows} == expected
+        with pytest.raises(psycopg.errors.CheckViolation):
+            conn.execute(
+                """
+                INSERT INTO app.facts (
+                  id, entity_id, property, value, classification, origin, source_class
+                )
+                VALUES (%s, %s, 'again', '"x"'::jsonb, 'internal', 'original', 'erp')
+                """,
+                (str(uuid.uuid4()), entity_id),
+            )
+            conn.commit()
+        conn.rollback()
+
+
+def test_decision_path_expires_without_an_inbox_write(client: TestClient):
+    load_demo()
+    login(client, "approver")
+    item = client.get("/api/inbox").json()["recommendations"][0]
+    fact_id = next(fact["fact_id"] for fact in item["evidence"] if fact.get("fact_id"))
+    with connect() as conn:
+        conn.execute(
+            "UPDATE app.facts SET value = '\"stale\"'::jsonb WHERE id = %s",
+            (fact_id,),
+        )
+        conn.commit()
+    assert client.get("/api/inbox").json()["recommendations"][0]["status"] == "proposed"
+    denied = decide(client, item)
+    assert denied.status_code == 409
+    assert client.get("/api/inbox").json()["recommendations"][0]["status"] == "expired"
+
+
+def test_reject_requires_a_reason(client: TestClient):
+    load_demo()
+    login(client, "approver")
+    item = client.get("/api/inbox").json()["recommendations"][0]
+    short = client.post(
+        f"/api/recommendations/{item['id']}/reject",
+        json={"decision": "reject", "evidence_hash": item["evidence_hash"], "reason": "no"},
+    )
+    assert short.status_code == 422
+    missing = client.post(
+        f"/api/recommendations/{item['id']}/reject",
+        json={"decision": "reject", "evidence_hash": item["evidence_hash"]},
+    )
+    assert missing.status_code == 422
+    kept = client.post(
+        f"/api/recommendations/{item['id']}/reject",
+        json={
+            "decision": "reject",
+            "evidence_hash": item["evidence_hash"],
+            "reason": "non procede",
+        },
+    )
+    assert kept.status_code == 200, kept.text
+    script = (ROOT / "apps" / "web" / "app.js").read_text(encoding="utf-8")
+    catch = script.split("catch (err)", 1)[1]
+    assert "err.status === 409" in catch
+    assert "loadInbox()" in catch
+    assert "data-reason" in script
+    card = (ROOT / "apps" / "web" / "escape.js").read_text(encoding="utf-8")
+    assert 'data-reason required minlength="5"' in card
+
+
+def test_inbox_get_does_not_expire_and_the_cli_does(client: TestClient):
+    load_demo()
+    login(client, "approver")
+    item = client.get("/api/inbox").json()["recommendations"][0]
+    fact_id = next(fact["fact_id"] for fact in item["evidence"] if fact.get("fact_id"))
+    with connect() as conn:
+        before = conn.execute(
+            """
+            SELECT count(*) AS n FROM app.workflow_events
+            WHERE recommendation_id = %s AND to_status = 'expired'
+            """,
+            (item["id"],),
+        ).fetchone()["n"]
+        conn.execute(
+            "UPDATE app.facts SET value = '\"changed-for-expiry\"'::jsonb WHERE id = %s",
+            (fact_id,),
+        )
+        conn.commit()
+    again = client.get("/api/inbox").json()["recommendations"][0]
+    assert again["id"] == item["id"]
+    assert again["status"] == "proposed"
+    with connect() as conn:
+        after = conn.execute(
+            """
+            SELECT count(*) AS n FROM app.workflow_events
+            WHERE recommendation_id = %s AND to_status = 'expired'
+            """,
+            (item["id"],),
+        ).fetchone()["n"]
+    assert after == before
+    main(["expire-stale"])
+    refreshed = client.get("/api/inbox").json()["recommendations"][0]
+    assert refreshed["status"] == "expired"

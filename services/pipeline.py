@@ -12,6 +12,7 @@ from psycopg.types.json import Json
 
 from ontology.loader import Ontology, load_merged
 from services.actions.executor import dry_run, execute
+from services.agent.baseline import BASELINE_CONFIDENCE_RULE
 from services.agent.order_agent import build_context, run_order_agent
 from services.agent.stub_model import StubOrderModel
 from services.canonical.store import _put_fact, materialize
@@ -274,6 +275,8 @@ def run_agents(conn: psycopg.Connection, *, actor: str, role: str, model: Any | 
             expected_impact=result["expected_impact"],
             risk=result["risk"],
             confidence=result["confidence"],
+            confidence_method="rule",
+            confidence_rule=BASELINE_CONFIDENCE_RULE,
             requires_cfo=requires_cfo(result["amount"]),
             actor=actor,
             role=role,

@@ -32,15 +32,20 @@ def propose(
     requires_cfo: bool,
     actor: str | None,
     role: str | None,
+    confidence_method: str = "rule",
+    confidence_rule: str | None = None,
 ) -> str:
+    _stored, method, rule = _score(confidence, confidence_method, confidence_rule)
+    del _stored
     recommendation_id = str(uuid.uuid4())
     conn.execute(
         """
         INSERT INTO app.recommendations (
           id, order_entity_id, problem, evidence, evidence_hash, actions,
-          expected_impact, risk, confidence, status, requires_cfo
+          expected_impact, risk, confidence, status, requires_cfo,
+          confidence_method, confidence_rule
         )
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, 'detected', %s)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, 'detected', %s, %s, %s)
         """,
         (
             recommendation_id,
@@ -53,6 +58,8 @@ def propose(
             risk,
             confidence,
             requires_cfo,
+            method,
+            rule,
         ),
     )
     _transition(conn, recommendation_id, None, "detected", actor)
@@ -300,6 +307,21 @@ def _refuse_unknown_provenance(conn: psycopg.Connection, row: dict) -> None:
         raise AppError(422, "Approvazione rifiutata: provenienza sconosciuta")
 
 
+def _score(
+    confidence: float | None,
+    confidence_method: str | None,
+    confidence_rule: str | None,
+) -> tuple[float | None, str, str | None]:
+    """A null score is allowed only with method unknown."""
+    method = confidence_method or "unknown"
+    if method not in ("rule", "human", "unknown"):
+        method = "unknown"
+    if confidence is None:
+        return None, "unknown", None
+    rule = confidence_rule if method == "rule" else None
+    return confidence, method, rule
+
+
 def _record_decision(
     conn: psycopg.Connection,
     row: dict,
@@ -309,25 +331,35 @@ def _record_decision(
     role: str,
 ) -> None:
     """Persist who decided and when. Recommendation and confidence come from the row."""
-    batch_id, row_index = _source_row(conn, str(row["order_entity_id"]))
+    header = _source_row(conn, str(row["order_entity_id"]))
+    sources = _source_rows(conn, str(row["order_entity_id"]))
+    confidence, method, rule = _score(
+        row["confidence"],
+        row.get("confidence_method"),
+        row.get("confidence_rule"),
+    )
+    decision_id = str(uuid.uuid4())
     conn.execute(
         """
         INSERT INTO app.decisions_log (
           id, recommendation_id, batch_id, row_index, decision, evidence_hash,
-          recommendation, confidence, actor, actor_role, agent_version, rules_version,
+          recommendation, confidence, confidence_method, confidence_rule,
+          actor, actor_role, agent_version, rules_version,
           confidence_threshold, amount_threshold_eur
         )
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         """,
         (
-            str(uuid.uuid4()),
+            decision_id,
             str(row["id"]),
-            batch_id,
-            row_index,
+            header["batch_id"],
+            header["row_index"],
             decision,
             row["evidence_hash"],
             row["problem"],
-            row["confidence"],
+            confidence,
+            method,
+            rule,
             actor,
             role,
             AGENT_VERSION,
@@ -336,9 +368,49 @@ def _record_decision(
             CFO_THRESHOLD,
         ),
     )
+    for source in sources:
+        conn.execute(
+            """
+            INSERT INTO app.decisions_log_sources (decision_id, batch_id, row_index)
+            VALUES (%s, %s, %s)
+            ON CONFLICT DO NOTHING
+            """,
+            (decision_id, source["batch_id"], source["row_index"]),
+        )
 
 
-def _source_row(conn: psycopg.Connection, order_entity_id: str) -> tuple[str, int]:
+def _source_rows(conn: psycopg.Connection, order_entity_id: str) -> list[dict]:
+    """Every landing row of the order header and of its lines."""
+    order = conn.execute(
+        "SELECT business_key FROM app.entities WHERE id = %s",
+        (order_entity_id,),
+    ).fetchone()
+    if order is None:
+        raise AppError(422, "Decisione rifiutata: riga di origine assente")
+    rows = conn.execute(
+        """
+        SELECT lr.batch_id::text AS batch_id, lr.row_index
+        FROM app.landing_rows lr
+        JOIN app.landing_batches lb ON lb.id = lr.batch_id
+        JOIN app.field_mappings fm
+          ON fm.source_name = lb.source_name
+         AND fm.valid_to IS NULL
+         AND (
+              (fm.target_type = 'Order' AND fm.target_property = 'source_key')
+           OR (fm.target_type = 'OrderLine' AND fm.target_property = 'order_source_key')
+         )
+        WHERE lr.data ->> fm.source_field = %s
+        GROUP BY lr.batch_id, lr.row_index
+        ORDER BY lr.batch_id, lr.row_index
+        """,
+        (str(order["business_key"]),),
+    ).fetchall()
+    if not rows:
+        raise AppError(422, "Decisione rifiutata: riga di origine assente")
+    return list(rows)
+
+
+def _source_row(conn: psycopg.Connection, order_entity_id: str) -> dict:
     order = conn.execute(
         "SELECT business_key FROM app.entities WHERE id = %s",
         (order_entity_id,),
@@ -363,7 +435,7 @@ def _source_row(conn: psycopg.Connection, order_entity_id: str) -> tuple[str, in
     ).fetchone()
     if found is None:
         raise AppError(422, "Decisione rifiutata: riga di origine assente")
-    return found["batch_id"], found["row_index"]
+    return found
 
 
 def _ensure_fresh(conn: psycopg.Connection, row: dict) -> None:

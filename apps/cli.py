@@ -6,7 +6,15 @@ import argparse
 import json
 
 from ontology.loader import load_merged
-from services.db import ROLES, app_connect, connect, database_url, ensure_ready, reset_password
+from services.db import (
+    ROLES,
+    app_connect,
+    app_database_url,
+    connect,
+    database_url,
+    ensure_ready,
+    reset_password,
+)
 from services.migrate import (
     database_name,
     demo_database_url,
@@ -18,6 +26,7 @@ from services.migrate import (
 from services.pipeline import adjust_on_hand, approve, execute_recommendation, load_fixtures
 from services.queries import list_inbox
 from services.text import stable
+from services.workflow.engine import expire_stale
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -29,6 +38,10 @@ def main(argv: list[str] | None = None) -> None:
         help="Reimposta la password di un ruolo da IEOL_SEED_<RUOLO>_PASSWORD",
     )
     reset.add_argument("role", choices=ROLES)
+    sub.add_parser(
+        "expire-stale",
+        help="Segna scadute le raccomandazioni con evidenze cambiate, sul database di IEOL_APP_DATABASE_URL",
+    )
     demo = sub.add_parser(
         "demo",
         help="Carica la fixture nel database dedicato della demo, propone e fa il dry-run",
@@ -57,6 +70,16 @@ def main(argv: list[str] | None = None) -> None:
             raise SystemExit(str(exc)) from exc
         print(json.dumps({"role": args.role, "reset": True}, ensure_ascii=False))
         return
+    if args.command == "expire-stale":
+        try:
+            with app_connect() as conn:
+                require_migrated(conn)
+                expired = expire_stale(conn)
+                conn.commit()
+        except RuntimeError as exc:
+            raise SystemExit(str(exc)) from exc
+        print(json.dumps({"expired": expired}, ensure_ascii=False))
+        return
     model = load_merged()
     try:
         main_url = database_url()
@@ -74,7 +97,7 @@ def main(argv: list[str] | None = None) -> None:
                 )
             except RuntimeError as exc:
                 raise SystemExit(str(exc)) from exc
-    with app_connect(demo_url) as conn:
+    with app_connect(app_database_url(database_name(demo_url))) as conn:
         try:
             if args.command == "demo":
                 ensure_ready(conn, model.packages)

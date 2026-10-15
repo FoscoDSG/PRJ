@@ -115,7 +115,8 @@ def list_inbox(conn: psycopg.Connection, role: str) -> list[dict]:
         """
         SELECT r.id::text, r.order_entity_id::text, e.business_key AS order_key,
                r.problem, r.evidence, r.evidence_hash, r.actions, r.expected_impact,
-               r.risk, r.confidence, r.status, r.requires_cfo, r.created_at
+               r.risk, r.confidence, r.confidence_method, r.confidence_rule,
+               r.status, r.requires_cfo, r.created_at
         FROM app.recommendations r
         JOIN app.entities e ON e.id = r.order_entity_id
         ORDER BY r.created_at DESC
@@ -132,7 +133,9 @@ def list_inbox(conn: psycopg.Connection, role: str) -> list[dict]:
             (row["id"],),
         ).fetchone()
         item = dict(row)
+        item["confidence"] = stable(item["confidence"])
         item["evidence"] = _with_provenance(conn, _mask_evidence(item["evidence"], role))
+        item["blocked_reason"] = _blocked_reason(conn, item)
         from services.actions.executor import payloads_for
 
         preview_payloads = payloads["payloads"] if payloads else payloads_for(conn, item)
@@ -160,6 +163,30 @@ def list_audit(conn: psycopg.Connection, role: str) -> list[dict]:
         item["payload"] = _mask_tree(item["payload"], role)
         visible.append(item)
     return visible
+
+
+def _blocked_reason(conn: psycopg.Connection, item: dict) -> str | None:
+    """Why approval is refused. Reads only: the inbox does not write."""
+    if item["status"] not in ("proposed", "modified"):
+        return None
+    evidence = item["evidence"] if isinstance(item["evidence"], list) else []
+    fact_ids = [
+        fact["fact_id"]
+        for fact in evidence
+        if isinstance(fact, dict) and fact.get("fact_id")
+    ]
+    if not fact_ids:
+        return "provenienza sconosciuta"
+    found = conn.execute(
+        "SELECT id::text AS id, source_class FROM app.facts WHERE id = ANY(%s::uuid[])",
+        (fact_ids,),
+    ).fetchall()
+    by_id = {row["id"]: row["source_class"] for row in found}
+    if len(by_id) != len(set(fact_ids)) or any(
+        by_id.get(fact_id) in (None, "unknown") for fact_id in fact_ids
+    ):
+        return "provenienza sconosciuta"
+    return None
 
 
 def _with_provenance(conn: psycopg.Connection, evidence: Any) -> Any:

@@ -52,14 +52,10 @@
   }
 
   const PROVENANCE_LABELS = {
-    erp: "ERP",
-    crm: "CRM",
-    manual: "manuale",
-    ai: "AI",
-    calculated: "calcolata",
     system_of_record: "sistema di riferimento",
     operational: "operativa",
     external: "esterna",
+    manual: "manuale",
   };
 
   function provenanceLabel(sourceClass) {
@@ -209,13 +205,18 @@
       .join("");
     const canDecide = role === "approver" || role === "admin";
     const cfo = item.requires_cfo ? '<span class="pill high">CFO</span>' : "";
+    const blocked = item.blocked_reason ? String(item.blocked_reason) : "";
     const executeButton = item.status === "dry_run_ok" || item.status === "executed"
       ? '<button type="button" data-act="execute">Esegui</button>'
       : "";
+    const approveButton = blocked
+      ? `<button type="button" data-act="approve" disabled>Approva</button> <span>${escapeHtml(blocked)}</span>`
+      : `<button type="button" data-act="approve">Approva</button>`;
     const buttons = canDecide
       ? `<label>Quantità acquisto <input data-qty value="${escapeHtml(qty)}" /></label>
+      <label>Motivo del rifiuto <input data-reason required minlength="5" maxlength="500" /></label>
       <div>
-        <button type="button" data-act="approve">Approva</button>
+        ${approveButton}
         <button type="button" class="ghost" data-act="modify">Modifica</button>
         <button type="button" class="ghost" data-act="reject">Rifiuta</button>
         ${executeButton}
@@ -226,7 +227,7 @@
       <h3>Ordine ${escapeHtml(item.order_key)}</h3>
       <h3>Anteprima di approvazione</h3>
       <p>${escapeHtml(item.problem)}</p>
-      <p>${escapeHtml(recommendationConfidence(item.confidence))}</p>
+      <p>${escapeHtml(confidenceLabel(item))}</p>
       <p class="formula">${escapeHtml(preview.formula || "")}</p>
       <ul>${evidence}</ul>
       <h3>Cosa verrà approvato</h3>

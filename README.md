@@ -36,7 +36,7 @@ export DATABASE_URL='postgresql://ieol:ieol-local-only@127.0.0.1:5432/ieol'
 export TEST_DATABASE_URL='postgresql://ieol:ieol-local-only@127.0.0.1:5432/ieol_test'
 ```
 
-Lo script di init gira solo a volume vuoto. Un volume già presente non crea i database mancanti. Al primo avvio lo script crea anche il ruolo `ieol_app` con password `ieol-app-local-only`, usabile solo in questo container. `ieol migrate`, lanciato con l'utente owner `ieol`, concede a `ieol_app` i privilegi sulle tabelle. L'API, connessa con `DATABASE_URL` dell'owner, esegue `SET ROLE ieol_app` e da lì in poi lavora con quei privilegi. Le migrazioni restano sull'owner.
+Lo script di init gira solo a volume vuoto. Un volume già presente non crea i database mancanti. Al primo avvio lo script crea anche il ruolo `ieol_app` con password `ieol-app-local-only`, usabile solo in questo container. `ieol migrate` e `ieol reset-password` usano l'owner di `DATABASE_URL` e concedono a `ieol_app` i privilegi sulle tabelle. L'API non fa `SET ROLE`: entra con `IEOL_APP_DATABASE_URL`, il cui utente è `ieol_app`.
 
 ### PostgreSQL già installato sulla macchina
 
@@ -157,13 +157,15 @@ I file in `db/migrations/` sono numerati e si applicano in ordine. Il runner reg
 ieol migrate
 ```
 
-Il comando legge `DATABASE_URL`, applica solo le migrazioni non ancora registrate e fa commit. Non esegue `DROP` né `TRUNCATE`. Eseguirlo di nuovo lascia i dati invariati. Due processi che lo lanciano insieme prendono `pg_advisory_xact_lock` con una chiave fissa: il secondo attende il commit del primo e trova le versioni già registrate.
+Il comando legge `DATABASE_URL`, applica solo le migrazioni non ancora registrate e fa commit. Rifiuta `DROP TABLE`, `DROP SCHEMA`, `DROP DATABASE` e `TRUNCATE`. Rifiuta anche `DROP CONSTRAINT`, con una sola eccezione documentata: la riga `ALTER TABLE app.facts DROP CONSTRAINT IF EXISTS facts_source_class_check`, usata da `0003` per allargare il vincolo e da `0004` per stringerlo dopo la conversione dei valori vecchi. `0003` passava già il controllo nato con le migrazioni versionate, perché quel controllo guarda solo `DROP TABLE`, `DROP SCHEMA`, `DROP DATABASE` e `TRUNCATE` a inizio riga: `ALTER TABLE ... DROP CONSTRAINT` non coincide. L'allowlist rende esplicita quell'eccezione. Eseguirlo di nuovo lascia i dati invariati. Due processi che lo lanciano insieme prendono `pg_advisory_xact_lock` con una chiave fissa: il secondo attende il commit del primo e trova le versioni già registrate.
 
 Un database già creato con `db/schema.sql` viene riconosciuto. Se ci sono tutte le tabelle, le colonne, la funzione e il trigger dell'audit, la migrazione `0001_initial` è segnata come baseline (`baselined = true`) e il suo SQL non viene eseguito. Righe, identità delle tabelle e registro audit restano quelli già presenti. Se lo schema c'è solo in parte, il comando si ferma senza scrivere.
 
 `0002_provenance_audit_quality` aggiunge la provenienza dei fatti (`source_class` con default `unknown`, confidenza facoltativa, `confidence_method` con default `unknown` e `confidence_rule` nullable con id e versione della regola), il blocco del `TRUNCATE` sull'audit, le tabelle di revisione identità, override, qualità, listino e quarantena, e i permessi di `ieol_app` (inserisce nell'audit e non può aggiornarlo né svuotarlo). Non riempie la confidenza a 1, non marca i fatti esistenti come manuali e non inserisce righe di listino: quelle stanno nelle fixture della demo. Se quegli oggetti ci sono già, anche `0002` è baseline e il suo SQL non viene eseguito. Un database fermo allo schema storico riceve la `0001` come baseline e poi la `0002`.
 
-`0003_decisions_source_class_checksums` aggiunge il registro delle decisioni (`app.decisions_log`, append-only, collegato a `batch_id` e `row_index`), la tabella `app.sources` con la classe dichiarata del connettore, il vincolo che impedisce update, delete e truncate anche su `app.agent_overrides`, la colonna `checksum` in `schema_migrations`, e i grant di `ieol_app` comprese le `ALTER DEFAULT PRIVILEGES` per le tabelle create dopo. Il registro delle decisioni non è un dataset di training: l'agente non lo legge. `ieol migrate` registra lo SHA-256 di ogni file applicato. Se un file già applicato cambia, il comando si ferma e non scrive. Una riga vecchia senza checksum viene riempita una sola volta con l'hash del file attuale; da quel momento il file non si modifica.
+`0003_decisions_source_class_checksums` aggiunge il registro delle decisioni (`app.decisions_log`, append-only, collegato a `batch_id` e `row_index`), la tabella `app.sources` con la classe dichiarata del connettore, il vincolo che impedisce update, delete e truncate anche su `app.agent_overrides`, la colonna `checksum` in `schema_migrations`, e i grant di `ieol_app` comprese le `ALTER DEFAULT PRIVILEGES` per le tabelle create dopo. Il registro delle decisioni non è un dataset di training: l'agente non lo legge. `ieol migrate` registra lo SHA-256 di ogni file applicato. Se un file già applicato cambia, il comando si ferma e non scrive. Una riga vecchia senza checksum viene riempita una sola volta con l'hash del file attuale; da quel momento il file non si modifica. Il `DROP CONSTRAINT` in questo file è l'unica istruzione in allowlist: sostituisce `facts_source_class_check`.
+
+`0004_source_vocabulary_decision_sources` converte le classi legacy dei fatti e lascia un solo vocabolario: `system_of_record`, `operational`, `external`, `manual`, `unknown`. La mappa è `erp` → `system_of_record`, `crm` → `operational`, `ai` → `unknown`, `calculated` → `operational`. `manual`, `external` e `unknown` restano. Un fatto calcolato tiene `origin = calculated` e classe `operational`: non esiste più una classe `calculated`. Poi riusa la stessa `DROP CONSTRAINT` in allowlist e stringe il `CHECK`. Sul registro aggiunge `confidence_method` e `confidence_rule`; `confidence` diventa nullable e, se è null, `confidence_method` deve essere `unknown`. Aggiunge `app.decisions_log_sources`, append-only, con tutte le righe di origine della testata e delle righe ordine. Le raccomandazioni già presenti ricevono `confidence_method = unknown`: il numero, se c'è, non viene rietichettato. Le proposte nuove registrano il punteggio di regola `order-agent.baseline@v1`.
 
 `db/schema.sql` resta il riferimento storico. Una modifica successiva è un file nuovo in `db/migrations/`. Una migrazione già applicata non si riscrive. In esercizio lo schema si aggiorna solo con `ieol migrate`: `db/schema.sql` non si applica a mano.
 
@@ -172,12 +174,13 @@ Un database già creato con `db/schema.sql` viene riconosciuto. Se ci sono tutte
 Su un database che ha già la `0002`:
 
 1. Backup con `pg_dump`, come nel deploy.
-2. `ieol migrate` con `DATABASE_URL` dell'owner. Applica solo la `0003` e scrive i checksum di `0001`, `0002` e `0003`. Non riesegue i file già registrati.
-3. Riavviare l'API. La connessione applicativa fa `SET ROLE ieol_app`. L'owner che ha lanciato `ieol migrate` è membro di quel ruolo. Se il ruolo manca, l'avvio delle richieste indica di eseguire `ieol migrate`.
-4. Le fonti già caricate non hanno una classe dichiarata. I fatti già scritti restano con la `source_class` che hanno, spesso `unknown`. Una approvazione che tocca un fatto `unknown` risponde 422 (`provenienza sconosciuta`) e non registra la decisione. Per sbloccarla si registra di nuovo la fonte con la classe giusta (`system_of_record`, `operational`, `external`, `manual`) e si rimaterializza: un fatto il cui valore non cambia mantiene la classe precedente finché non viene riscritto.
-5. `ieol reset-password <ruolo>` si usa se le password vanno riallineate alle variabili `IEOL_SEED_<RUOLO>_PASSWORD`. Non è obbligatorio per la migrazione.
+2. `ieol migrate` con `DATABASE_URL` dell'owner. Applica solo i file non ancora registrati (`0003` e `0004` se il database è fermo alla `0002`) e scrive i checksum. Non riesegue i file già registrati. `0001` e `0002` non si modificano.
+3. Se `ieol_app` non può ancora autenticarsi: `ALTER ROLE ieol_app WITH LOGIN PASSWORD '...'`. Impostare `IEOL_APP_DATABASE_URL` con quell'utente e lo stesso database. L'API entra così, senza `SET ROLE`. `RESET ROLE` su quella sessione non restituisce i privilegi dell'owner.
+4. Riavviare l'API con `IEOL_APP_DATABASE_URL`. Se resta una migrazione in sospeso, l'avvio indica di eseguire `ieol migrate`.
+5. Le fonti già caricate non hanno una classe dichiarata. I fatti `erp` e `crm` sono stati convertiti. I fatti che restano `unknown` bloccano l'approvazione con 422 (`provenienza sconosciuta`) e il pulsante Approva resta disabilitato con la stessa dicitura. Per sbloccarla si registra di nuovo la fonte con la classe giusta e si rimaterializza: un fatto il cui valore non cambia mantiene la classe precedente finché non viene riscritto.
+6. `ieol reset-password <ruolo>` si usa se le password vanno riallineate alle variabili `IEOL_SEED_<RUOLO>_PASSWORD`. Gira sull'owner di `DATABASE_URL`. Non è obbligatorio per la migrazione.
 
-Un volume Compose già esistente non rilancia lo script di init. Il ruolo `ieol_app` nasce dalla `0003`, senza password di login. `SET ROLE` dall'owner basta. Una connessione diretta come `ieol_app` richiede, solo in locale, `ALTER ROLE ieol_app LOGIN PASSWORD '...'`.
+Un volume Compose già esistente non rilancia lo script di init. Il ruolo `ieol_app` nasce dalla `0003`, senza password di login, finché non si esegue `ALTER ROLE`. L'API non usa `SET ROLE`.
 
 All'avvio l'API non applica migrazioni. Controlla se ne restano in sospeso e, in quel caso, rifiuta di partire con il messaggio di eseguire `ieol migrate`. Solo quel comando aggiorna lo schema.
 
@@ -189,10 +192,11 @@ All'avvio l'API non applica migrazioni. Controlla se ne restano in sospeso e, in
 ieol demo
 ieol demo --reset
 ieol expire
+ieol expire-stale
 ieol execute
 ```
 
-`ieol expire` e `ieol execute` continuano la stessa demo, sullo stesso database dedicato. Nessuno dei tre comandi applica migrazioni.
+`ieol expire` e `ieol execute` continuano la stessa demo, sullo stesso database dedicato. `ieol expire-stale` gira sul database di `IEOL_APP_DATABASE_URL` e segna scadute le raccomandazioni le cui evidenze sono cambiate: la lettura dell'inbox non scrive. Nessuno di questi comandi applica migrazioni.
 
 Prima di `ieol demo` lo schema del database dedicato va aggiornato con `ieol migrate`, puntando `DATABASE_URL` a quel database:
 
@@ -213,7 +217,7 @@ I test vivono in `tests/` e richiedono il database di `TEST_DATABASE_URL` (oppur
 TEST_DATABASE_URL='postgresql://ieol:ieol-local-only@127.0.0.1:5432/ieol_test' pytest
 ```
 
-Con il default peer e il database `ieol_test` già creato, basta `pytest`. `pytest` applica da solo le migrazioni sul database di test. La CI, in più, lancia `ieol migrate` su quello stesso database prima della suite.
+Con il default peer e il database `ieol_test` già creato, basta `pytest`. `pytest` applica da solo le migrazioni sul database di test e imposta `IEOL_APP_DATABASE_URL` verso `ieol_app` su `127.0.0.1`. La CI, in più, lancia `ieol migrate` su quello stesso database prima della suite e controlla che la sessione applicativa sia `ieol_app` anche dopo `RESET ROLE`.
 
 `IEOL_DEV` non serve ai test: la suite rifiuta l'avvio senza segreto di sessione e copre il caso `IEOL_DEV=1` in un processo separato.
 
@@ -233,7 +237,8 @@ Ordine, su un database che contiene già dati:
    - `IEOL_SEED_ADMIN_PASSWORD`, `IEOL_SEED_MAPPER_PASSWORD`, `IEOL_SEED_OPERATOR_PASSWORD`, `IEOL_SEED_APPROVER_PASSWORD`, diverse dal nome del ruolo
    - `IEOL_DEV` assente
    - `IEOL_INSECURE_COOKIES` assente, così il cookie di sessione resta `https_only`
-   - `IEOL_DEMO_MODE` assente, salvo un ambiente di demo esplicito il cui `DATABASE_URL` punta al database di nome `ieol_demo`
+   - `IEOL_APP_DATABASE_URL` con utente `ieol_app` e password propria, sullo stesso database di `DATABASE_URL`
+   - `IEOL_DEMO_MODE` assente, salvo un ambiente di demo esplicito il cui database applicativo si chiama `ieol_demo`
 
 3. Applicare lo schema solo con il runner:
 

@@ -4,6 +4,9 @@ from __future__ import annotations
 
 from typing import Any
 
+# The baseline score is a rule score. It is not a calibrated probability.
+BASELINE_CONFIDENCE_RULE = "order-agent.baseline@v1"
+
 
 def decide(context: dict[str, Any]) -> dict[str, Any]:
     groups: dict[str, int | float] = {}

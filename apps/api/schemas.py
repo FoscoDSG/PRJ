@@ -46,7 +46,7 @@ class RejectBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
     decision: Literal["reject"]
     evidence_hash: str = Field(pattern=_HASH)
-    reason: str = Field(default="", max_length=500)
+    reason: str = Field(min_length=5, max_length=500)
 
 
 class StockBody(BaseModel):

@@ -22,6 +22,7 @@ from services.migrate import (
     legacy_schema_state,
     migrate,
     migration_files,
+    migration_violation,
     require_migrated,
     reset_demo_database,
 )
@@ -173,24 +174,35 @@ _FRESH = [
     {"version": "0001", "name": "initial", "baselined": False},
     {"version": "0002", "name": "provenance_audit_quality", "baselined": False},
     {"version": "0003", "name": "decisions_source_class_checksums", "baselined": False},
+    {"version": "0004", "name": "source_vocabulary_decision_sources", "baselined": False},
 ]
 
 
 def test_migration_files_do_not_drop_or_truncate():
     files = migration_files()
-    assert [item.version for item in files] == ["0001", "0002", "0003"]
+    assert [item.version for item in files] == ["0001", "0002", "0003", "0004"]
     assert [item.name for item in files] == [
         "initial",
         "provenance_audit_quality",
         "decisions_source_class_checksums",
+        "source_vocabulary_decision_sources",
     ]
     for item in files:
+        assert migration_violation(item.path.read_text(encoding="utf-8")) is None
         for line in item.path.read_text(encoding="utf-8").splitlines():
             code = line.split("--", 1)[0].strip().lower()
             assert not code.startswith("drop table")
             assert not code.startswith("drop schema")
             assert not code.startswith("drop database")
             assert not code.startswith("truncate")
+    assert migration_violation("DROP TABLE app.users;\n") is not None
+    assert migration_violation("TRUNCATE app.audit_log;\n") is not None
+    assert (
+        migration_violation("ALTER TABLE app.facts DROP CONSTRAINT facts_other;\n")
+        is not None
+    )
+    allowed = "ALTER TABLE app.facts DROP CONSTRAINT IF EXISTS facts_source_class_check;\n"
+    assert migration_violation(allowed) is None
     assert MIGRATIONS_DIR.joinpath("0001_initial.sql").is_file()
     assert not (MIGRATIONS_DIR / "001_initial.sql").exists()
     assert not (MIGRATIONS_DIR / "002_provenance_audit_quality.sql").exists()
@@ -256,6 +268,7 @@ def test_legacy_database_is_baselined_without_touching_data_or_audit():
         {"version": "0001", "name": "initial", "baselined": True},
         {"version": "0002", "name": "provenance_audit_quality", "baselined": False},
         {"version": "0003", "name": "decisions_source_class_checksums", "baselined": False},
+        {"version": "0004", "name": "source_vocabulary_decision_sources", "baselined": False},
     ]
     assert again == []
     assert third == []
@@ -269,6 +282,7 @@ def test_legacy_database_is_baselined_without_touching_data_or_audit():
         ("0001", "initial", True),
         ("0002", "provenance_audit_quality", False),
         ("0003", "decisions_source_class_checksums", False),
+        ("0004", "source_vocabulary_decision_sources", False),
     ]
 
 
@@ -441,14 +455,16 @@ def test_upgraded_schema_is_baselined_without_touching_audit():
         {"version": "0001", "name": "initial", "baselined": True},
         {"version": "0002", "name": "provenance_audit_quality", "baselined": True},
         {"version": "0003", "name": "decisions_source_class_checksums", "baselined": False},
+        {"version": "0004", "name": "source_vocabulary_decision_sources", "baselined": False},
     ]
     assert again == []
-    assert fact == [("0.42", "erp", "unknown", None)]
+    assert fact == [("0.42", "system_of_record", "unknown", None)]
     assert prices == []
     assert registry == [
         ("0001", "initial", True),
         ("0002", "provenance_audit_quality", True),
         ("0003", "decisions_source_class_checksums", False),
+        ("0004", "source_vocabulary_decision_sources", False),
     ]
 
 

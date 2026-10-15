@@ -10,7 +10,13 @@ async function api(path, options = {}) {
   }
   const response = await fetch(path, { credentials: "same-origin", ...options, headers });
   const data = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(data.detail || "Richiesta non riuscita");
+  if (!response.ok) {
+    const detail = data.detail;
+    const message = typeof detail === "string" ? detail : "Richiesta non riuscita";
+    const error = new Error(message);
+    error.status = response.status;
+    throw error;
+  }
   return data;
 }
 
@@ -258,12 +264,17 @@ async function act(id, action, card) {
         body: JSON.stringify({ decision: "modify", evidence_hash: evidenceHash, quantity }),
       });
     } else if (action === "reject") {
+      const reason = card.querySelector("[data-reason]").value.trim();
+      if (reason.length < 5) {
+        showFlash("Scrivi un motivo di almeno 5 caratteri.");
+        return;
+      }
       await api(`/api/recommendations/${id}/reject`, {
         method: "POST",
         body: JSON.stringify({
           decision: "reject",
           evidence_hash: evidenceHash,
-          reason: "rifiutata dall'operatore",
+          reason,
         }),
       });
     } else if (action === "approve") {
@@ -284,6 +295,9 @@ async function act(id, action, card) {
     loadInbox();
   } catch (err) {
     showFlash(err.message);
+    if (err.status === 409) {
+      await loadInbox();
+    }
   }
 }
 

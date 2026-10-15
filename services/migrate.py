@@ -38,7 +38,14 @@ _DBNAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,62}$")
 _MIGRATION_FILE = re.compile(r"^(\d{4})_[a-z0-9_]+\.sql$")
 # Reject statements that drop or empty relations. BEFORE TRUNCATE and
 # REVOKE TRUNCATE stay allowed: they protect the audit log.
+# DROP CONSTRAINT is rejected too, except the one statement below.
+# 0003 passes the original check because that check only matches DROP
+# TABLE, DROP SCHEMA, DROP DATABASE, and TRUNCATE at the start of a line.
+# `ALTER TABLE ... DROP CONSTRAINT` does not match it. The allowlist makes
+# that constraint replacement explicit instead of leaving it implicit.
 _DESTRUCTIVE = re.compile(r"(?im)^\s*(DROP\s+(TABLE|SCHEMA|DATABASE)\b|TRUNCATE\b)")
+_DROP_CONSTRAINT = re.compile(r"(?i)\bDROP\s+CONSTRAINT\b")
+_ALLOWLISTED_CONSTRAINT_DROP = "ALTER TABLE app.facts DROP CONSTRAINT IF EXISTS facts_source_class_check"
 
 # Columns created by db/schema.sql. Extra columns still count as the legacy
 # schema; missing ones mean the database is partial and must not be rewritten.
@@ -162,8 +169,34 @@ def require_migrated(conn: psycopg.Connection) -> None:
     _assert_recorded_checksums(conn)
 
 
+def migration_violation(script: str) -> str | None:
+    """Return why a migration script is refused, or None when it may run.
+
+    DROP TABLE, DROP SCHEMA, DROP DATABASE, and TRUNCATE are always refused.
+    DROP CONSTRAINT is refused unless the statement is the allowlisted
+    replacement of ``facts_source_class_check`` (0003 widens it, 0004
+    tightens it after converting legacy values).
+    """
+    text = _without_line_comments(script)
+    kept: list[str] = []
+    for line in text.splitlines():
+        if _normalize_sql(line) == _ALLOWLISTED_CONSTRAINT_DROP:
+            continue
+        kept.append(line)
+    body = "\n".join(kept)
+    if _DESTRUCTIVE.search(body):
+        return "DROP TABLE, DROP SCHEMA, DROP DATABASE o TRUNCATE"
+    if _DROP_CONSTRAINT.search(body):
+        return "DROP CONSTRAINT fuori dall'allowlist"
+    return None
+
+
+def _normalize_sql(line: str) -> str:
+    return " ".join(line.split()).rstrip(";").strip()
+
+
 def migrate(conn: psycopg.Connection) -> list[dict]:
-    """Apply pending migrations and commit. Never drops or truncates.
+    """Apply pending migrations and commit. Never drops tables or truncates.
 
     Takes ``pg_advisory_xact_lock(MIGRATE_LOCK_KEY)`` for the whole
     transaction, so a second caller waits and then sees the versions
@@ -543,8 +576,11 @@ def _describe(item: Migration, *, baselined: bool) -> dict:
 
 def _execute_migration(conn: psycopg.Connection, item: Migration) -> None:
     script = item.path.read_text(encoding="utf-8")
-    if _DESTRUCTIVE.search(_without_line_comments(script)):
-        raise RuntimeError(f"La migrazione {item.path.name} contiene DROP o TRUNCATE e non viene applicata")
+    violation = migration_violation(script)
+    if violation is not None:
+        raise RuntimeError(
+            f"La migrazione {item.path.name} contiene {violation} e non viene applicata"
+        )
     conn.execute(script)
 
 

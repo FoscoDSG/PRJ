@@ -11,21 +11,19 @@ import uuid
 import psycopg
 from argon2 import PasswordHasher, Type
 from argon2.exceptions import VerificationError
+from psycopg.conninfo import conninfo_to_dict, make_conninfo
 from psycopg.rows import dict_row
 
 from services.migrate import require_migrated
 
 ROLES = ("admin", "mapper", "operator", "approver")
+# Same vocabulary as SOURCE_CLASSES. Higher rank wins an automatic write.
 SOURCE_RANK = {
     "unknown": 0,
-    "ai": 1,
-    "external": 2,
-    "manual": 3,
-    "operational": 4,
-    "crm": 5,
-    "erp": 6,
-    "system_of_record": 7,
-    "calculated": 8,
+    "external": 1,
+    "manual": 2,
+    "operational": 3,
+    "system_of_record": 4,
 }
 DEMO_DATABASE_NAME = "ieol_demo"
 
@@ -92,17 +90,37 @@ def connect(url: str | None = None) -> psycopg.Connection:
     return psycopg.connect(url or database_url(), row_factory=dict_row, autocommit=False)
 
 
+def app_database_url(dbname: str | None = None) -> str:
+    """URL of the least-privilege login. The user in the URL is ieol_app."""
+    raw = os.environ.get("IEOL_APP_DATABASE_URL", "").strip()
+    if raw == "":
+        raise RuntimeError(
+            "IEOL_APP_DATABASE_URL assente. L'API entra come ieol_app. "
+            "DATABASE_URL resta l'owner, solo per ieol migrate e ieol reset-password."
+        )
+    if dbname is None:
+        return raw
+    info = conninfo_to_dict(raw)
+    info["dbname"] = dbname
+    return make_conninfo(**info)
+
+
 def app_connect(url: str | None = None) -> psycopg.Connection:
-    """Application connection. The session runs as the least-privilege role."""
-    conn = connect(url)
+    """Application connection. Logs in as ieol_app. Does not change role."""
+    conn = psycopg.connect(url or app_database_url(), row_factory=dict_row, autocommit=False)
     try:
-        current = conn.execute("SELECT current_user AS name").fetchone()
-        if current is None or current["name"] != "ieol_app":
-            exists = conn.execute("SELECT 1 FROM pg_roles WHERE rolname = 'ieol_app'").fetchone()
-            if exists is None:
-                raise RuntimeError("Ruolo ieol_app assente. Esegui `ieol migrate`.")
-            conn.execute("SET ROLE ieol_app")
-        conn.commit()
+        current = conn.execute(
+            "SELECT session_user AS session_user, current_user AS current_user"
+        ).fetchone()
+        if (
+            current is None
+            or current["session_user"] != "ieol_app"
+            or current["current_user"] != "ieol_app"
+        ):
+            raise RuntimeError(
+                "La connessione applicativa deve autenticarsi come ieol_app. "
+                "Controlla IEOL_APP_DATABASE_URL."
+            )
     except Exception:
         conn.close()
         raise

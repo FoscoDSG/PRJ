@@ -2,6 +2,7 @@ import os
 import subprocess
 from pathlib import Path
 
+import psycopg
 import pytest
 from fastapi.testclient import TestClient
 from openpyxl import Workbook
@@ -307,21 +308,18 @@ def test_similar_names_stay_apart_until_review(client: TestClient, tmp_path: Pat
 def test_app_role_cannot_rewrite_audit_or_drop(client: TestClient):
     login(client, "mapper")
     load_demo()
-    with connect() as conn:
-        conn.execute("SET ROLE ieol_app")
-        with pytest.raises(Exception):
-            conn.execute("UPDATE app.audit_log SET actor = 'x'")
-        conn.rollback()
-    with connect() as conn:
-        conn.execute("SET ROLE ieol_app")
-        with pytest.raises(Exception):
-            conn.execute("TRUNCATE app.audit_log")
-        conn.rollback()
-    with connect() as conn:
-        conn.execute("SET ROLE ieol_app")
-        with pytest.raises(Exception):
-            conn.execute("DROP TABLE app.users")
-        conn.rollback()
+    from services.db import app_connect
+
+    for statement in (
+        "UPDATE app.audit_log SET actor = 'x'",
+        "TRUNCATE app.audit_log",
+        "DROP TABLE app.users",
+    ):
+        with app_connect() as conn:
+            conn.execute("RESET ROLE")
+            with pytest.raises(psycopg.errors.InsufficientPrivilege):
+                conn.execute(statement)
+            conn.rollback()
 
 
 def test_migrations_apply_twice():
@@ -369,7 +367,8 @@ def test_facts_keep_optional_confidence_and_unknown_provenance(client: TestClien
     assert shortage["confidence"] is None
     assert shortage["confidence_method"] == "unknown"
     assert shortage["confidence_rule"] is None
-    assert shortage["source_class"] == "calculated"
+    assert shortage["source_class"] == "operational"
+    assert shortage["origin"] == "calculated"
     assert status["confidence_method"] == "rule"
     assert status["confidence_rule"] == "mapping.header_similarity@v1"
     assert status["source_class"] == "system_of_record"
@@ -418,18 +417,31 @@ if (unknown.includes("%") || unknown.includes("manuale")) {
 const calculated = orderDetail({
   business_key: "1024",
   stock_formula: "disponibile",
-  facts: [{ property: "shortage_qty", value: 80, source_class: "calculated", confidence: null, confidence_method: "unknown" }],
+  facts: [{ property: "shortage_qty", value: 80, source_class: "operational", confidence: null, confidence_method: "unknown" }],
   lines: [],
   edges: [],
 });
 const calculatedLines = linesOf(calculated, "shortage_qty");
-if (calculatedLines[0] !== "calcolata" || calculatedLines[1] !== "confidenza non disponibile") {
+if (calculatedLines[0] !== "operativa" || calculatedLines[1] !== "confidenza non disponibile") {
   console.error(calculated);
   process.exit(4);
 }
 if (calculated.includes("%") || calculated.includes("manuale") || calculated.includes("provenienza sconosciuta")) {
   console.error(calculated);
   process.exit(5);
+}
+for (const legacy of ["erp", "crm", "ai", "calculated"]) {
+  const retired = orderDetail({
+    business_key: "1024",
+    stock_formula: "disponibile",
+    facts: [{ property: "status", value: "open", source_class: legacy, confidence: null, confidence_method: "unknown" }],
+    lines: [],
+    edges: [],
+  });
+  if (linesOf(retired, "status")[0] !== "provenienza sconosciuta") {
+    console.error(legacy, retired);
+    process.exit(16);
+  }
 }
 const scored = orderDetail({
   business_key: "1024",
@@ -503,6 +515,56 @@ if (!card.includes("provenienza sconosciuta") || !card.includes("confidenza non 
 }
 if (!showFixtureButton("admin", true) || showFixtureButton("mapper", true) || showFixtureButton("admin", false)) {
   process.exit(15);
+}
+const scoredCard = inboxCard({
+  id: "2",
+  status: "proposed",
+  risk: "high",
+  order_key: "1024",
+  problem: "Ordine 1024",
+  confidence: 0.93,
+  confidence_method: "rule",
+  confidence_rule: "order-agent.baseline@v1",
+  evidence_hash: "abc",
+  evidence: [],
+  actions: [{ type: "createPurchaseOrder", params: { quantity: 1 } }],
+  requires_cfo: false,
+  preview: { formula: "disponibile", payloads: [] },
+}, "approver");
+if (!scoredCard.includes("0,93 · punteggio di regola, non calibrato · order-agent.baseline@v1")) {
+  console.error(scoredCard);
+  process.exit(17);
+}
+if (scoredCard.includes("%") || scoredCard.includes('data-act="approve" disabled')) {
+  console.error(scoredCard);
+  process.exit(18);
+}
+if (!scoredCard.includes("data-reason") || !scoredCard.includes("required") || !scoredCard.includes('minlength="5"')) {
+  console.error(scoredCard);
+  process.exit(19);
+}
+const blockedCard = inboxCard({
+  id: "3",
+  status: "proposed",
+  risk: "high",
+  order_key: "1024",
+  problem: "Ordine 1024",
+  confidence: null,
+  confidence_method: "unknown",
+  evidence_hash: "abc",
+  evidence: [],
+  actions: [],
+  requires_cfo: false,
+  blocked_reason: "provenienza sconosciuta",
+  preview: { formula: "disponibile", payloads: [] },
+}, "approver");
+if (!blockedCard.includes('data-act="approve" disabled') || !blockedCard.includes("provenienza sconosciuta")) {
+  console.error(blockedCard);
+  process.exit(20);
+}
+if (!blockedCard.includes("confidenza non disponibile")) {
+  console.error(blockedCard);
+  process.exit(21);
 }
 process.stdout.write("ok\n");
 """
