@@ -1,4 +1,5 @@
 import os
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -207,6 +208,20 @@ def test_evidence_expiry_and_audit_is_append_only(client: TestClient):
     client.post("/api/demo/load")
     expired = client.post("/api/stock/ART-X", json={"on_hand": 500})
     assert expired.status_code == 200, expired.text
+    with connect() as conn:
+        adjusted = conn.execute(
+            """
+            SELECT f.source_class, f.confidence IS NULL AS missing, f.confidence_method, f.confidence_rule
+            FROM app.facts f
+            JOIN app.entities e ON e.id = f.entity_id
+            WHERE f.property = 'on_hand' AND f.valid_to IS NULL
+              AND e.business_key = 'ART-X|WH1'
+            """
+        ).fetchone()
+    assert adjusted["source_class"] == "manual"
+    assert adjusted["missing"] is True
+    assert adjusted["confidence_method"] == "human"
+    assert adjusted["confidence_rule"] is None
     inbox = client.get("/api/inbox").json()["recommendations"]
     assert inbox[0]["status"] == "expired"
     login(client, "approver")
@@ -305,12 +320,149 @@ def test_migrations_apply_twice():
     assert count["n"] >= 2
 
 
-def test_facts_always_have_confidence(client: TestClient):
+def test_facts_keep_optional_confidence_and_unknown_provenance(client: TestClient):
     login(client, "mapper")
-    client.post("/api/demo/load")
+    loaded = client.post("/api/demo/load")
+    assert loaded.status_code == 200, loaded.text
     with connect() as conn:
-        missing = conn.execute("SELECT count(*) AS n FROM app.facts WHERE confidence IS NULL").fetchone()
-    assert missing["n"] == 0
+        rows = conn.execute(
+            """
+            SELECT source_class, confidence_method, confidence_rule,
+                   confidence IS NULL AS missing,
+                   count(*) AS n
+            FROM app.facts
+            WHERE valid_to IS NULL
+            GROUP BY 1, 2, 3, 4
+            """
+        ).fetchall()
+        prices = {
+            row["product_source_key"]: int(row["price"])
+            for row in conn.execute(
+                "SELECT product_source_key, price FROM app.price_list ORDER BY product_source_key"
+            ).fetchall()
+        }
+    assert prices == {"ART-X": 120, "ART-Y": 200}
+    assert rows
+    assert all(row["source_class"] != "manual" for row in rows)
+    assert any(row["missing"] for row in rows)
+    assert all(row["confidence_method"] == "unknown" for row in rows if row["missing"])
+    assert all(row["confidence_method"] == "rule" for row in rows if not row["missing"])
+    assert any(not row["missing"] and row["source_class"] == "unknown" for row in rows)
+
+    order = next(item for item in client.get("/api/orders").json()["orders"] if item["business_key"] == "1024")
+    detail = client.get(f"/api/orders/{order['id']}").json()
+    shortage = next(fact for fact in detail["facts"] if fact["property"] == "shortage_qty")
+    status = next(fact for fact in detail["facts"] if fact["property"] == "status")
+    assert shortage["confidence"] is None
+    assert shortage["confidence_method"] == "unknown"
+    assert shortage["confidence_rule"] is None
+    assert shortage["source_class"] == "calculated"
+    assert status["confidence_method"] == "rule"
+    assert status["confidence_rule"] == "mapping.header_similarity@v1"
+    assert status["source_class"] == "unknown"
+    assert status["confidence"] not in (None, 1)
+    assert all(
+        row["confidence_rule"] == "mapping.header_similarity@v1"
+        for row in rows
+        if row["confidence_method"] == "rule"
+    )
+    assert all(row["confidence_rule"] is None for row in rows if row["confidence_method"] != "rule")
+
+    rendered = subprocess.run(
+        ["node", "-e", _FACT_LABEL_SCRIPT],
+        cwd=Path(__file__).resolve().parents[1],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert rendered.returncode == 0, rendered.stderr
+    assert rendered.stdout == "ok\n"
+
+
+_FACT_LABEL_SCRIPT = r"""
+const { orderDetail, customerDetail } = require("./apps/web/escape.js");
+function linesOf(html, property) {
+  const item = html.split("<li>").find((part) => part.includes(`<code>${property}</code>`));
+  if (!item) return [];
+  return [...item.matchAll(/<p>([^<]*)<\/p>/g)].map((match) => match[1]);
+}
+const unknown = orderDetail({
+  business_key: "1024",
+  stock_formula: "disponibile",
+  facts: [{ property: "status", value: "open", source_class: "unknown", confidence: null, confidence_method: "unknown" }],
+  lines: [],
+  edges: [],
+});
+const unknownLines = linesOf(unknown, "status");
+if (unknownLines[0] !== "provenienza sconosciuta" || unknownLines[1] !== "confidenza non disponibile") {
+  console.error(unknown);
+  process.exit(2);
+}
+if (unknown.includes("%") || unknown.includes("manuale")) {
+  console.error(unknown);
+  process.exit(3);
+}
+const calculated = orderDetail({
+  business_key: "1024",
+  stock_formula: "disponibile",
+  facts: [{ property: "shortage_qty", value: 80, source_class: "calculated", confidence: null, confidence_method: "unknown" }],
+  lines: [],
+  edges: [],
+});
+const calculatedLines = linesOf(calculated, "shortage_qty");
+if (calculatedLines[0] !== "calcolata" || calculatedLines[1] !== "confidenza non disponibile") {
+  console.error(calculated);
+  process.exit(4);
+}
+if (calculated.includes("%") || calculated.includes("manuale") || calculated.includes("provenienza sconosciuta")) {
+  console.error(calculated);
+  process.exit(5);
+}
+const scored = orderDetail({
+  business_key: "1024",
+  stock_formula: "disponibile",
+  facts: [{
+    property: "status",
+    value: "open",
+    source_class: "unknown",
+    confidence: 0.93,
+    confidence_method: "rule",
+    confidence_rule: "mapping.header_similarity@v1",
+  }],
+  lines: [],
+  edges: [],
+});
+const scoredLines = linesOf(scored, "status");
+if (scoredLines[0] !== "provenienza sconosciuta") {
+  console.error(scored);
+  process.exit(6);
+}
+if (scoredLines[1] !== "0,93 · punteggio di regola, non calibrato · mapping.header_similarity@v1") {
+  console.error(scoredLines[1]);
+  process.exit(7);
+}
+if (scored.includes("%") || scored.includes("manuale") || scored.includes("confidenza non disponibile")) {
+  console.error(scored);
+  process.exit(8);
+}
+const known = customerDetail({
+  company_name: "ACME",
+  business_key: "C1",
+  orders: [],
+  edges: [],
+  facts: [{ property: "note", value: "bozza", source_class: "manual", confidence: null, confidence_method: "human" }],
+});
+const knownLines = linesOf(known, "note");
+if (knownLines[0] !== "manuale" || knownLines[1] !== "rettifica manuale") {
+  console.error(known);
+  process.exit(9);
+}
+if (known.includes("%") || known.includes("provenienza sconosciuta") || known.includes("confidenza non disponibile")) {
+  console.error(known);
+  process.exit(10);
+}
+process.stdout.write("ok\n");
+"""
 
 
 def test_baseline_matches_labeled_cases():

@@ -267,6 +267,7 @@ def load_fixtures(conn: psycopg.Connection, actor: str, role: str, model: Ontolo
         result = ingest_csv(conn, FIXTURES / filename, source_name, actor, role)
         loaded.append({"source": source_name, **result})
     seed_src(conn)
+    seed_price_list(conn)
     confirmed = confirm_confident(conn, role, model)
     counts = refresh_canonical(conn, model)
     recommendations = run_agents(conn, actor=actor, role=role)
@@ -276,6 +277,24 @@ def load_fixtures(conn: psycopg.Connection, actor: str, role: str, model: Ontolo
         "canonical": counts,
         "recommendations": recommendations,
     }
+
+
+def seed_price_list(conn: psycopg.Connection) -> None:
+    path = FIXTURES / "listino.csv"
+    with path.open(encoding="utf-8-sig", newline="") as handle:
+        for row in csv.DictReader(handle):
+            product = (row.get("product_source_key") or "").strip()
+            price = row.get("price")
+            if not product or price in (None, ""):
+                continue
+            conn.execute(
+                """
+                INSERT INTO app.price_list (product_source_key, price)
+                VALUES (%s, %s)
+                ON CONFLICT (product_source_key) DO UPDATE SET price = EXCLUDED.price
+                """,
+                (product, price),
+            )
 
 
 def seed_src(conn: psycopg.Connection) -> None:
@@ -322,7 +341,9 @@ def adjust_on_hand(conn: psycopg.Connection, model: Ontology, product_key: str, 
         classification=prop.classification,
         origin="original",
         source="adjustment",
-        confidence=1,
+        confidence=None,
+        source_class="manual",
+        confidence_method="human",
     )
     materialize(conn, model)
     return expire_stale(conn)

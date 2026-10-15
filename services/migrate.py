@@ -366,16 +366,44 @@ def _provenance_complete(conn: psycopg.Connection) -> bool:
     for relation, columns in _PROVENANCE_COLUMNS.items():
         if not columns.issubset(found.get(relation, set())):
             return False
-    if "source_class" not in found.get("app.facts", set()):
+    facts = found.get("app.facts", set())
+    if not {"source_class", "confidence_method", "confidence_rule"}.issubset(facts):
         return False
-    nullable = conn.execute(
+    columns = conn.execute(
         """
-        SELECT is_nullable
+        SELECT column_name, column_default, is_nullable
         FROM information_schema.columns
-        WHERE table_schema = 'app' AND table_name = 'facts' AND column_name = 'confidence'
+        WHERE table_schema = 'app'
+          AND table_name = 'facts'
+          AND column_name IN ('source_class', 'confidence', 'confidence_method', 'confidence_rule')
         """
-    ).fetchone()
-    if nullable is None or nullable["is_nullable"] != "NO":
+    ).fetchall()
+    by_name = {row["column_name"]: row for row in columns}
+    expected = {
+        "source_class": ("NO", "unknown"),
+        "confidence": ("YES", None),
+        "confidence_method": ("NO", "unknown"),
+        "confidence_rule": ("YES", None),
+    }
+    for name, (nullable, default) in expected.items():
+        column = by_name.get(name)
+        if column is None or column["is_nullable"] != nullable:
+            return False
+        if _quoted_default(column["column_default"]) != default:
+            return False
+    definitions = [
+        row["definition"]
+        for row in conn.execute(
+            """
+            SELECT pg_get_constraintdef(oid) AS definition
+            FROM pg_constraint
+            WHERE conrelid = 'app.facts'::regclass AND contype = 'c'
+            """
+        ).fetchall()
+    ]
+    if not _constraint_covers(definitions, {"erp", "crm", "manual", "ai", "calculated", "unknown"}):
+        return False
+    if not _constraint_covers(definitions, {"rule", "human", "unknown"}):
         return False
     audit = conn.execute("SELECT to_regclass('app.audit_log') AS rel").fetchone()
     if audit is None or audit["rel"] is None:
@@ -394,16 +422,24 @@ def _provenance_complete(conn: psycopg.Connection) -> bool:
     roles = conn.execute(
         "SELECT rolname FROM pg_roles WHERE rolname IN ('ieol_owner', 'ieol_app')"
     ).fetchall()
-    if {row["rolname"] for row in roles} != {"ieol_owner", "ieol_app"}:
-        return False
-    prices = conn.execute(
-        """
-        SELECT product_source_key
-        FROM app.price_list
-        WHERE product_source_key IN ('ART-X', 'ART-Y')
-        """
-    ).fetchall()
-    return {row["product_source_key"] for row in prices} == {"ART-X", "ART-Y"}
+    return {row["rolname"] for row in roles} == {"ieol_owner", "ieol_app"}
+
+
+def _quoted_default(expr: str | None) -> str | None:
+    if expr is None:
+        return None
+    if expr.startswith("'") and "'::" in expr:
+        return expr.split("'::", 1)[0][1:]
+    return expr
+
+
+def _constraint_covers(definitions: list[str], values: set[str]) -> bool:
+    needed = {f"'{value}'" for value in values}
+    return any(needed.issubset(set(_quoted_tokens(definition))) for definition in definitions)
+
+
+def _quoted_tokens(definition: str) -> list[str]:
+    return re.findall(r"'(?:[^']|'')*'", definition)
 
 
 def _record(conn: psycopg.Connection, item: Migration, *, baselined: bool) -> None:

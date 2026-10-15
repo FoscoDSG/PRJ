@@ -411,7 +411,7 @@ def test_upgraded_schema_is_baselined_without_touching_audit():
         fact = _rows(
             conn,
             """
-            SELECT confidence::text, source_class
+            SELECT confidence::text AS confidence, source_class, confidence_method, confidence_rule
             FROM app.facts
             WHERE id = %s
             """,
@@ -426,16 +426,77 @@ def test_upgraded_schema_is_baselined_without_touching_audit():
             conn.commit()
         conn.rollback()
         assert _audit(conn) == before_audit
+        prices = _rows(conn, "SELECT product_source_key FROM app.price_list ORDER BY 1")
     assert applied == [
         {"version": "0001", "name": "initial", "baselined": True},
         {"version": "0002", "name": "provenance_audit_quality", "baselined": True},
     ]
     assert again == []
-    assert fact == [("0.42", "erp")]
+    assert fact == [("0.42", "erp", "unknown", None)]
+    assert prices == []
     assert registry == [
         ("0001", "initial", True),
         ("0002", "provenance_audit_quality", True),
     ]
+
+
+def test_provenance_file_does_not_backfill_or_seed_the_price_list():
+    script = (MIGRATIONS_DIR / "0002_provenance_audit_quality.sql").read_text(encoding="utf-8")
+    code = "\n".join(line.split("--", 1)[0] for line in script.splitlines())
+    assert "ART-X" not in code
+    assert "ART-Y" not in code
+    assert "SET confidence = 1" not in code
+    assert "DEFAULT 'manual'" not in code
+    assert "DEFAULT 'unknown'" in code
+    assert "confidence_method" in code
+    assert "confidence_rule text" in code
+    assert "'unknown'" in code
+
+
+def test_legacy_facts_stay_unknown_without_a_filled_confidence():
+    entity_id = str(uuid.uuid4())
+    fact_id = str(uuid.uuid4())
+    with connect() as conn:
+        _install_legacy(conn)
+        conn.execute(
+            """
+            INSERT INTO app.entities (id, type, business_key)
+            VALUES (%s, 'Customer', 'LEG-1')
+            """,
+            (entity_id,),
+        )
+        conn.execute(
+            """
+            INSERT INTO app.facts (id, entity_id, property, value, classification, origin)
+            VALUES (%s, %s, 'company_name', '"Acme"'::jsonb, 'internal', 'original')
+            """,
+            (fact_id, entity_id),
+        )
+        conn.commit()
+        applied = migrate(conn)
+        row = conn.execute(
+            """
+            SELECT confidence::text AS confidence, source_class, confidence_method, confidence_rule
+            FROM app.facts
+            WHERE id = %s
+            """,
+            (fact_id,),
+        ).fetchone()
+        prices = conn.execute("SELECT count(*) AS n FROM app.price_list").fetchone()["n"]
+        nullable = conn.execute(
+            """
+            SELECT is_nullable
+            FROM information_schema.columns
+            WHERE table_schema = 'app' AND table_name = 'facts' AND column_name = 'confidence'
+            """
+        ).fetchone()["is_nullable"]
+    assert {"version": "0002", "name": "provenance_audit_quality", "baselined": False} in applied
+    assert row["confidence"] is None
+    assert row["source_class"] == "unknown"
+    assert row["confidence_method"] == "unknown"
+    assert row["confidence_rule"] is None
+    assert prices == 0
+    assert nullable == "YES"
 
 
 def test_demo_database_must_differ_from_the_main_one(monkeypatch: pytest.MonkeyPatch):

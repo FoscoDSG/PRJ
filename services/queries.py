@@ -275,7 +275,8 @@ def _lines(conn: psycopg.Connection, order_key: str, role: str) -> list[dict]:
 def _facts(conn: psycopg.Connection, entity_id: str, role: str) -> list[dict]:
     rows = conn.execute(
         """
-        SELECT id::text, property, value, classification, origin, source, confidence, valid_from
+        SELECT id::text, property, value, classification, origin, source,
+               confidence, source_class, confidence_method, confidence_rule, valid_from
         FROM app.facts
         WHERE entity_id = %s AND valid_to IS NULL
         ORDER BY property
@@ -286,6 +287,7 @@ def _facts(conn: psycopg.Connection, entity_id: str, role: str) -> list[dict]:
     for row in rows:
         item = dict(row)
         item["value"] = stable(item["value"])
+        item["confidence"] = stable(item["confidence"])
         if item["classification"] == "confidential" and role not in ("admin", "approver"):
             item["value"] = MASK
             item["masked"] = True
