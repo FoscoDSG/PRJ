@@ -15,6 +15,14 @@ from services.graph.projection import record_trigger
 from services.workflow.engine import expire_stale, mark_dry_run, mark_executed, mark_failed
 
 
+def payloads_for(conn: psycopg.Connection, recommendation: dict) -> list[dict[str, Any]]:
+    if recommendation.get("status") == "dry_run_ok":
+        stored = _latest_dry_run(conn, str(recommendation["id"]))
+        if stored:
+            return stored
+    return [_payload(conn, action, recommendation) for action in recommendation["actions"]]
+
+
 def dry_run(
     conn: psycopg.Connection,
     recommendation_id: str,

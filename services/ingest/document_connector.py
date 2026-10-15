@@ -35,6 +35,9 @@ def read_order_document(path: Path | str) -> dict[str, Any]:
     return {
         "order_key": parsed["order_key"],
         "source_kind": kind,
+        "customer": parsed["customer"][0],
+        "lines": parsed["lines"],
+        "stem": stem,
         "sources": [
             (f"{stem}_cliente", _pack(parsed["customer"], "email" if kind == "email" else "pdf")),
             (f"{stem}_ordine", _pack(parsed["order"], "email" if kind == "email" else "pdf")),

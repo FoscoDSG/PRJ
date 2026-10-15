@@ -20,18 +20,12 @@
 
   <section id="login" class="panel login">
     <h2>Accesso</h2>
-    <p class="lede">Accedi con utente e password assegnati.</p>
+    <p class="lede">Accedi con utente e password assegnati. L'operatore legge e non approva. La password non è il nome del ruolo.</p>
     <form id="login-form">
       <label>Utente <input name="username" autocomplete="username" required /></label>
       <label>Password <input name="password" type="password" autocomplete="current-password" required /></label>
       <button type="submit">Entra</button>
     </form>
-    <ul class="accounts">
-      <li><code>mapper</code> conferma i mapping</li>
-      <li><code>operator</code> legge, senza dati riservati</li>
-      <li><code>approver</code> approva, anche sopra 50.000 €</li>
-      <li><code>admin</code> tutto</li>
-    </ul>
     <p id="login-error" class="error" hidden></p>
   </section>
 
@@ -51,13 +45,15 @@
           <p class="lede">Le colonne sotto soglia restano in review. Un'email o un PDF ordine entra nello stesso modello: cliente, numero ordine e righe articolo quantità prezzo.</p>
         </div>
         <div class="actions">
-          <button type="button" id="load-fixture">Carica fixture</button>
+          <button type="button" id="load-fixture" hidden>Carica fixture</button>
           <label class="file">Email o PDF<input id="upload-document" type="file" accept=".txt,.eml,.pdf,text/plain,application/pdf" /></label>
           <button type="button" id="confirm-high" class="ghost">Conferma soglia alta</button>
           <button type="button" id="materialize" class="ghost">Aggiorna modello</button>
         </div>
       </div>
       <div id="drift"></div>
+      <div id="quarantine"></div>
+      <div id="identity"></div>
       <div class="table-wrap">
         <table>
           <thead>

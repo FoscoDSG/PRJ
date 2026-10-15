@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import csv
+import uuid
 from pathlib import Path
 from typing import Any
 
 import psycopg
+from psycopg.types.json import Json
 
 from ontology.loader import Ontology, load_merged
 from services.actions.executor import dry_run, execute
@@ -14,6 +16,7 @@ from services.agent.order_agent import build_context, run_order_agent
 from services.agent.stub_model import StubOrderModel
 from services.canonical.store import _put_fact, materialize
 from services.errors import AppError
+from services.quality import document_reasons
 from services.ingest.csv_connector import read_csv
 from services.ingest.document_connector import read_order_document
 from services.ingest.excel_connector import read_excel
@@ -63,25 +66,69 @@ def ingest_excel(conn: psycopg.Connection, path: Path, source_name: str, actor: 
 
 
 def ingest_document(conn: psycopg.Connection, path: Path, actor: str, role: str, model: Ontology) -> dict:
+    del model
     _require_mapper(role)
     try:
         document = read_order_document(path)
     except ValueError as exc:
         raise AppError(400, str(exc)) from exc
+    reasons = document_reasons(document["customer"], document["lines"], conn)
     landed = []
     for source_name, extracted in document["sources"]:
         landed.append({"source": source_name, **land(conn, source_name=source_name, extracted=extracted, actor=actor, role=role)})
-    confirmed = confirm_confident(conn, role, model)
-    counts = refresh_canonical(conn, model)
-    recommendations = run_agents(conn, actor=actor, role=role)
+        conn.execute(
+            """
+            UPDATE app.field_mappings
+            SET confidence = 0.55, status = 'proposed'
+            WHERE source_name = %s AND valid_to IS NULL
+            """,
+            (source_name,),
+        )
+    quarantine_id = str(uuid.uuid4())
+    conn.execute(
+        """
+        INSERT INTO app.quarantine_documents (id, source_name, order_key, reasons, status)
+        VALUES (%s, %s, %s, %s, 'open')
+        """,
+        (quarantine_id, document["stem"], document["order_key"], Json(reasons)),
+    )
     return {
+        "id": quarantine_id,
         "order_key": document["order_key"],
         "source_kind": document["source_kind"],
         "sources": landed,
-        "confirmed_mappings": confirmed,
-        "canonical": counts,
-        "recommendations": recommendations,
+        "reasons": reasons,
+        "status": "open",
     }
+
+
+def release_document(conn: psycopg.Connection, quarantine_id: str, role: str, model: Ontology) -> dict:
+    _require_mapper(role)
+    row = conn.execute(
+        "SELECT * FROM app.quarantine_documents WHERE id = %s FOR UPDATE",
+        (quarantine_id,),
+    ).fetchone()
+    if row is None:
+        raise AppError(404, "Documento in quarantena assente")
+    if row["reasons"]:
+        raise AppError(409, "Il documento ha controlli aperti: " + "; ".join(row["reasons"]))
+    if row["status"] != "open":
+        raise AppError(409, "Il documento non è in quarantena")
+    conn.execute(
+        """
+        UPDATE app.field_mappings
+        SET status = 'confirmed'
+        WHERE source_name LIKE %s AND status = 'proposed' AND valid_to IS NULL
+        """,
+        (row["source_name"] + "%",),
+    )
+    counts = refresh_canonical(conn, model)
+    recommendations = run_agents(conn, actor=role, role=role)
+    conn.execute(
+        "UPDATE app.quarantine_documents SET status = 'released' WHERE id = %s",
+        (quarantine_id,),
+    )
+    return {"id": quarantine_id, "status": "released", "canonical": counts, "recommendations": recommendations}
 
 
 def ingest_sql(conn: psycopg.Connection, table: str, source_name: str, actor: str, role: str) -> dict:

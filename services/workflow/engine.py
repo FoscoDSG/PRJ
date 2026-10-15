@@ -87,12 +87,23 @@ def modify(
         raise AppError(400, "La quantità deve essere positiva")
     actions = row["actions"]
     updated = False
+    previous = None
     for action in actions:
         if action["type"] == "createPurchaseOrder":
+            previous = action["params"]["quantity"]
             action["params"]["quantity"] = quantity
             updated = True
     if not updated:
         raise AppError(400, "Nessuna azione di acquisto da modificare")
+    conn.execute(
+        """
+        INSERT INTO app.agent_overrides (
+          id, recommendation_id, field_name, previous_value, new_value, actor
+        )
+        VALUES (%s, %s, 'quantity', %s, %s, %s)
+        """,
+        (str(uuid.uuid4()), recommendation_id, Json(previous), Json(quantity), actor),
+    )
     conn.execute(
         "UPDATE app.recommendations SET actions = %s, status = 'modified' WHERE id = %s",
         (Json(actions), recommendation_id),
@@ -112,7 +123,7 @@ def modify(
 def reject(conn: psycopg.Connection, recommendation_id: str, *, reason: str, actor: str, role: str) -> dict:
     _require_role(role)
     row = _lock(conn, recommendation_id)
-    if row["status"] not in ("proposed", "modified"):
+    if row["status"] in ("executed", "rejected", "expired", "failed"):
         raise AppError(409, "La raccomandazione non è rifiutabile")
     conn.execute(
         "UPDATE app.recommendations SET status = 'rejected' WHERE id = %s",
@@ -131,8 +142,7 @@ def reject(conn: psycopg.Connection, recommendation_id: str, *, reason: str, act
 
 
 def mark_approved(conn: psycopg.Connection, recommendation_id: str, *, actor: str, role: str) -> dict:
-    if role not in DECISION_ROLES | {"operator"}:
-        raise AppError(403, "Serve un approvatore")
+    _require_role(role)
     row = _lock(conn, recommendation_id)
     _ensure_fresh(conn, row)
     if row["requires_cfo"] and role not in DECISION_ROLES:

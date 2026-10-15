@@ -83,13 +83,13 @@ def test_cfo_approval_dry_run_idempotent_execute_and_masking(client: TestClient)
     login(client, "operator")
     denied_operator = client.post(f"/api/recommendations/{recommendation['id']}/approve")
     assert denied_operator.status_code == 403
-    assert "CFO" in denied_operator.json()["detail"]
+    assert "approvatore" in denied_operator.json()["detail"]
 
     login(client, "approver")
     order = next(item for item in client.get("/api/orders").json()["orders"] if item["business_key"] == "1024")
     assert order["margin"] == 0.6667
     customer = client.get(f"/api/customers/{order['customer_id']}").json()
-    assert customer["company_name"] == "Acme Srl"
+    assert customer["company_name"] == "ACME SRL"
     vat = next(fact["value"] for fact in customer["facts"] if fact["property"] == "vat")
     assert vat == "IT12345678901"
 
@@ -219,6 +219,108 @@ def test_evidence_expiry_and_audit_is_append_only(client: TestClient):
             conn.commit()
 
 
+def test_role_name_is_not_a_password(client: TestClient):
+    denied = client.post("/api/login", json={"username": "admin", "password": "admin"})
+    assert denied.status_code == 401
+
+
+def test_demo_load_is_closed_without_the_flag(client: TestClient, monkeypatch: pytest.MonkeyPatch):
+    login(client, "mapper")
+    monkeypatch.setenv("IEOL_DEMO_MODE", "0")
+    denied = client.post("/api/demo/load")
+    assert denied.status_code == 403
+
+
+def test_inbox_previews_the_payload_before_approval(client: TestClient):
+    login(client, "mapper")
+    client.post("/api/demo/load")
+    login(client, "approver")
+    item = client.get("/api/inbox").json()["recommendations"][0]
+    assert item["status"] == "proposed"
+    assert "giacenza" in item["preview"]["formula"]
+    assert any(payload["action"] == "createPurchaseOrder" for payload in item["preview"]["payloads"])
+
+
+def test_similar_names_stay_apart_until_review(client: TestClient, tmp_path: Path):
+    login(client, "mapper")
+    client.post("/api/demo/load")
+    path = tmp_path / "rossi.csv"
+    path.write_text(
+        "ANAG_CLI,RAGIONE_SOCIALE,PIVA\nR1,Mario Rossi Srl,IT11111111111\nR2,M. Rossi SRL,IT22222222222\n",
+        encoding="utf-8",
+    )
+    uploaded = client.post(
+        "/api/ingest/csv",
+        files={"file": ("rossi.csv", path.read_bytes(), "text/csv")},
+        data={"source_name": "rossi"},
+    )
+    assert uploaded.status_code == 200, uploaded.text
+    assert client.post("/api/mappings/confirm-confident").status_code == 200
+    assert client.post("/api/materialize").status_code == 200
+    reviews = client.get("/api/identity-reviews").json()["reviews"]
+    assert any(item["status"] == "open" and "rossi" in item["reason"] for item in reviews)
+    with connect() as conn:
+        count = conn.execute(
+            """
+            SELECT count(*) AS n FROM app.entities
+            WHERE type = 'Customer' AND business_key IN (
+              SELECT business_key FROM app.entities WHERE type = 'Customer'
+            )
+            AND business_key LIKE 'id:%'
+            AND id IN (
+              SELECT entity_id FROM app.identity_aliases WHERE alias IN ('R1', 'R2')
+            )
+            """
+        ).fetchone()
+        assert count["n"] == 2
+
+
+def test_app_role_cannot_rewrite_audit_or_drop(client: TestClient):
+    login(client, "mapper")
+    client.post("/api/demo/load")
+    with connect() as conn:
+        conn.execute("SET ROLE ieol_app")
+        with pytest.raises(Exception):
+            conn.execute("UPDATE app.audit_log SET actor = 'x'")
+        conn.rollback()
+    with connect() as conn:
+        conn.execute("SET ROLE ieol_app")
+        with pytest.raises(Exception):
+            conn.execute("TRUNCATE app.audit_log")
+        conn.rollback()
+    with connect() as conn:
+        conn.execute("SET ROLE ieol_app")
+        with pytest.raises(Exception):
+            conn.execute("DROP TABLE app.users")
+        conn.rollback()
+
+
+def test_migrations_apply_twice():
+    from services.migrate import migrate
+
+    with connect() as conn:
+        again = migrate(conn)
+        count = conn.execute("SELECT count(*) AS n FROM public.schema_migrations").fetchone()
+    assert again == []
+    assert count["n"] >= 2
+
+
+def test_facts_always_have_confidence(client: TestClient):
+    login(client, "mapper")
+    client.post("/api/demo/load")
+    with connect() as conn:
+        missing = conn.execute("SELECT count(*) AS n FROM app.facts WHERE confidence IS NULL").fetchone()
+    assert missing["n"] == 0
+
+
+def test_baseline_matches_labeled_cases():
+    from services.agent.evaluate import evaluate
+
+    report = evaluate()
+    assert report["correct_action_rate"] == 1
+    assert report["overrides_excluded"] is True
+
+
 def test_direct_fixture_pipeline_records_detected_state():
     model = load_merged()
     with connect() as conn:
@@ -262,8 +364,12 @@ def test_email_and_pdf_orders_enter_the_same_model(client: TestClient, tmp_path:
     )
     assert email.status_code == 200, email.text
     assert email.json()["order_key"] == "1099"
-    orders = client.get("/api/orders").json()["orders"]
-    created = next(item for item in orders if item["business_key"] == "1099")
+    assert email.json()["status"] == "open"
+    assert client.get("/api/orders").json()["orders"]
+    assert all(item["business_key"] != "1099" for item in client.get("/api/orders").json()["orders"])
+    released = client.post(f"/api/quarantine/{email.json()['id']}/release")
+    assert released.status_code == 200, released.text
+    created = next(item for item in client.get("/api/orders").json()["orders"] if item["business_key"] == "1099")
     assert created["shortage_qty"] == 1000
     assert created["customer_name"] == "Nuova Srl"
 
@@ -298,6 +404,7 @@ def test_email_and_pdf_orders_enter_the_same_model(client: TestClient, tmp_path:
     assert pdf.status_code == 200, pdf.text
     assert pdf.json()["source_kind"] == "pdf"
     assert pdf.json()["order_key"] == "1100"
+    assert pdf.json()["status"] == "open"
 
 
 def test_sql_connector_rejects_application_tables(client: TestClient):

@@ -1,6 +1,7 @@
 const login = document.querySelector("#login");
 const app = document.querySelector("#app");
 const flash = document.querySelector("#flash");
+const state = { role: "", demoMode: false };
 
 async function api(path, options = {}) {
   const headers = { ...(options.headers || {}) };
@@ -14,6 +15,7 @@ async function api(path, options = {}) {
 }
 
 const {
+  escapeHtml: esc,
   driftCard,
   mappingRow,
   orderCard,
@@ -41,8 +43,11 @@ async function boot() {
 function enter(me) {
   login.hidden = true;
   app.hidden = false;
+  state.role = me.role;
+  state.demoMode = Boolean(me.demo_mode);
   document.querySelector("#session").hidden = false;
   document.querySelector("#who").textContent = `${me.username} · ${me.role}`;
+  document.querySelector("#load-fixture").hidden = !state.demoMode;
   show("mapping");
 }
 
@@ -92,7 +97,8 @@ document.querySelector("#upload-document").addEventListener("change", async (eve
   body.append("file", file);
   try {
     const result = await api("/api/ingest/document", { method: "POST", body });
-    showFlash(`Ordine ${result.order_key} letto dal ${result.source_kind}. È nel modello e, se manca stock, in inbox.`);
+    const pending = result.reasons && result.reasons.length ? ` Controlli: ${result.reasons.join("; ")}.` : " Resta in quarantena finché non lo rilasci.";
+    showFlash(`Ordine ${result.order_key} letto dal ${result.source_kind}.${pending}`);
     loadMappings();
   } catch (err) {
     showFlash(err.message);
@@ -140,6 +146,41 @@ async function loadMappings() {
   drift.querySelectorAll("button[data-drift]").forEach((button) => {
     button.addEventListener("click", async () => {
       await api(`/api/drift/${button.dataset.drift}/acknowledge`, { method: "POST" });
+      loadMappings();
+    });
+  });
+  const quarantine = document.querySelector("#quarantine");
+  const held = await api("/api/quarantine");
+  quarantine.innerHTML = held.documents
+    .filter((item) => item.status === "open")
+    .map((item) => `<article class="card"><strong>Quarantena ${esc(item.order_key || item.source_name)}</strong><p>${esc((item.reasons || []).join("; ") || "In attesa di conferma, nessuna scrittura ERP.")}</p><button type="button" data-release="${esc(item.id)}">Rilascia</button></article>`)
+    .join("");
+  quarantine.querySelectorAll("button[data-release]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      try {
+        await api(`/api/quarantine/${button.dataset.release}/release`, { method: "POST" });
+        showFlash("Documento rilasciato nel modello.");
+        loadMappings();
+      } catch (err) {
+        showFlash(err.message);
+      }
+    });
+  });
+  const identity = document.querySelector("#identity");
+  const reviews = await api("/api/identity-reviews");
+  identity.innerHTML = reviews.reviews
+    .filter((item) => item.status === "open")
+    .map((item) => `<article class="card"><strong>Identità ${esc(item.entity_type)}</strong><p>${esc(item.reason)} (${esc(item.score)})</p><button type="button" data-merge="${esc(item.id)}">Conferma fusione</button> <button type="button" class="ghost" data-split="${esc(item.id)}">Tieni separati</button></article>`)
+    .join("");
+  identity.querySelectorAll("button[data-merge]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      await api(`/api/identity-reviews/${button.dataset.merge}/confirm`, { method: "POST" });
+      loadMappings();
+    });
+  });
+  identity.querySelectorAll("button[data-split]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      await api(`/api/identity-reviews/${button.dataset.split}/reject`, { method: "POST" });
       loadMappings();
     });
   });
@@ -198,7 +239,7 @@ async function openCustomer(id) {
 async function loadInbox() {
   const data = await api("/api/inbox");
   const root = document.querySelector("#inbox");
-  root.innerHTML = data.recommendations.map(inboxCard).join("") || "<p>Nessuna eccezione in inbox.</p>";
+  root.innerHTML = data.recommendations.map((item) => inboxCard(item, state.role)).join("") || "<p>Nessuna eccezione in inbox.</p>";
   root.querySelectorAll("article").forEach((card) => {
     card.querySelectorAll("button[data-act]").forEach((button) => {
       button.addEventListener("click", () => act(card.dataset.id, button.dataset.act, card));

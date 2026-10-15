@@ -118,26 +118,37 @@
   `;
   }
 
-  function inboxCard(item) {
+  function inboxCard(item, role) {
     const purchase = item.actions.find((action) => action.type === "createPurchaseOrder");
     const qty = purchase?.params.quantity ?? "";
-    const dry = item.dry_run
-      ? `<h3>Payload ERP</h3><pre>${escapeHtml(JSON.stringify(item.dry_run, null, 2))}</pre>`
-      : "";
+    const preview = item.preview || {};
+    const payloads = preview.payloads || item.dry_run || [];
+    const evidence = (item.evidence || [])
+      .map((fact) => `<li>${escapeHtml(fact.property)}: ${escapeHtml(fact.value)}</li>`)
+      .join("");
+    const canDecide = role === "approver" || role === "admin";
     const cfo = item.requires_cfo ? '<span class="pill high">CFO</span>' : "";
-    return `<article class="card" data-id="${escapeHtml(item.id)}">
-      <div class="meta">${pill(item.status)}${cfo}<span class="pill">${escapeHtml(item.risk)}</span></div>
-      <h3>Ordine ${escapeHtml(item.order_key)}</h3>
-      <p>${escapeHtml(item.problem)}</p>
-      <p>Impatto atteso: ${escapeHtml(item.expected_impact)}. Confidence ${escapeHtml(item.confidence)}.</p>
-      ${dry}
-      <label>Quantità acquisto <input data-qty value="${escapeHtml(qty)}" /></label>
+    const executeButton = item.status === "dry_run_ok" || item.status === "executed"
+      ? '<button type="button" data-act="execute">Esegui</button>'
+      : "";
+    const buttons = canDecide
+      ? `<label>Quantità acquisto <input data-qty value="${escapeHtml(qty)}" /></label>
       <div>
         <button type="button" data-act="approve">Approva</button>
         <button type="button" class="ghost" data-act="modify">Modifica</button>
         <button type="button" class="ghost" data-act="reject">Rifiuta</button>
-        <button type="button" data-act="execute">Esegui</button>
-      </div>
+        ${executeButton}
+      </div>`
+      : "<p>Sola lettura: l'operatore non approva.</p>";
+    return `<article class="card" data-id="${escapeHtml(item.id)}">
+      <div class="meta">${pill(item.status)}${cfo}<span class="pill">${escapeHtml(item.risk)}</span></div>
+      <h3>Ordine ${escapeHtml(item.order_key)}</h3>
+      <p>${escapeHtml(item.problem)}</p>
+      <p class="formula">${escapeHtml(preview.formula || "")}</p>
+      <ul>${evidence}</ul>
+      <h3>Payload ERP / email</h3>
+      <pre>${escapeHtml(JSON.stringify(payloads, null, 2))}</pre>
+      ${buttons}
     </article>`;
   }
 

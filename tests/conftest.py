@@ -6,6 +6,8 @@ os.environ.pop("IEOL_DEV", None)
 os.environ["IEOL_SESSION_SECRET"] = secrets.token_urlsafe(32)
 os.environ.pop("SESSION_SECRET", None)
 os.environ.setdefault("IEOL_INSECURE_COOKIES", "1")
+os.environ["IEOL_DEMO_MODE"] = "1"
+os.environ["IEOL_DEMO_PASSWORD"] = "test-password-9f"
 
 for _role in ("admin", "mapper", "operator", "approver"):
     _password = secrets.token_urlsafe(24)

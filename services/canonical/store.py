@@ -41,6 +41,11 @@ def materialize(conn: psycopg.Connection, ontology: Ontology) -> dict[str, int]:
         counts["entities"] += written["entities"]
         counts["facts"] += written["facts"]
     counts["calculated"] = _calculate(conn, ontology)
+    from services.identity.resolve import queue_identity_doubts
+    from services.quality import check_canonical
+
+    counts["identity_reviews"] = queue_identity_doubts(conn)
+    counts["quality_issues"] = check_canonical(conn)
     project_graph(conn)
     return counts
 
@@ -144,9 +149,8 @@ def _write_profile(
             payload["vat"] = vat
         if source_key:
             payload["source_key"] = source_key
-        for kept in ("source_key", "company_name", "email"):
-            if kept in payload and _has_fact(conn, entity_id, kept):
-                payload.pop(kept)
+        if "source_key" in payload and _has_fact(conn, entity_id, "source_key"):
+            payload.pop("source_key")
         return 1, _write_facts(conn, ontology, entity_id, "Customer", payload, source, confidence)
     if profile == "product":
         source_key = _text(values.get("source_key"))
@@ -378,7 +382,8 @@ def _write_facts(
             classification=prop.classification,
             origin=fact_origin,
             source=source,
-            confidence=confidence.get(name, 1 if fact_origin == "calculated" else None),
+            confidence=float(confidence.get(name, 1.0)),
+            source_class=_source_class(source, fact_origin),
         ):
             written += 1
     return written
@@ -394,24 +399,39 @@ def _put_fact(
     origin: str,
     source: str | None,
     confidence: float | None,
+    source_class: str | None = None,
 ) -> bool:
+    if origin == "inferred" and source_class not in (None, "ai"):
+        raise ValueError("origin inferred è riservata a un modello")
+    fact_class = source_class or _source_class(source or "", origin)
+    if origin == "inferred":
+        fact_class = "ai"
+    if confidence is None:
+        raise ValueError(f"confidence obbligatoria per {name}")
     current = conn.execute(
         """
-        SELECT id, value FROM app.facts
+        SELECT id, value, source_class FROM app.facts
         WHERE entity_id = %s AND property = %s AND valid_to IS NULL
         """,
         (entity_id, name),
     ).fetchone()
     if current is not None and stable(current["value"]) == stable(value):
         return False
+    if current is not None and origin != "calculated":
+        from services.db import SOURCE_RANK
+
+        current_rank = SOURCE_RANK.get(current["source_class"] or "manual", 2)
+        new_rank = SOURCE_RANK.get(fact_class, 2)
+        if new_rank < current_rank:
+            return False
     if current is not None:
         conn.execute("UPDATE app.facts SET valid_to = now() WHERE id = %s", (current["id"],))
     conn.execute(
         """
         INSERT INTO app.facts (
-          id, entity_id, property, value, classification, origin, source, confidence
+          id, entity_id, property, value, classification, origin, source, confidence, source_class
         )
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
         """,
         (
             str(uuid.uuid4()),
@@ -422,9 +442,23 @@ def _put_fact(
             origin,
             source,
             confidence,
+            fact_class,
         ),
     )
     return True
+
+
+def _source_class(source: str, origin: str) -> str:
+    if origin == "calculated":
+        return "calculated"
+    if origin == "inferred":
+        return "ai"
+    lowered = (source or "").lower()
+    if lowered.startswith("src.") or lowered.endswith("_sql") or lowered.startswith("erp"):
+        return "erp"
+    if "crm" in lowered:
+        return "crm"
+    return "manual"
 
 
 def _has_fact(conn: psycopg.Connection, entity_id: str, name: str) -> bool:

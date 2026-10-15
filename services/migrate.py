@@ -34,7 +34,9 @@ DEMO_DATABASE_DEFAULT = "ieol_demo"
 _RESERVED_DATABASES = frozenset({"postgres", "template0", "template1"})
 _DBNAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,62}$")
 _MIGRATION_FILE = re.compile(r"^(\d{4})_[a-z0-9_]+\.sql$")
-_DESTRUCTIVE = re.compile(r"\b(DROP|TRUNCATE)\b", re.IGNORECASE)
+# Reject statements that drop or empty relations. BEFORE TRUNCATE and
+# REVOKE TRUNCATE stay allowed: they protect the audit log.
+_DESTRUCTIVE = re.compile(r"(?im)^\s*(DROP\s+(TABLE|SCHEMA|DATABASE)\b|TRUNCATE\b)")
 
 # Columns created by db/schema.sql. Extra columns still count as the legacy
 # schema; missing ones mean the database is partial and must not be rewritten.
@@ -137,7 +139,7 @@ def pending_migrations(conn: psycopg.Connection) -> list[dict]:
     done = _recorded_versions(conn)
     state = _state_for(files, done, conn)
     pending = []
-    for item, action in _select_pending(files, done, state):
+    for item, action in _select_pending(files, done, state, conn):
         pending.append(_describe(item, baselined=action == "baseline"))
     return pending
 
@@ -169,7 +171,7 @@ def migrate(conn: psycopg.Connection) -> list[dict]:
         files = migration_files()
         done = _applied_versions(conn)
         state = _state_for(files, done, conn)
-        for item, action in _select_pending(files, done, state):
+        for item, action in _select_pending(files, done, state, conn):
             if action == "partial":
                 raise RuntimeError(
                     "Schema esistente incompleto rispetto a db/schema.sql: "
@@ -310,7 +312,12 @@ def _state_for(files: list[Migration], done: set[str], conn: psycopg.Connection)
     return legacy_schema_state(conn)
 
 
-def _select_pending(files: list[Migration], done: set[str], state: str) -> list[tuple[Migration, str]]:
+def _select_pending(
+    files: list[Migration],
+    done: set[str],
+    state: str,
+    conn: psycopg.Connection,
+) -> list[tuple[Migration, str]]:
     first = files[0].version
     chosen: list[tuple[Migration, str]] = []
     for item in files:
@@ -320,9 +327,83 @@ def _select_pending(files: list[Migration], done: set[str], state: str) -> list[
             chosen.append((item, "baseline"))
         elif item.version == first and state == "partial":
             chosen.append((item, "partial"))
+        elif item.name == "provenance_audit_quality" and _provenance_complete(conn):
+            chosen.append((item, "baseline"))
         else:
             chosen.append((item, "apply"))
     return chosen
+
+
+_PROVENANCE_COLUMNS: dict[str, frozenset[str]] = {
+    "app.identity_reviews": frozenset({
+        "id", "entity_type", "left_key", "right_key", "score", "reason", "status", "created_at",
+    }),
+    "app.agent_overrides": frozenset({
+        "id", "recommendation_id", "field_name", "previous_value", "new_value", "actor", "created_at",
+    }),
+    "app.quality_issues": frozenset({
+        "id", "entity_type", "business_key", "check_name", "detail", "status", "created_at",
+    }),
+    "app.price_list": frozenset({"product_source_key", "price"}),
+    "app.quarantine_documents": frozenset({
+        "id", "source_name", "order_key", "reasons", "status", "created_at",
+    }),
+}
+
+
+def _provenance_complete(conn: psycopg.Connection) -> bool:
+    """True when 0002's objects are already present, so its SQL must not run."""
+    rows = conn.execute(
+        """
+        SELECT table_schema || '.' || table_name AS relation, column_name
+        FROM information_schema.columns
+        WHERE table_schema = 'app'
+        """
+    ).fetchall()
+    found: dict[str, set[str]] = {}
+    for row in rows:
+        found.setdefault(row["relation"], set()).add(row["column_name"])
+    for relation, columns in _PROVENANCE_COLUMNS.items():
+        if not columns.issubset(found.get(relation, set())):
+            return False
+    if "source_class" not in found.get("app.facts", set()):
+        return False
+    nullable = conn.execute(
+        """
+        SELECT is_nullable
+        FROM information_schema.columns
+        WHERE table_schema = 'app' AND table_name = 'facts' AND column_name = 'confidence'
+        """
+    ).fetchone()
+    if nullable is None or nullable["is_nullable"] != "NO":
+        return False
+    audit = conn.execute("SELECT to_regclass('app.audit_log') AS rel").fetchone()
+    if audit is None or audit["rel"] is None:
+        return False
+    trigger = conn.execute(
+        """
+        SELECT 1
+        FROM pg_trigger
+        WHERE tgname = 'audit_no_truncate'
+          AND tgrelid = 'app.audit_log'::regclass
+          AND NOT tgisinternal
+        """
+    ).fetchone()
+    if trigger is None:
+        return False
+    roles = conn.execute(
+        "SELECT rolname FROM pg_roles WHERE rolname IN ('ieol_owner', 'ieol_app')"
+    ).fetchall()
+    if {row["rolname"] for row in roles} != {"ieol_owner", "ieol_app"}:
+        return False
+    prices = conn.execute(
+        """
+        SELECT product_source_key
+        FROM app.price_list
+        WHERE product_source_key IN ('ART-X', 'ART-Y')
+        """
+    ).fetchall()
+    return {row["product_source_key"] for row in prices} == {"ART-X", "ART-Y"}
 
 
 def _record(conn: psycopg.Connection, item: Migration, *, baselined: bool) -> None:

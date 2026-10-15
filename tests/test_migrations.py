@@ -33,6 +33,10 @@ def _rows(conn, query: str, params: tuple | None = None) -> list[tuple]:
     return [tuple(row.values()) for row in cursor.fetchall()]
 
 
+def _same_relations(before: dict[str, str], after: dict[str, str]) -> bool:
+    return all(after.get(name) == oid for name, oid in before.items())
+
+
 def _relation_oids(conn) -> dict[str, str]:
     rows = conn.execute(
         """
@@ -165,26 +169,38 @@ def _seed_legacy_rows(conn) -> dict[str, str]:
     return {"audit_id": audit_id, "entity_id": entity_id}
 
 
+_FRESH = [
+    {"version": "0001", "name": "initial", "baselined": False},
+    {"version": "0002", "name": "provenance_audit_quality", "baselined": False},
+]
+
+
 def test_migration_files_do_not_drop_or_truncate():
     files = migration_files()
-    assert [item.version for item in files] == ["0001"]
-    assert files[0].name == "initial"
+    assert [item.version for item in files] == ["0001", "0002"]
+    assert [item.name for item in files] == ["initial", "provenance_audit_quality"]
     for item in files:
-        script = item.path.read_text(encoding="utf-8").lower()
-        assert "drop " not in script
-        assert "truncate" not in script
+        for line in item.path.read_text(encoding="utf-8").splitlines():
+            code = line.split("--", 1)[0].strip().lower()
+            assert not code.startswith("drop table")
+            assert not code.startswith("drop schema")
+            assert not code.startswith("drop database")
+            assert not code.startswith("truncate")
     assert MIGRATIONS_DIR.joinpath("0001_initial.sql").is_file()
+    assert not (MIGRATIONS_DIR / "001_initial.sql").exists()
+    assert not (MIGRATIONS_DIR / "002_provenance_audit_quality.sql").exists()
 
 
 def test_initial_migration_reproduces_the_legacy_catalog():
+    script = (MIGRATIONS_DIR / "0001_initial.sql").read_text(encoding="utf-8")
     with connect() as conn:
         _install_legacy(conn)
         legacy = _catalog(conn)
         assert legacy_schema_state(conn) == "complete"
         wipe_test_database(conn)
-        applied = migrate(conn)
+        conn.execute(script)
+        conn.commit()
         created = _catalog(conn)
-    assert applied == [{"version": "0001", "name": "initial", "baselined": False}]
     assert created == legacy
 
 
@@ -219,7 +235,8 @@ def test_legacy_database_is_baselined_without_touching_data_or_audit():
             conn.execute("UPDATE app.audit_log SET actor = 'tamper' WHERE id = %s", (ids["audit_id"],))
             conn.commit()
         conn.rollback()
-        assert _relation_oids(conn) == before_oids
+        assert _same_relations(before_oids, _relation_oids(conn))
+        assert "app.quarantine_documents" in _relation_oids(conn)
         assert _audit(conn) == before_audit
         assert _rows(
             conn,
@@ -230,15 +247,22 @@ def test_legacy_database_is_baselined_without_touching_data_or_audit():
             "SELECT id::text, type, business_key, valid_from, valid_to FROM app.entities",
         ) == before_entity
         assert _rows(conn, "SELECT anag_cli, ragione_sociale, piva, email FROM src.clienti") == before_client
-    assert applied == [{"version": "0001", "name": "initial", "baselined": True}]
+    assert applied == [
+        {"version": "0001", "name": "initial", "baselined": True},
+        {"version": "0002", "name": "provenance_audit_quality", "baselined": False},
+    ]
     assert again == []
     assert third == []
-    assert after_oids == before_oids
+    assert _same_relations(before_oids, after_oids)
+    assert "app.identity_reviews" in after_oids
     assert after_audit == before_audit
     assert len(before_audit) == 1
     assert before_audit[0][0] == ids["audit_id"]
     assert before_audit[0][6] == '{"kept": "audit"}'
-    assert registry == [("0001", "initial", True)]
+    assert registry == [
+        ("0001", "initial", True),
+        ("0002", "provenance_audit_quality", False),
+    ]
 
 
 def test_migrate_twice_on_an_empty_database_keeps_inserted_rows():
@@ -275,7 +299,7 @@ def test_migrate_twice_on_an_empty_database_keeps_inserted_rows():
             "SELECT version, name, baselined, applied_at FROM public.schema_migrations",
         ) == before_registry
         assert _rows(conn, "SELECT username, role FROM app.users WHERE username = 'twice'") == [("twice", "operator")]
-    assert first == [{"version": "0001", "name": "initial", "baselined": False}]
+    assert first == _FRESH
     assert second == []
     assert third == []
 
@@ -339,8 +363,79 @@ def test_cli_migrate_is_repeatable(capsys: pytest.CaptureFixture[str]):
     first = json.loads(capsys.readouterr().out)
     main(["migrate"])
     second = json.loads(capsys.readouterr().out)
-    assert first["applied"] == [{"version": "0001", "name": "initial", "baselined": False}]
+    assert first["applied"] == _FRESH
     assert second["applied"] == []
+
+
+def test_upgraded_schema_is_baselined_without_touching_audit():
+    initial = (MIGRATIONS_DIR / "0001_initial.sql").read_text(encoding="utf-8")
+    upgrade = (MIGRATIONS_DIR / "0002_provenance_audit_quality.sql").read_text(encoding="utf-8")
+    audit_id = str(uuid.uuid4())
+    entity_id = str(uuid.uuid4())
+    fact_id = str(uuid.uuid4())
+    with connect() as conn:
+        wipe_test_database(conn)
+        conn.execute(initial)
+        conn.execute(upgrade)
+        conn.execute(
+            """
+            INSERT INTO app.entities (id, type, business_key)
+            VALUES (%s, 'Customer', 'UP-1')
+            """,
+            (entity_id,),
+        )
+        conn.execute(
+            """
+            INSERT INTO app.facts (
+              id, entity_id, property, value, classification, origin, confidence, source_class
+            )
+            VALUES (%s, %s, 'company_name', '"Acme"'::jsonb, 'internal', 'original', 0.42, 'erp')
+            """,
+            (fact_id, entity_id),
+        )
+        conn.execute(
+            """
+            INSERT INTO app.audit_log (id, actor, role, action, entity_ref, payload)
+            VALUES (%s, 'ada', 'mapper', 'proposal', 'order:upgraded', '{"kept":"upgrade"}'::jsonb)
+            """,
+            (audit_id,),
+        )
+        conn.commit()
+        before_oids = _relation_oids(conn)
+        before_audit = _audit(conn)
+        applied = migrate(conn)
+        again = migrate(conn)
+        assert _same_relations(before_oids, _relation_oids(conn))
+        assert _relation_oids(conn) == before_oids
+        assert _audit(conn) == before_audit
+        fact = _rows(
+            conn,
+            """
+            SELECT confidence::text, source_class
+            FROM app.facts
+            WHERE id = %s
+            """,
+            (fact_id,),
+        )
+        registry = _rows(
+            conn,
+            "SELECT version, name, baselined FROM public.schema_migrations ORDER BY version",
+        )
+        with pytest.raises(Exception, match="append-only"):
+            conn.execute("TRUNCATE app.audit_log")
+            conn.commit()
+        conn.rollback()
+        assert _audit(conn) == before_audit
+    assert applied == [
+        {"version": "0001", "name": "initial", "baselined": True},
+        {"version": "0002", "name": "provenance_audit_quality", "baselined": True},
+    ]
+    assert again == []
+    assert fact == [("0.42", "erp")]
+    assert registry == [
+        ("0001", "initial", True),
+        ("0002", "provenance_audit_quality", True),
+    ]
 
 
 def test_demo_database_must_differ_from_the_main_one(monkeypatch: pytest.MonkeyPatch):
