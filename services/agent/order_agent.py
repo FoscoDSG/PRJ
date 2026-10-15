@@ -1,4 +1,8 @@
-"""Build order context and validate the model output. Tools are read-only."""
+"""Build order context and validate the model output. Tools are read-only.
+
+Human decisions recorded in the decisions log are not a training source.
+This agent does not read that log and does not learn from it.
+"""
 
 from __future__ import annotations
 
@@ -9,6 +13,8 @@ import jsonschema
 import psycopg
 
 from services.text import digest, stable
+
+AGENT_VERSION = "order-agent@v1"
 
 RECOMMENDATION_SCHEMA: dict[str, Any] = {
     "type": "object",

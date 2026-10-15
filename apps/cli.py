@@ -6,7 +6,7 @@ import argparse
 import json
 
 from ontology.loader import load_merged
-from services.db import connect, database_url, ensure_ready
+from services.db import ROLES, app_connect, connect, database_url, ensure_ready, reset_password
 from services.migrate import (
     database_name,
     demo_database_url,
@@ -24,6 +24,11 @@ def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="Fetta operativa dell'order management")
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("migrate", help="Applica le migrazioni pendenti sul database di DATABASE_URL")
+    reset = sub.add_parser(
+        "reset-password",
+        help="Reimposta la password di un ruolo da IEOL_SEED_<RUOLO>_PASSWORD",
+    )
+    reset.add_argument("role", choices=ROLES)
     demo = sub.add_parser(
         "demo",
         help="Carica la fixture nel database dedicato della demo, propone e fa il dry-run",
@@ -44,6 +49,14 @@ def main(argv: list[str] | None = None) -> None:
             raise SystemExit(str(exc)) from exc
         print(json.dumps({"applied": applied}, ensure_ascii=False))
         return
+    if args.command == "reset-password":
+        try:
+            with connect() as conn:
+                reset_password(conn, args.role)
+        except RuntimeError as exc:
+            raise SystemExit(str(exc)) from exc
+        print(json.dumps({"role": args.role, "reset": True}, ensure_ascii=False))
+        return
     model = load_merged()
     try:
         main_url = database_url()
@@ -51,14 +64,18 @@ def main(argv: list[str] | None = None) -> None:
         ensure_database(demo_url)
     except RuntimeError as exc:
         raise SystemExit(str(exc)) from exc
-    with connect(demo_url) as conn:
-        try:
-            if args.command == "demo" and args.reset:
+    if args.command == "demo" and args.reset:
+        with connect(demo_url) as conn:
+            try:
                 reset_demo_database(
                     conn,
                     main_dbname=database_name(main_url),
                     expected_dbname=database_name(demo_url),
                 )
+            except RuntimeError as exc:
+                raise SystemExit(str(exc)) from exc
+    with app_connect(demo_url) as conn:
+        try:
             if args.command == "demo":
                 ensure_ready(conn, model.packages)
             else:
@@ -77,7 +94,13 @@ def main(argv: list[str] | None = None) -> None:
                     raise SystemExit("Nessuna raccomandazione: lo shortage non è stato rilevato")
                 preview = {"dry_run": item["dry_run"]}
             else:
-                preview = approve(conn, item["id"], actor="approver", role="approver")
+                preview = approve(
+                    conn,
+                    item["id"],
+                    actor="approver",
+                    role="approver",
+                    evidence_hash=item["evidence_hash"],
+                )
             conn.commit()
             print(
                 json.dumps(

@@ -172,13 +172,18 @@ def _seed_legacy_rows(conn) -> dict[str, str]:
 _FRESH = [
     {"version": "0001", "name": "initial", "baselined": False},
     {"version": "0002", "name": "provenance_audit_quality", "baselined": False},
+    {"version": "0003", "name": "decisions_source_class_checksums", "baselined": False},
 ]
 
 
 def test_migration_files_do_not_drop_or_truncate():
     files = migration_files()
-    assert [item.version for item in files] == ["0001", "0002"]
-    assert [item.name for item in files] == ["initial", "provenance_audit_quality"]
+    assert [item.version for item in files] == ["0001", "0002", "0003"]
+    assert [item.name for item in files] == [
+        "initial",
+        "provenance_audit_quality",
+        "decisions_source_class_checksums",
+    ]
     for item in files:
         for line in item.path.read_text(encoding="utf-8").splitlines():
             code = line.split("--", 1)[0].strip().lower()
@@ -250,6 +255,7 @@ def test_legacy_database_is_baselined_without_touching_data_or_audit():
     assert applied == [
         {"version": "0001", "name": "initial", "baselined": True},
         {"version": "0002", "name": "provenance_audit_quality", "baselined": False},
+        {"version": "0003", "name": "decisions_source_class_checksums", "baselined": False},
     ]
     assert again == []
     assert third == []
@@ -262,6 +268,7 @@ def test_legacy_database_is_baselined_without_touching_data_or_audit():
     assert registry == [
         ("0001", "initial", True),
         ("0002", "provenance_audit_quality", False),
+        ("0003", "decisions_source_class_checksums", False),
     ]
 
 
@@ -405,8 +412,11 @@ def test_upgraded_schema_is_baselined_without_touching_audit():
         before_audit = _audit(conn)
         applied = migrate(conn)
         again = migrate(conn)
-        assert _same_relations(before_oids, _relation_oids(conn))
-        assert _relation_oids(conn) == before_oids
+        after_oids = _relation_oids(conn)
+        assert _same_relations(before_oids, after_oids)
+        assert set(before_oids).issubset(after_oids)
+        assert "app.decisions_log" in after_oids
+        assert "app.sources" in after_oids
         assert _audit(conn) == before_audit
         fact = _rows(
             conn,
@@ -430,6 +440,7 @@ def test_upgraded_schema_is_baselined_without_touching_audit():
     assert applied == [
         {"version": "0001", "name": "initial", "baselined": True},
         {"version": "0002", "name": "provenance_audit_quality", "baselined": True},
+        {"version": "0003", "name": "decisions_source_class_checksums", "baselined": False},
     ]
     assert again == []
     assert fact == [("0.42", "erp", "unknown", None)]
@@ -437,6 +448,7 @@ def test_upgraded_schema_is_baselined_without_touching_audit():
     assert registry == [
         ("0001", "initial", True),
         ("0002", "provenance_audit_quality", True),
+        ("0003", "decisions_source_class_checksums", False),
     ]
 
 

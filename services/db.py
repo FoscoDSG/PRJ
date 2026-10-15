@@ -16,7 +16,18 @@ from psycopg.rows import dict_row
 from services.migrate import require_migrated
 
 ROLES = ("admin", "mapper", "operator", "approver")
-SOURCE_RANK = {"unknown": 0, "ai": 1, "manual": 2, "crm": 3, "erp": 4, "calculated": 5}
+SOURCE_RANK = {
+    "unknown": 0,
+    "ai": 1,
+    "external": 2,
+    "manual": 3,
+    "operational": 4,
+    "crm": 5,
+    "erp": 6,
+    "system_of_record": 7,
+    "calculated": 8,
+}
+DEMO_DATABASE_NAME = "ieol_demo"
 
 # argon2-cffi defaults: argon2id, t=3, m=64 MiB, p=4.
 _HASHER = PasswordHasher(
@@ -77,7 +88,56 @@ def _seed_password(role: str) -> str | None:
 
 
 def connect(url: str | None = None) -> psycopg.Connection:
+    """Owner connection. Migrations and password reset use this."""
     return psycopg.connect(url or database_url(), row_factory=dict_row, autocommit=False)
+
+
+def app_connect(url: str | None = None) -> psycopg.Connection:
+    """Application connection. The session runs as the least-privilege role."""
+    conn = connect(url)
+    try:
+        current = conn.execute("SELECT current_user AS name").fetchone()
+        if current is None or current["name"] != "ieol_app":
+            exists = conn.execute("SELECT 1 FROM pg_roles WHERE rolname = 'ieol_app'").fetchone()
+            if exists is None:
+                raise RuntimeError("Ruolo ieol_app assente. Esegui `ieol migrate`.")
+            conn.execute("SET ROLE ieol_app")
+        conn.commit()
+    except Exception:
+        conn.close()
+        raise
+    return conn
+
+
+def assert_demo_database(conn: psycopg.Connection) -> None:
+    """Refuse demo loads on any database other than ``ieol_demo``."""
+    from services.errors import AppError
+
+    row = conn.execute("SELECT current_database() AS name").fetchone()
+    name = None if row is None else row["name"]
+    if name != DEMO_DATABASE_NAME:
+        raise AppError(409, "Il demo si carica solo sul database ieol_demo")
+
+
+def reset_password(conn: psycopg.Connection, role: str) -> None:
+    """Replace one role password with the hash of ``IEOL_SEED_<ROLE>_PASSWORD``."""
+    if role not in ROLES:
+        raise RuntimeError("Ruolo sconosciuto")
+    password = _seed_password(role)
+    if password is None:
+        raise RuntimeError(f"IEOL_SEED_{role.upper()}_PASSWORD assente")
+    updated = conn.execute(
+        """
+        UPDATE app.users
+        SET password_hash = %s
+        WHERE username = %s AND role = %s
+        RETURNING username
+        """,
+        (password_hash(password), role, role),
+    ).fetchone()
+    if updated is None:
+        raise RuntimeError(f"Utente {role} assente")
+    conn.commit()
 
 
 def seed_users(conn: psycopg.Connection) -> None:

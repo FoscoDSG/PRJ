@@ -431,7 +431,7 @@ def _write_facts(
             origin=fact_origin,
             source=source,
             confidence=fact_confidence,
-            source_class=_source_class(source, fact_origin),
+            source_class=_source_class(conn, source, fact_origin),
             confidence_method=method,
             confidence_rule=rule,
         ):
@@ -455,7 +455,7 @@ def _put_fact(
 ) -> bool:
     if origin == "inferred" and source_class not in (None, "ai"):
         raise ValueError("origin inferred è riservata a un modello")
-    fact_class = source_class or _source_class(source or "", origin)
+    fact_class = source_class or _source_class(conn, source or "", origin)
     if origin == "inferred":
         fact_class = "ai"
     if confidence_method not in ("rule", "human", "unknown"):
@@ -466,7 +466,7 @@ def _put_fact(
         method = "unknown"
     current = conn.execute(
         """
-        SELECT id, value, source_class FROM app.facts
+        SELECT id, value, source_class, confidence_method FROM app.facts
         WHERE entity_id = %s AND property = %s AND valid_to IS NULL
         """,
         (entity_id, name),
@@ -474,12 +474,17 @@ def _put_fact(
     if current is not None and stable(current["value"]) == stable(value):
         return False
     if current is not None and origin != "calculated":
-        from services.db import SOURCE_RANK
-
-        current_rank = SOURCE_RANK.get(current["source_class"] or "unknown", 0)
-        new_rank = SOURCE_RANK.get(fact_class, 0)
-        if new_rank < current_rank:
+        # A human correction stays until another human correction replaces it.
+        # Automatic ingest does not overwrite it, even from a higher source class.
+        if current["confidence_method"] == "human" and confidence_method != "human":
             return False
+        if confidence_method != "human":
+            from services.db import SOURCE_RANK
+
+            current_rank = SOURCE_RANK.get(current["source_class"] or "unknown", 0)
+            new_rank = SOURCE_RANK.get(fact_class, 0)
+            if new_rank < current_rank:
+                return False
     if current is not None:
         conn.execute("UPDATE app.facts SET valid_to = now() WHERE id = %s", (current["id"],))
     conn.execute(
@@ -507,19 +512,23 @@ def _put_fact(
     return True
 
 
-def _source_class(source: str, origin: str) -> str:
+def _source_class(conn: psycopg.Connection, source: str, origin: str) -> str:
+    """Provenance comes from the registered source, not from its name.
+
+    Calculated and inferred origins keep their own classes. A connector that
+    was never registered, or that was registered as unknown, stays unknown.
+    """
     if origin == "calculated":
         return "calculated"
     if origin == "inferred":
         return "ai"
-    lowered = (source or "").lower()
-    if lowered.startswith("src.") or lowered.endswith("_sql") or lowered.startswith("erp"):
-        return "erp"
-    if "crm" in lowered:
-        return "crm"
-    if lowered in {"manual", "human", "adjustment"} or lowered.startswith("manual"):
-        return "manual"
-    return "unknown"
+    row = conn.execute(
+        "SELECT source_class FROM app.sources WHERE name = %s",
+        (source,),
+    ).fetchone()
+    if row is None:
+        return "unknown"
+    return row["source_class"]
 
 
 def _has_fact(conn: psycopg.Connection, entity_id: str, name: str) -> bool:

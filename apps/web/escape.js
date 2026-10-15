@@ -57,6 +57,9 @@
     manual: "manuale",
     ai: "AI",
     calculated: "calcolata",
+    system_of_record: "sistema di riferimento",
+    operational: "operativa",
+    external: "esterna",
   };
 
   function provenanceLabel(sourceClass) {
@@ -86,6 +89,21 @@
       }
     }
     return "confidenza non disponibile";
+  }
+
+  function recommendationConfidence(confidence) {
+    if (confidence == null || confidence === "") {
+      return "confidenza non disponibile";
+    }
+    const number = Number(confidence);
+    if (!Number.isFinite(number)) {
+      return "confidenza non disponibile";
+    }
+    return number.toFixed(2).replace(".", ",");
+  }
+
+  function showFixtureButton(role, demoMode) {
+    return role === "admin" && demoMode === true;
   }
 
   function mappingConfidence(confidence) {
@@ -182,12 +200,12 @@
   }
 
   function inboxCard(item, role) {
-    const purchase = item.actions.find((action) => action.type === "createPurchaseOrder");
+    const purchase = (item.actions || []).find((action) => action.type === "createPurchaseOrder");
     const qty = purchase?.params.quantity ?? "";
     const preview = item.preview || {};
     const payloads = preview.payloads || item.dry_run || [];
     const evidence = (item.evidence || [])
-      .map((fact) => `<li>${escapeHtml(fact.property)}: ${escapeHtml(fact.value)}</li>`)
+      .map((fact) => `<li>${escapeHtml(fact.property)}: ${escapeHtml(fact.value)}<p>${escapeHtml(provenanceLabel(fact.source_class))}</p></li>`)
       .join("");
     const canDecide = role === "approver" || role === "admin";
     const cfo = item.requires_cfo ? '<span class="pill high">CFO</span>' : "";
@@ -203,13 +221,15 @@
         ${executeButton}
       </div>`
       : "<p>Sola lettura: l'operatore non approva.</p>";
-    return `<article class="card" data-id="${escapeHtml(item.id)}">
+    return `<article class="card" data-id="${escapeHtml(item.id)}" data-hash="${escapeHtml(item.evidence_hash)}">
       <div class="meta">${pill(item.status)}${cfo}<span class="pill">${escapeHtml(item.risk)}</span></div>
       <h3>Ordine ${escapeHtml(item.order_key)}</h3>
+      <h3>Anteprima di approvazione</h3>
       <p>${escapeHtml(item.problem)}</p>
+      <p>${escapeHtml(recommendationConfidence(item.confidence))}</p>
       <p class="formula">${escapeHtml(preview.formula || "")}</p>
       <ul>${evidence}</ul>
-      <h3>Payload ERP / email</h3>
+      <h3>Cosa verrà approvato</h3>
       <pre>${escapeHtml(JSON.stringify(payloads, null, 2))}</pre>
       ${buttons}
     </article>`;
@@ -225,6 +245,8 @@
     pill,
     provenanceLabel,
     confidenceLabel,
+    recommendationConfidence,
+    showFixtureButton,
     factList,
     driftCard,
     mappingRow,

@@ -9,12 +9,14 @@ changing what gets applied.
 is not executed. Later files still run.
 
 The API does not call ``migrate``. It only asks whether versions are
-pending. ``pg_advisory_xact_lock`` with ``MIGRATE_LOCK_KEY`` keeps two
-overlapping ``migrate`` calls from applying the same version.
+pending, and it refuses to start when a stored checksum does not match
+the file on disk. ``pg_advisory_xact_lock`` with ``MIGRATE_LOCK_KEY``
+keeps two overlapping ``migrate`` calls from applying the same version.
 """
 
 from __future__ import annotations
 
+import hashlib
 import os
 import re
 from dataclasses import dataclass
@@ -145,16 +147,19 @@ def pending_migrations(conn: psycopg.Connection) -> list[dict]:
 
 
 def require_migrated(conn: psycopg.Connection) -> None:
-    """Refuse when versions are pending. Does not apply them."""
+    """Refuse when versions are pending or a stored checksum does not match.
+
+    Does not apply migrations and does not fill a missing checksum.
+    """
     pending = pending_migrations(conn)
-    if not pending:
-        return
-    versions = ", ".join(item["version"] for item in pending)
-    name = conn.execute("SELECT current_database() AS name").fetchone()["name"]
-    raise RuntimeError(
-        f"Migrazioni in sospeso ({versions}) sul database {name}. "
-        "Avvio rifiutato. Esegui `ieol migrate`."
-    )
+    if pending:
+        versions = ", ".join(item["version"] for item in pending)
+        name = conn.execute("SELECT current_database() AS name").fetchone()["name"]
+        raise RuntimeError(
+            f"Migrazioni in sospeso ({versions}) sul database {name}. "
+            "Avvio rifiutato. Esegui `ieol migrate`."
+        )
+    _assert_recorded_checksums(conn)
 
 
 def migrate(conn: psycopg.Connection) -> list[dict]:
@@ -169,6 +174,7 @@ def migrate(conn: psycopg.Connection) -> list[dict]:
         conn.execute("SELECT pg_advisory_xact_lock(%s)", (MIGRATE_LOCK_KEY,))
         _ensure_registry(conn)
         files = migration_files()
+        _verify_checksums(conn, files)
         done = _applied_versions(conn)
         state = _state_for(files, done, conn)
         for item, action in _select_pending(files, done, state, conn):
@@ -281,6 +287,10 @@ def _require_separate_demo(demo_name: str, main_dbname: str) -> None:
         raise RuntimeError("Il database della demo non può essere un database di sistema")
 
 
+def migration_checksum(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
 def _ensure_registry(conn: psycopg.Connection) -> None:
     conn.execute(
         """
@@ -288,10 +298,84 @@ def _ensure_registry(conn: psycopg.Connection) -> None:
           version text PRIMARY KEY,
           name text NOT NULL,
           baselined boolean NOT NULL DEFAULT false,
-          applied_at timestamptz NOT NULL DEFAULT now()
+          applied_at timestamptz NOT NULL DEFAULT now(),
+          checksum text
         )
         """
     )
+    conn.execute("ALTER TABLE public.schema_migrations ADD COLUMN IF NOT EXISTS checksum text")
+
+
+def _verify_checksums(conn: psycopg.Connection, files: list[Migration]) -> None:
+    """Fail when an applied file changed. A missing checksum is recorded once."""
+    if not _checksum_column_ready(conn):
+        return
+    by_version = {item.version: item for item in files}
+    recorded = conn.execute(
+        "SELECT version, checksum FROM public.schema_migrations ORDER BY version"
+    ).fetchall()
+    for row in recorded:
+        item = by_version.get(row["version"])
+        if item is None:
+            raise RuntimeError(
+                f"Migrazione applicata {row['version']} assente dal disco. ieol migrate si ferma."
+            )
+        current = migration_checksum(item.path)
+        stored = row["checksum"]
+        if stored is None:
+            conn.execute(
+                """
+                UPDATE public.schema_migrations
+                SET checksum = %s
+                WHERE version = %s AND checksum IS NULL
+                """,
+                (current, row["version"]),
+            )
+            continue
+        if stored != current:
+            raise RuntimeError(
+                f"La migrazione {item.path.name} è cambiata dopo l'applicazione. "
+                "ieol migrate si ferma."
+            )
+
+
+def _assert_recorded_checksums(conn: psycopg.Connection) -> None:
+    """Read-only check used at startup. Does not fill a missing checksum."""
+    if not _checksum_column_ready(conn):
+        raise RuntimeError("Checksum di migrazione assente. Esegui `ieol migrate`.")
+    files = {item.version: item for item in migration_files()}
+    recorded = conn.execute(
+        "SELECT version, checksum FROM public.schema_migrations ORDER BY version"
+    ).fetchall()
+    for row in recorded:
+        item = files.get(row["version"])
+        if item is None:
+            raise RuntimeError(
+                f"Migrazione applicata {row['version']} assente dal disco. Esegui `ieol migrate`."
+            )
+        if row["checksum"] is None:
+            raise RuntimeError("Checksum di migrazione assente. Esegui `ieol migrate`.")
+        if row["checksum"] != migration_checksum(item.path):
+            raise RuntimeError(
+                f"La migrazione {item.path.name} è cambiata dopo l'applicazione. "
+                "Avvio rifiutato. Esegui `ieol migrate`."
+            )
+
+
+def _checksum_column_ready(conn: psycopg.Connection) -> bool:
+    row = conn.execute("SELECT to_regclass('public.schema_migrations') AS rel").fetchone()
+    if row is None or row["rel"] is None:
+        return False
+    column = conn.execute(
+        """
+        SELECT 1
+        FROM information_schema.columns
+        WHERE table_schema = 'public'
+          AND table_name = 'schema_migrations'
+          AND column_name = 'checksum'
+        """
+    ).fetchone()
+    return column is not None
 
 
 def _recorded_versions(conn: psycopg.Connection) -> set[str]:
@@ -445,11 +529,11 @@ def _quoted_tokens(definition: str) -> list[str]:
 def _record(conn: psycopg.Connection, item: Migration, *, baselined: bool) -> None:
     conn.execute(
         """
-        INSERT INTO public.schema_migrations (version, name, baselined)
-        VALUES (%s, %s, %s)
+        INSERT INTO public.schema_migrations (version, name, baselined, checksum)
+        VALUES (%s, %s, %s, %s)
         ON CONFLICT (version) DO NOTHING
         """,
-        (item.version, item.name, baselined),
+        (item.version, item.name, baselined, migration_checksum(item.path)),
     )
 
 

@@ -23,6 +23,7 @@ const {
   customerDetail,
   inboxCard,
   auditCard,
+  showFixtureButton,
 } = globalThis.ieolEscape;
 
 function showFlash(message) {
@@ -47,7 +48,7 @@ function enter(me) {
   state.demoMode = Boolean(me.demo_mode);
   document.querySelector("#session").hidden = false;
   document.querySelector("#who").textContent = `${me.username} · ${me.role}`;
-  document.querySelector("#load-fixture").hidden = !state.demoMode;
+  document.querySelector("#load-fixture").hidden = !showFixtureButton(state.role, state.demoMode);
   show("mapping");
 }
 
@@ -249,13 +250,27 @@ async function loadInbox() {
 
 async function act(id, action, card) {
   try {
+    const evidenceHash = card.dataset.hash;
     if (action === "modify") {
       const quantity = Number(card.querySelector("[data-qty]").value);
-      await api(`/api/recommendations/${id}/modify`, { method: "POST", body: JSON.stringify({ quantity }) });
+      await api(`/api/recommendations/${id}/modify`, {
+        method: "POST",
+        body: JSON.stringify({ decision: "modify", evidence_hash: evidenceHash, quantity }),
+      });
     } else if (action === "reject") {
-      await api(`/api/recommendations/${id}/reject`, { method: "POST", body: JSON.stringify({ reason: "rifiutata dall'operatore" }) });
+      await api(`/api/recommendations/${id}/reject`, {
+        method: "POST",
+        body: JSON.stringify({
+          decision: "reject",
+          evidence_hash: evidenceHash,
+          reason: "rifiutata dall'operatore",
+        }),
+      });
     } else if (action === "approve") {
-      const result = await api(`/api/recommendations/${id}/approve`, { method: "POST" });
+      const result = await api(`/api/recommendations/${id}/approve`, {
+        method: "POST",
+        body: JSON.stringify({ decision: "approve", evidence_hash: evidenceHash }),
+      });
       showFlash("Dry-run pronto. Il payload è nella scheda, nessuna scrittura ERP.");
       if (result.dry_run) {
         const block = document.createElement("pre");

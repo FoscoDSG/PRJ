@@ -8,7 +8,10 @@ from typing import Any
 import psycopg
 from psycopg.types.json import Json
 
+from services.errors import AppError
 from services.mapping.engine import propose_mappings
+
+MAX_LANDING_ROWS = 5000
 
 
 def land(
@@ -20,6 +23,8 @@ def land(
     role: str | None = None,
 ) -> dict[str, Any]:
     watermark = extracted["watermark"]
+    if len(extracted["rows"]) > MAX_LANDING_ROWS:
+        raise AppError(413, "Troppe righe nel file")
     existing = conn.execute(
         """
         SELECT id, row_count FROM app.landing_batches

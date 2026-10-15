@@ -51,6 +51,16 @@ jobs:
           python -m pip install pip-audit
       - name: Migrate test database
         run: ieol migrate
+      - name: App role is ieol_app
+        run: |
+          python - <<'PY'
+          from services.db import app_connect
+          with app_connect() as conn:
+              row = conn.execute("SELECT current_user AS name").fetchone()
+              if row["name"] != "ieol_app":
+                  raise SystemExit(row["name"])
+              conn.rollback()
+          PY
       - name: Pytest
         run: pytest
       - name: pip-audit

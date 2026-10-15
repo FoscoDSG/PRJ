@@ -132,7 +132,7 @@ def list_inbox(conn: psycopg.Connection, role: str) -> list[dict]:
             (row["id"],),
         ).fetchone()
         item = dict(row)
-        item["evidence"] = _mask_evidence(item["evidence"], role)
+        item["evidence"] = _with_provenance(conn, _mask_evidence(item["evidence"], role))
         from services.actions.executor import payloads_for
 
         preview_payloads = payloads["payloads"] if payloads else payloads_for(conn, item)
@@ -160,6 +160,35 @@ def list_audit(conn: psycopg.Connection, role: str) -> list[dict]:
         item["payload"] = _mask_tree(item["payload"], role)
         visible.append(item)
     return visible
+
+
+def _with_provenance(conn: psycopg.Connection, evidence: Any) -> Any:
+    """Attach the stored source class for display. It is not part of the evidence hash."""
+    if not isinstance(evidence, list):
+        return evidence
+    fact_ids = [
+        item.get("fact_id")
+        for item in evidence
+        if isinstance(item, dict) and item.get("fact_id")
+    ]
+    if not fact_ids:
+        return evidence
+    rows = conn.execute(
+        "SELECT id::text AS id, source_class FROM app.facts WHERE id = ANY(%s::uuid[])",
+        (fact_ids,),
+    ).fetchall()
+    by_id = {row["id"]: row["source_class"] for row in rows}
+    enriched = []
+    for item in evidence:
+        if not isinstance(item, dict):
+            enriched.append(item)
+            continue
+        copy = dict(item)
+        fact_id = copy.get("fact_id")
+        if fact_id in by_id:
+            copy["source_class"] = by_id[fact_id]
+        enriched.append(copy)
+    return enriched
 
 
 def _mask_evidence(evidence: Any, role: str) -> Any:
