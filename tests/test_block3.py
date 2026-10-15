@@ -633,7 +633,7 @@ def test_status_values_use_the_italian_labels():
         "modified": "Modificato",
         "rejected": "Rifiutato",
         "released": "Rilasciato",
-        "dry_run_ok": "Prova a secco pronta",
+        "dry_run_ok": "Simulazione riuscita",
         "executed": "Eseguito",
         "failed": "Fallito",
         "expired": "Scaduto",

@@ -231,12 +231,15 @@ def _normalize_sql(line: str) -> str:
     return " ".join(line.split()).rstrip(";").strip()
 
 
-def migrate(conn: psycopg.Connection) -> list[dict]:
+def migrate(conn: psycopg.Connection, *, rotate_evidence_key: bool = False) -> list[dict]:
     """Apply pending migrations and commit. Never drops tables or truncates.
 
     Takes ``pg_advisory_xact_lock(MIGRATE_LOCK_KEY)`` for the whole
     transaction, so a second caller waits and then sees the versions
     already recorded. Returns the versions recorded by this call.
+
+    A different ``IEOL_EVIDENCE_HMAC_KEY`` does not replace the stored
+    row unless ``rotate_evidence_key`` is true. The first insert still runs.
     """
     applied: list[dict] = []
     try:
@@ -261,7 +264,7 @@ def migrate(conn: psycopg.Connection) -> list[dict]:
             applied.append(_describe(item, baselined=False))
         from services.evidence import install_evidence_key
 
-        install_evidence_key(conn)
+        install_evidence_key(conn, rotate=rotate_evidence_key)
         conn.commit()
     except Exception:
         conn.rollback()

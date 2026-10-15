@@ -41,7 +41,7 @@ ACTION_LABELS = {
     "modified": "Modificato",
     "rejected": "Rifiutato",
     "released": "Rilasciato",
-    "dry_run_ok": "Prova a secco pronta",
+    "dry_run_ok": "Simulazione riuscita",
     "executed": "Eseguito",
     "failed": "Fallito",
     "expired": "Scaduto",

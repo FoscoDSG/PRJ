@@ -35,7 +35,15 @@ from services.workflow.engine import expire_stale
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="Fetta operativa dell'order management")
     sub = parser.add_subparsers(dest="command", required=True)
-    sub.add_parser("migrate", help="Applica le migrazioni pendenti sul database di DATABASE_URL")
+    migrate_cmd = sub.add_parser(
+        "migrate",
+        help="Applica le migrazioni pendenti sul database di DATABASE_URL",
+    )
+    migrate_cmd.add_argument(
+        "--rotate-evidence-key",
+        action="store_true",
+        help="Sostituisce l'unica riga di app.evidence_hmac_key con IEOL_EVIDENCE_HMAC_KEY",
+    )
     reset = sub.add_parser(
         "reset-password",
         help="Reimposta la password di un ruolo da IEOL_SEED_<RUOLO>_PASSWORD",
@@ -64,7 +72,7 @@ def main(argv: list[str] | None = None) -> None:
     if args.command == "migrate":
         try:
             with connect() as conn:
-                applied = migrate(conn)
+                applied = migrate(conn, rotate_evidence_key=args.rotate_evidence_key)
         except RuntimeError as exc:
             raise SystemExit(str(exc)) from exc
         print(json.dumps({"applied": applied}, ensure_ascii=False))

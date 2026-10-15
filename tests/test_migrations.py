@@ -488,6 +488,44 @@ def test_cli_migrate_is_repeatable(capsys: pytest.CaptureFixture[str]):
     assert second["applied"] == []
 
 
+def test_migrate_keeps_the_evidence_key_unless_rotation_is_explicit(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    original = "test-hmac-key-not-for-production"
+    other = "altra-chiave-non-di-produzione"
+
+    def stored(conn) -> str | None:
+        row = conn.execute(
+            "SELECT secret FROM app.evidence_hmac_key WHERE id = 1"
+        ).fetchone()
+        return None if row is None else row["secret"]
+
+    with connect() as conn:
+        assert stored(conn) == original
+        assert migrate(conn) == []
+        assert stored(conn) == original
+        conn.execute("DELETE FROM app.evidence_hmac_key")
+        conn.commit()
+        assert migrate(conn) == []
+        assert stored(conn) == original
+    monkeypatch.setenv("IEOL_EVIDENCE_HMAC_KEY", other)
+    with connect() as conn:
+        with pytest.raises(RuntimeError, match="--rotate-evidence-key") as mismatch:
+            migrate(conn)
+        assert other not in str(mismatch.value)
+        assert original not in str(mismatch.value)
+        assert stored(conn) == original
+        with pytest.raises(SystemExit, match="--rotate-evidence-key") as cli_mismatch:
+            main(["migrate"])
+        assert other not in str(cli_mismatch.value)
+        assert stored(conn) == original
+        assert migrate(conn, rotate_evidence_key=True) == []
+        assert stored(conn) == other
+    main(["migrate", "--rotate-evidence-key"])
+    with connect() as conn:
+        assert stored(conn) == other
+
+
 def test_upgraded_schema_is_baselined_without_touching_audit():
     initial = (MIGRATIONS_DIR / "0001_initial.sql").read_text(encoding="utf-8")
     upgrade = (MIGRATIONS_DIR / "0002_provenance_audit_quality.sql").read_text(encoding="utf-8")
