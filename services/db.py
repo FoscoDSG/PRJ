@@ -105,6 +105,39 @@ def app_database_url(dbname: str | None = None) -> str:
     return make_conninfo(**info)
 
 
+def pii_database_url() -> str:
+    """Login of the role that may read cleartext PII columns. Not ``ieol_app``."""
+    raw = os.environ.get("IEOL_PII_DATABASE_URL", "").strip()
+    if raw == "":
+        raise RuntimeError(
+            "IEOL_PII_DATABASE_URL assente. Il chiaro dei dati personali si legge "
+            "solo come ieol_pii. L'API resta su ieol_app."
+        )
+    return raw
+
+
+def pii_connect(url: str | None = None) -> psycopg.Connection:
+    """Cleartext connection. Logs in as ieol_pii. Does not change role."""
+    conn = psycopg.connect(url or pii_database_url(), row_factory=dict_row, autocommit=False)
+    try:
+        current = conn.execute(
+            "SELECT session_user AS session_user, current_user AS current_user"
+        ).fetchone()
+        if (
+            current is None
+            or current["session_user"] != "ieol_pii"
+            or current["current_user"] != "ieol_pii"
+        ):
+            raise RuntimeError(
+                "La connessione dei dati personali deve autenticarsi come ieol_pii. "
+                "Controlla IEOL_PII_DATABASE_URL."
+            )
+    except Exception:
+        conn.close()
+        raise
+    return conn
+
+
 def app_connect(url: str | None = None) -> psycopg.Connection:
     """Application connection. Logs in as ieol_app. Does not change role."""
     conn = psycopg.connect(url or app_database_url(), row_factory=dict_row, autocommit=False)

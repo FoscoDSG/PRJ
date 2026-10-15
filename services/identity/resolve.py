@@ -4,11 +4,8 @@ from __future__ import annotations
 
 import re
 import unicodedata
-import uuid
 
 import psycopg
-
-from services.text import stable
 
 _LEGAL = re.compile(r"\b(srl|s\.r\.l|spa|s\.p\.a|sas|snc|srls|llc|ltd)\b", re.IGNORECASE)
 
@@ -34,11 +31,9 @@ def name_score(left: str, right: str) -> float:
 
 
 def queue_identity_doubts(conn: psycopg.Connection) -> int:
-    created = 0
-    created += _queue_type(conn, "Customer", "company_name")
-    created += _queue_type(conn, "Product", "name")
-    created += _queue_type(conn, "Supplier", "name")
-    return created
+    """Pair close names in the database. The reason does not contain the names."""
+    row = conn.execute("SELECT app.queue_name_reviews() AS created").fetchone()
+    return int(row["created"] or 0)
 
 
 def confirm_review(conn: psycopg.Connection, review_id: str) -> dict:
@@ -83,46 +78,6 @@ def list_reviews(conn: psycopg.Connection) -> list[dict]:
             """
         ).fetchall()
     )
-
-
-def _queue_type(conn: psycopg.Connection, entity_type: str, property_name: str) -> int:
-    rows = conn.execute(
-        """
-        SELECT e.business_key, f.value
-        FROM app.entities e
-        JOIN app.facts f ON f.entity_id = e.id AND f.valid_to IS NULL
-        WHERE e.type = %s AND e.valid_to IS NULL AND f.property = %s
-        """,
-        (entity_type, property_name),
-    ).fetchall()
-    named = [(row["business_key"], normalize_name(str(stable(row["value"])))) for row in rows]
-    created = 0
-    for index, (left_key, left_name) in enumerate(named):
-        for right_key, right_name in named[index + 1 :]:
-            score = name_score(left_name, right_name)
-            if score < 0.7 or left_key == right_key:
-                continue
-            inserted = conn.execute(
-                """
-                INSERT INTO app.identity_reviews (
-                  id, entity_type, left_key, right_key, score, reason, status
-                )
-                VALUES (%s, %s, %s, %s, %s, %s, 'open')
-                ON CONFLICT (entity_type, left_key, right_key) DO NOTHING
-                RETURNING id
-                """,
-                (
-                    str(uuid.uuid4()),
-                    entity_type,
-                    left_key,
-                    right_key,
-                    score,
-                    f"Nomi vicini senza identità comune: {left_name} / {right_name}",
-                ),
-            ).fetchone()
-            if inserted:
-                created += 1
-    return created
 
 
 def _entity_by_key(conn: psycopg.Connection, entity_type: str, business_key: str) -> str | None:

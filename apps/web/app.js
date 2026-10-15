@@ -28,9 +28,11 @@ const {
   orderDetail,
   customerDetail,
   inboxCard,
-  auditCard,
+  readableCard,
   showFixtureButton,
 } = globalThis.ieolEscape;
+
+const auditState = { offset: 0, limit: 50 };
 
 function showFlash(message) {
   flash.hidden = false;
@@ -236,8 +238,30 @@ async function openCustomer(id) {
   const detail = document.querySelector("#order-detail");
   document.querySelector("#order-list").hidden = true;
   detail.hidden = false;
-  detail.innerHTML = customerDetail(customer);
+  detail.innerHTML = customerDetail(customer, state.role);
   detail.querySelector("#back-orders").addEventListener("click", loadOrders);
+  const unmask = detail.querySelector("#unmask-pii");
+  if (unmask) {
+    unmask.addEventListener("click", async () => {
+      try {
+        const reason = detail.querySelector("[data-reason]").value.trim();
+        if (reason.length < 5) {
+          showFlash("Scrivi un motivo di almeno 5 caratteri.");
+          return;
+        }
+        const result = await api("/api/pii/unmask", {
+          method: "POST",
+          body: JSON.stringify({ entity_id: unmask.dataset.entity, reason }),
+        });
+        const target = detail.querySelector("#unmask-result");
+        target.textContent = (result.properties || [])
+          .map((item) => `${item.property}: ${item.value}`)
+          .join("\n");
+      } catch (err) {
+        showFlash(err.message);
+      }
+    });
+  }
   detail.querySelectorAll("button[data-order]").forEach((button) => {
     button.addEventListener("click", () => openOrder(button.dataset.order));
   });
@@ -302,8 +326,43 @@ async function act(id, action, card) {
 }
 
 async function loadAudit() {
-  const data = await api("/api/audit");
-  document.querySelector("#audit").innerHTML = data.events.map(auditCard).join("") || "<p>Nessun evento.</p>";
+  const params = new URLSearchParams();
+  const order = document.querySelector("#audit-order").value.trim();
+  const user = document.querySelector("#audit-user").value.trim();
+  const batch = document.querySelector("#audit-batch").value.trim();
+  const dateFrom = document.querySelector("#audit-from").value;
+  const dateTo = document.querySelector("#audit-to").value;
+  if (order) params.set("order", order);
+  if (user) params.set("user", user);
+  if (batch) params.set("batch", batch);
+  if (dateFrom) params.set("date_from", dateFrom);
+  if (dateTo) params.set("date_to", dateTo);
+  params.set("limit", String(auditState.limit));
+  params.set("offset", String(auditState.offset));
+  const root = document.querySelector("#audit");
+  try {
+    const data = await api(`/api/audit/readable?${params.toString()}`);
+    root.innerHTML = data.events.map(readableCard).join("") || "<p>Nessun evento.</p>";
+    const page = document.querySelector("#audit-page");
+    const shown = data.offset + data.events.length;
+    page.textContent = data.total ? `${data.offset + 1}–${shown} di ${data.total}` : "0 eventi";
+  } catch (err) {
+    root.innerHTML = `<p>${esc(err.message)}</p>`;
+    document.querySelector("#audit-page").textContent = "";
+  }
 }
+
+document.querySelector("#audit-apply").addEventListener("click", () => {
+  auditState.offset = 0;
+  loadAudit();
+});
+document.querySelector("#audit-prev").addEventListener("click", () => {
+  auditState.offset = Math.max(0, auditState.offset - auditState.limit);
+  loadAudit();
+});
+document.querySelector("#audit-next").addEventListener("click", () => {
+  auditState.offset += auditState.limit;
+  loadAudit();
+});
 
 boot();

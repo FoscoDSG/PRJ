@@ -6,6 +6,8 @@ from typing import Any
 
 import psycopg
 
+from services.mapping.threshold import active_threshold
+from services.pii import is_pii_key, is_pii_property, redact
 from services.text import stable
 
 MASK = "••••"
@@ -15,6 +17,7 @@ SENSITIVE_KEYS = {"vat", "amount", "cost", "margin", "piva", "costo", "importo"}
 
 
 def list_mappings(conn: psycopg.Connection, role: str, ontology: Any) -> list[dict]:
+    _threshold, measured, support = active_threshold(conn)
     rows = conn.execute(
         """
         SELECT id::text, source_name, source_field, target_type, target_property,
@@ -28,8 +31,14 @@ def list_mappings(conn: psycopg.Connection, role: str, ontology: Any) -> list[di
     for row in rows:
         item = dict(row)
         prop = ontology.prop(item["target_type"], item["target_property"]) if ontology else None
-        if role not in PRIVILEGED and prop is not None and prop.classification == "confidential":
+        personal = is_pii_key(item["source_field"]) or is_pii_property(item["target_property"])
+        confidential = prop is not None and prop.classification == "confidential"
+        if personal or (confidential and role not in PRIVILEGED):
             item["samples"] = [MASK for _ in (item["samples"] or [])]
+        item["samples"] = redact(item["samples"])
+        item["calibrated"] = False
+        item["measured"] = bool(measured)
+        item["support"] = support
         visible.append(item)
     return visible
 
@@ -47,6 +56,7 @@ def list_drift(conn: psycopg.Connection) -> list[dict]:
 
 
 def list_orders(conn: psycopg.Connection, role: str) -> list[dict]:
+    _threshold, measured, support = active_threshold(conn)
     rows = conn.execute(
         """
         SELECT id::text, business_key FROM app.entities
@@ -54,10 +64,11 @@ def list_orders(conn: psycopg.Connection, role: str) -> list[dict]:
         ORDER BY business_key
         """
     ).fetchall()
-    return [_order_summary(conn, row, role) for row in rows]
+    return [_order_summary(conn, row, role, measured, support) for row in rows]
 
 
 def get_order(conn: psycopg.Connection, order_id: str, role: str) -> dict | None:
+    _threshold, measured, support = active_threshold(conn)
     row = conn.execute(
         """
         SELECT id::text, type, business_key FROM app.entities
@@ -67,9 +78,9 @@ def get_order(conn: psycopg.Connection, order_id: str, role: str) -> dict | None
     ).fetchone()
     if row is None:
         return None
-    summary = _order_summary(conn, row, role)
-    summary["facts"] = _facts(conn, order_id, role)
-    summary["lines"] = _lines(conn, row["business_key"], role)
+    summary = _order_summary(conn, row, role, measured, support)
+    summary["facts"] = _facts(conn, order_id, role, measured, support, "Order")
+    summary["lines"] = _lines(conn, row["business_key"], role, measured, support)
     summary["edges"] = _edges(conn, order_id)
     summary["stock_formula"] = STOCK_FORMULA
     customer_key = next((fact["value"] for fact in summary["facts"] if fact["property"] == "customer_source_key"), None)
@@ -80,6 +91,7 @@ def get_order(conn: psycopg.Connection, order_id: str, role: str) -> dict | None
 
 
 def get_customer(conn: psycopg.Connection, customer_id: str, role: str) -> dict | None:
+    _threshold, measured, support = active_threshold(conn)
     row = conn.execute(
         """
         SELECT id::text, business_key FROM app.entities
@@ -89,7 +101,7 @@ def get_customer(conn: psycopg.Connection, customer_id: str, role: str) -> dict 
     ).fetchone()
     if row is None:
         return None
-    facts = _facts(conn, customer_id, role)
+    facts = _facts(conn, customer_id, role, measured, support, "Customer")
     orders = conn.execute(
         """
         SELECT e.id::text, e.business_key
@@ -135,6 +147,7 @@ def list_inbox(conn: psycopg.Connection, role: str) -> list[dict]:
         item = dict(row)
         item["confidence"] = stable(item["confidence"])
         evidence = _mask_evidence(item["evidence"], role)
+        evidence = redact(evidence)
         classes = _fact_classes(conn, _fact_ids(evidence))
         item["evidence"] = _with_provenance(evidence, classes)
         item["blocked_reason"] = _blocked_reason(item, classes)
@@ -162,7 +175,7 @@ def list_audit(conn: psycopg.Connection, role: str) -> list[dict]:
     visible = []
     for row in rows:
         item = dict(row)
-        item["payload"] = _mask_tree(item["payload"], role)
+        item["payload"] = redact(_mask_tree(item["payload"], role))
         visible.append(item)
     return visible
 
@@ -219,7 +232,7 @@ def _with_provenance(evidence: Any, classes: dict[str, str | None]) -> Any:
 
 
 def _mask_evidence(evidence: Any, role: str) -> Any:
-    if role in PRIVILEGED or not isinstance(evidence, list):
+    if not isinstance(evidence, list):
         return evidence
     masked = []
     for item in evidence:
@@ -227,7 +240,9 @@ def _mask_evidence(evidence: Any, role: str) -> Any:
             masked.append(item)
             continue
         copy = dict(item)
-        if copy.get("classification") == "confidential" or copy.get("property") in SENSITIVE_KEYS:
+        personal = is_pii_property(copy.get("property"), copy.get("entity_type"))
+        confidential = copy.get("classification") == "confidential" or copy.get("property") in SENSITIVE_KEYS
+        if personal or (confidential and role not in PRIVILEGED):
             copy["value"] = MASK
             copy["masked"] = True
         masked.append(copy)
@@ -235,18 +250,21 @@ def _mask_evidence(evidence: Any, role: str) -> Any:
 
 
 def _mask_tree(value: Any, role: str) -> Any:
-    if role in PRIVILEGED:
-        return value
     if isinstance(value, list):
         return [_mask_tree(item, role) for item in value]
     if isinstance(value, dict):
         classification = value.get("classification")
         prop = value.get("property")
+        entity_type = value.get("entity_type")
         masked = {}
         for key, item in value.items():
-            if key == "value" and (classification == "confidential" or prop in SENSITIVE_KEYS):
-                masked[key] = MASK
-            elif key in SENSITIVE_KEYS:
+            personal = is_pii_key(str(key)) or (
+                key == "value" and is_pii_property(str(prop) if prop is not None else None, str(entity_type) if entity_type else None)
+            )
+            confidential = key in SENSITIVE_KEYS or (
+                key == "value" and (classification == "confidential" or prop in SENSITIVE_KEYS)
+            )
+            if personal or (confidential and role not in PRIVILEGED):
                 masked[key] = MASK
             else:
                 masked[key] = _mask_tree(item, role)
@@ -254,15 +272,15 @@ def _mask_tree(value: Any, role: str) -> Any:
     return value
 
 
-def _order_summary(conn: psycopg.Connection, row: dict, role: str) -> dict:
-    facts = _facts(conn, row["id"], role)
+def _order_summary(conn: psycopg.Connection, row: dict, role: str, measured: bool, support: int) -> dict:
+    facts = _facts(conn, row["id"], role, measured, support, "Order")
     customer_key = _raw_fact(conn, row["id"], "customer_source_key")
     customer_name = None
     customer_id = None
     if customer_key:
         customer_id = _alias(conn, "Customer", str(customer_key))
         if customer_id:
-            customer_name = _raw_fact(conn, customer_id, "company_name")
+            customer_name = MASK if _raw_fact(conn, customer_id, "company_name") is not None else None
     return {
         "id": row["id"],
         "business_key": row["business_key"],
@@ -276,7 +294,7 @@ def _order_summary(conn: psycopg.Connection, row: dict, role: str) -> dict:
     }
 
 
-def _lines(conn: psycopg.Connection, order_key: str, role: str) -> list[dict]:
+def _lines(conn: psycopg.Connection, order_key: str, role: str, measured: bool, support: int) -> list[dict]:
     import json
 
     rows = conn.execute(
@@ -292,7 +310,7 @@ def _lines(conn: psycopg.Connection, order_key: str, role: str) -> list[dict]:
     ).fetchall()
     lines = []
     for row in rows:
-        facts = _facts(conn, row["id"], role)
+        facts = _facts(conn, row["id"], role, measured, support, "OrderLine")
         product_key = _raw_fact(conn, row["id"], "product_source_key")
         stock = None
         if product_key:
@@ -308,7 +326,7 @@ def _lines(conn: psycopg.Connection, order_key: str, role: str) -> list[dict]:
                 (json.dumps(str(product_key)),),
             ).fetchone()
             if stock_row:
-                stock_facts = _facts(conn, stock_row["id"], role)
+                stock_facts = _facts(conn, stock_row["id"], role, measured, support, "StockPosition")
                 stock = {
                     "on_hand": _visible(stock_facts, "on_hand"),
                     "reserved": _visible(stock_facts, "reserved"),
@@ -328,7 +346,14 @@ def _lines(conn: psycopg.Connection, order_key: str, role: str) -> list[dict]:
     return lines
 
 
-def _facts(conn: psycopg.Connection, entity_id: str, role: str) -> list[dict]:
+def _facts(
+    conn: psycopg.Connection,
+    entity_id: str,
+    role: str,
+    measured: bool = False,
+    support: int = 0,
+    entity_type: str | None = None,
+) -> list[dict]:
     rows = conn.execute(
         """
         SELECT id::text, property, value, classification, origin, source,
@@ -344,9 +369,13 @@ def _facts(conn: psycopg.Connection, entity_id: str, role: str) -> list[dict]:
         item = dict(row)
         item["value"] = stable(item["value"])
         item["confidence"] = stable(item["confidence"])
-        if item["classification"] == "confidential" and role not in ("admin", "approver"):
+        personal = is_pii_property(item["property"], entity_type)
+        if personal or (item["classification"] == "confidential" and role not in ("admin", "approver")):
             item["value"] = MASK
             item["masked"] = True
+        item["calibrated"] = False
+        item["measured"] = bool(measured)
+        item["support"] = support
         visible.append(item)
     return visible
 

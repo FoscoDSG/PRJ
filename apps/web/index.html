@@ -80,7 +80,21 @@
 
     <section id="view-audit" class="panel" hidden>
       <h2>Audit</h2>
+      <p class="lede">Sola lettura. Chi, quando (ora di Roma), cosa e quale ordine.</p>
+      <div class="row">
+        <label>Ordine <input id="audit-order" /></label>
+        <label>Utente <input id="audit-user" /></label>
+        <label>Lotto <input id="audit-batch" /></label>
+        <label>Dal <input id="audit-from" type="date" /></label>
+        <label>Al <input id="audit-to" type="date" /></label>
+        <button type="button" id="audit-apply">Filtra</button>
+      </div>
       <div id="audit" class="stack"></div>
+      <div class="row">
+        <button type="button" id="audit-prev" class="ghost">Precedenti</button>
+        <span id="audit-page"></span>
+        <button type="button" id="audit-next" class="ghost">Successivi</button>
+      </div>
     </section>
   </div>
   <script src="/assets/escape.js"></script>

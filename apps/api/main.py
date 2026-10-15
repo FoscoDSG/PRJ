@@ -5,20 +5,32 @@ from __future__ import annotations
 import os
 import tempfile
 from contextlib import asynccontextmanager
+from datetime import date
 from pathlib import Path
 
 from typing import Literal
 
 import psycopg
-from fastapi import Depends, FastAPI, File, Form, Request, UploadFile
+from fastapi import Depends, FastAPI, File, Form, Query, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.sessions import SessionMiddleware
 
 from ontology.loader import load_merged
 from services.actions.executor import compensate
-from apps.api.schemas import ApproveBody, LoginBody, ModifyBody, RejectBody, SqlIngestBody, StockBody
+from apps.api.schemas import (
+    ApproveBody,
+    LoginBody,
+    ModifyBody,
+    RejectBody,
+    SqlIngestBody,
+    StockBody,
+    UnmaskBody,
+)
+from services.audit_read import list_readable
 from services.db import app_connect, assert_demo_database, authenticate, demo_mode, ensure_ready
+from services.evidence import evidence_key
+from services.pii import install_log_redaction, read_cleartext, unmask_entity
 from services.migrate import require_migrated
 from services.errors import AppError
 from services.pipeline import (
@@ -71,11 +83,15 @@ def session_secret() -> str:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    evidence_key()
+    install_log_redaction()
     model = load_merged()
     app.state.ontology = model
     with app_connect() as conn:
         try:
             require_migrated(conn)
+            read_cleartext(conn, "SELECT 1 AS ok", purpose="connessione")
+            conn.commit()
             ensure_ready(conn, model.packages)
         except psycopg.errors.InsufficientPrivilege as exc:
             raise RuntimeError(
@@ -489,6 +505,50 @@ def adjust_stock(product_key: str, body: StockBody, user: dict = Depends(require
 def audit(user: dict = Depends(require_user)) -> dict:
     with app_connect() as conn:
         return _ok({"events": list_audit(conn, user["role"])})
+
+
+@app.get("/api/audit/readable")
+def audit_readable(
+    user_filter: str | None = Query(default=None, alias="user"),
+    order: str | None = None,
+    batch: str | None = None,
+    date_from: date | None = None,
+    date_to: date | None = None,
+    limit: int = 50,
+    offset: int = 0,
+    user: dict = Depends(require_user),
+) -> dict:
+    if user["role"] not in ("admin", "approver"):
+        raise AppError(403, "Serve un approvatore")
+    with app_connect() as conn:
+        return _ok(
+            list_readable(
+                conn,
+                user=user_filter,
+                order=order,
+                batch=batch,
+                date_from=date_from,
+                date_to=date_to,
+                limit=limit,
+                offset=offset,
+            )
+        )
+
+
+@app.post("/api/pii/unmask")
+def pii_unmask(body: UnmaskBody, user: dict = Depends(require_user)) -> JSONResponse:
+    if user["role"] != "admin":
+        raise AppError(403, "Serve il ruolo admin")
+    with app_connect() as conn:
+        result = unmask_entity(
+            conn,
+            str(body.entity_id),
+            body.reason,
+            actor=user["username"],
+            role=user["role"],
+        )
+        conn.commit()
+    return JSONResponse(_ok(result), headers={"Cache-Control": "no-store"})
 
 
 @app.get("/")

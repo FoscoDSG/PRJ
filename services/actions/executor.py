@@ -11,6 +11,7 @@ from psycopg.types.json import Json
 from ontology.loader import Ontology
 from services.audit import record
 from services.errors import AppError
+from services.pii import MASK
 from services.graph.projection import record_trigger
 from services.workflow.engine import expire_stale, mark_dry_run, mark_executed, mark_failed
 
@@ -92,7 +93,7 @@ def execute(
                     )
                     created.append(document)
                 elif action_type in ("notifyCustomer", "sendConfirmation"):
-                    email = _email(conn, key, payload)
+                    email = _email(conn, key, payload, str(row["order_entity_id"]))
                     record(
                         conn,
                         action="external_call",
@@ -162,7 +163,6 @@ def _payload(conn: psycopg.Connection, action: dict, recommendation: dict) -> di
     params = dict(action.get("params") or {})
     kind = action["type"]
     order_key = params.get("order")
-    customer = _customer_email(conn, str(recommendation["order_entity_id"]))
     if kind == "createPurchaseOrder":
         return {
             "action": "createPurchaseOrder",
@@ -183,7 +183,7 @@ def _payload(conn: psycopg.Connection, action: dict, recommendation: dict) -> di
         "action": kind,
         "order": order_key,
         "customer": params.get("customer"),
-        "recipient": customer.get("email"),
+        "recipient": MASK,
         "subject": f"Aggiornamento ordine {order_key}",
         "body": recommendation["problem"],
     }
@@ -249,15 +249,10 @@ def _sandbox(conn: psycopg.Connection, action_type: str, key: str, payload: dict
     ).fetchone()
 
 
-def _email(conn: psycopg.Connection, key: str, payload: dict) -> dict:
-    email_id = str(uuid.uuid4())
+def _email(conn: psycopg.Connection, key: str, payload: dict, order_id: str) -> dict:
     conn.execute(
-        """
-        INSERT INTO app.email_outbox (id, idempotency_key, recipient, subject, body)
-        VALUES (%s, %s, %s, %s, %s)
-        ON CONFLICT (idempotency_key) DO NOTHING
-        """,
-        (email_id, key, payload.get("recipient"), payload.get("subject") or "", payload.get("body") or ""),
+        "SELECT app.queue_customer_email(%s::uuid, %s, %s, %s)",
+        (order_id, key, payload.get("subject") or "", payload.get("body") or ""),
     )
     row = conn.execute(
         """
@@ -331,48 +326,3 @@ def _recommendation(conn: psycopg.Connection, recommendation_id: str) -> dict:
     return row
 
 
-def _customer_email(conn: psycopg.Connection, order_id: str) -> dict[str, Any]:
-    row = conn.execute(
-        """
-        SELECT value FROM app.facts
-        WHERE entity_id = %s AND property = 'customer_source_key' AND valid_to IS NULL
-        """,
-        (order_id,),
-    ).fetchone()
-    if row is None:
-        return {}
-    import json
-
-    customer_key = row["value"]
-    if isinstance(customer_key, str):
-        try:
-            customer_key = json.loads(customer_key)
-        except json.JSONDecodeError:
-            pass
-    alias = conn.execute(
-        """
-        SELECT entity_id::text FROM app.identity_aliases
-        WHERE entity_type = 'Customer' AND alias = %s
-        """,
-        (str(customer_key),),
-    ).fetchone()
-    if alias is None:
-        return {}
-    email = conn.execute(
-        """
-        SELECT value FROM app.facts
-        WHERE entity_id = %s AND property = 'email' AND valid_to IS NULL
-        """,
-        (alias["entity_id"],),
-    ).fetchone()
-    company = conn.execute(
-        """
-        SELECT value FROM app.facts
-        WHERE entity_id = %s AND property = 'company_name' AND valid_to IS NULL
-        """,
-        (alias["entity_id"],),
-    ).fetchone()
-    return {
-        "email": None if email is None else email["value"],
-        "company_name": None if company is None else company["value"],
-    }

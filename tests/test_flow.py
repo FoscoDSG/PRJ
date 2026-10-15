@@ -102,9 +102,19 @@ def test_cfo_approval_dry_run_idempotent_execute_and_masking(client: TestClient)
     order = next(item for item in client.get("/api/orders").json()["orders"] if item["business_key"] == "1024")
     assert order["margin"] == 0.6667
     customer = client.get(f"/api/customers/{order['customer_id']}").json()
-    assert customer["company_name"] == "ACME SRL"
+    assert customer["company_name"] == "••••"
     vat = next(fact["value"] for fact in customer["facts"] if fact["property"] == "vat")
-    assert vat == "IT12345678901"
+    assert vat == "••••"
+    with connect() as conn:
+        stored_vat = conn.execute(
+            """
+            SELECT value_cleartext #>> '{}' AS clear
+            FROM app.facts
+            WHERE entity_id = %s AND property = 'vat' AND valid_to IS NULL
+            """,
+            (customer["id"],),
+        ).fetchone()
+    assert stored_vat["clear"] == "IT12345678901"
 
     approved = decide(client, recommendation)
     assert approved.status_code == 200, approved.text
@@ -288,7 +298,11 @@ def test_similar_names_stay_apart_until_review(client: TestClient, tmp_path: Pat
     assert client.post("/api/mappings/confirm-confident").status_code == 200
     assert client.post("/api/materialize").status_code == 200
     reviews = client.get("/api/identity-reviews").json()["reviews"]
-    assert any(item["status"] == "open" and "rossi" in item["reason"] for item in reviews)
+    assert any(
+        item["status"] == "open" and item["reason"] == "Nomi vicini senza identità comune"
+        for item in reviews
+    )
+    assert all("rossi" not in (item["reason"] or "").lower() for item in reviews)
     with connect() as conn:
         count = conn.execute(
             """
@@ -628,7 +642,17 @@ def test_email_and_pdf_orders_enter_the_same_model(client: TestClient, tmp_path:
     assert released.status_code == 200, released.text
     created = next(item for item in client.get("/api/orders").json()["orders"] if item["business_key"] == "1099")
     assert created["shortage_qty"] == 1000
-    assert created["customer_name"] == "Nuova Srl"
+    assert created["customer_name"] == "••••"
+    with connect() as conn:
+        stored_name = conn.execute(
+            """
+            SELECT value_cleartext #>> '{}' AS clear
+            FROM app.facts
+            WHERE entity_id = %s AND property = 'company_name' AND valid_to IS NULL
+            """,
+            (created["customer_id"],),
+        ).fetchone()
+    assert stored_name["clear"] == "Nuova Srl"
 
     text = Path("fixtures/ordine_email.txt").read_text(encoding="utf-8").replace("1099", "1100").replace("C009", "C010")
     writer = PdfWriter()
@@ -687,7 +711,9 @@ def test_operator_inbox_hides_confidential_evidence(client: TestClient):
     assert next(item for item in visible if item["property"] == "amount")["value"] == 60000
     samples = client.get("/api/mappings").json()["mappings"]
     piva = next(item for item in samples if item["source_field"] == "piva")
-    assert "IT12345678901" in piva["samples"]
+    assert piva["samples"]
+    assert all(sample == "••••" for sample in piva["samples"])
+    assert "IT12345678901" not in str(samples)
 
 
 def test_executed_order_is_not_proposed_again(client: TestClient):

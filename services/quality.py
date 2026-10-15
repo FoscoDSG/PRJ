@@ -44,7 +44,7 @@ def check_canonical(conn: psycopg.Connection) -> int:
     }
     for row in conn.execute(
         """
-        SELECT e.type, e.business_key, f.property, f.value
+        SELECT e.id::text AS entity_id, e.type, e.business_key, f.property, f.value
         FROM app.entities e
         JOIN app.facts f ON f.entity_id = e.id AND f.valid_to IS NULL
         WHERE e.valid_to IS NULL
@@ -53,8 +53,13 @@ def check_canonical(conn: psycopg.Connection) -> int:
     ).fetchall():
         value = stable(row["value"])
         issue = None
-        if row["type"] == "Customer" and row["property"] == "vat" and not _VAT.fullmatch(str(value)):
-            issue = ("vat", f"P.IVA non valida: {value}")
+        if row["type"] == "Customer" and row["property"] == "vat":
+            valid = conn.execute(
+                "SELECT app.vat_is_valid(%s::uuid) AS ok",
+                (row["entity_id"],),
+            ).fetchone()
+            if valid is None or not valid["ok"]:
+                issue = ("vat", "P.IVA non valida")
         elif row["type"] == "OrderLine" and row["property"] == "quantity" and (value is None or value <= 0):
             issue = ("quantity", "Quantità non positiva")
         elif row["type"] == "OrderLine" and row["property"] == "unit_price":

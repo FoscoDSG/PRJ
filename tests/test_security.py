@@ -241,7 +241,8 @@ def test_malicious_csv_value_renders_inert(client: TestClient):
     hostile_field = norm(PAYLOAD)
     assert any(item["source_field"] == hostile_field for item in mappings)
     name_mapping = next(item for item in mappings if item["source_field"] == "ragione_sociale")
-    assert PAYLOAD in name_mapping["samples"]
+    assert PAYLOAD not in name_mapping["samples"]
+    assert all(sample == "••••" for sample in name_mapping["samples"])
     confirmed = client.post("/api/mappings/confirm-confident")
     assert confirmed.status_code == 200, confirmed.text
     materialized = client.post("/api/materialize")
@@ -249,14 +250,15 @@ def test_malicious_csv_value_renders_inert(client: TestClient):
     with connect() as conn:
         rows = conn.execute(
             """
-            SELECT entity_id::text, value
+            SELECT entity_id::text, value_cleartext
             FROM app.facts
             WHERE property = 'company_name' AND valid_to IS NULL
             """
         ).fetchall()
-    match = next(row for row in rows if row["value"] == PAYLOAD)
+    match = next(row for row in rows if row["value_cleartext"] == PAYLOAD)
     customer = client.get(f"/api/customers/{match['entity_id']}").json()
-    assert customer["company_name"] == PAYLOAD
+    assert customer["company_name"] == "••••"
+    assert PAYLOAD not in customer["company_name"]
     rendered = subprocess.run(
         ["node", "tests/xss_render_check.js"],
         cwd=ROOT,

@@ -1,0 +1,666 @@
+"""PII masking, readable audit, labelled test set, measured threshold."""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+import psycopg
+import pytest
+from fastapi.testclient import TestClient
+
+from apps.api.main import app
+from services.db import app_connect, connect, pii_connect
+from services.mapping.engine import HEADER_SIMILARITY_RULE
+from services.pii import MASK
+from services.testset import MIN_MEASURED_CASES, build_testset, evaluate_testset, load_hand_labels
+from services.text import digest
+from tests.test_flow import decide, load_demo, login
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+@pytest.fixture
+def client():
+    with TestClient(app) as test_client:
+        yield test_client
+CLEARTEXT = (
+    "ordini@acme.example",
+    "buyer@bianchi.example",
+    "buyer@nuova.example",
+    "IT12345678901",
+    "IT00987654321",
+    "IT55555555555",
+    "Acme Srl",
+    "ACME SRL",
+    "Bianchi SpA",
+    "Nuova Srl",
+    "Fornitore A",
+    "Fornitore B",
+    "Fornitore C",
+)
+
+
+def _clean(payload) -> None:
+    text = json.dumps(payload, ensure_ascii=False, default=str)
+    for secret in CLEARTEXT:
+        assert secret not in text
+
+
+def test_ieol_app_cannot_select_cleartext_columns():
+    statements = (
+        "SELECT value_cleartext FROM app.facts",
+        "SELECT data_cleartext FROM app.landing_rows",
+        "SELECT samples_cleartext FROM app.field_mappings",
+        "SELECT recipient_cleartext FROM app.email_outbox",
+        "SELECT ragione_sociale, piva, email FROM src.clienti",
+        "SELECT nome FROM src.fornitori",
+        "UPDATE app.facts SET value = value_cleartext",
+    )
+    with app_connect() as conn:
+        for statement in statements:
+            with pytest.raises(psycopg.errors.InsufficientPrivilege):
+                conn.execute(statement)
+            conn.rollback()
+    with pii_connect() as conn:
+        conn.execute("SELECT value_cleartext FROM app.facts")
+        conn.execute("SELECT ragione_sociale FROM src.clienti")
+        conn.rollback()
+
+
+def test_api_hides_cleartext_and_unmask_is_audited(client: TestClient):
+    login(client, "mapper")
+    load_demo()
+    paths = ("/api/inbox", "/api/orders", "/api/mappings", "/api/audit")
+    for role in ("mapper", "operator", "approver", "admin"):
+        login(client, role)
+        for path in paths:
+            response = client.get(path)
+            assert response.status_code == 200, response.text
+            _clean(response.json())
+        orders = client.get("/api/orders").json()["orders"]
+        order = next(item for item in orders if item["business_key"] == "1024")
+        _clean(client.get(f"/api/orders/{order['id']}").json())
+        _clean(client.get(f"/api/customers/{order['customer_id']}").json())
+    login(client, "operator")
+    denied = client.post(
+        "/api/pii/unmask",
+        json={"entity_id": order["customer_id"], "reason": "verifica operativa"},
+    )
+    assert denied.status_code == 403
+    login(client, "admin")
+    opened = client.post(
+        "/api/pii/unmask",
+        json={"entity_id": order["customer_id"], "reason": "verifica del cliente"},
+    )
+    assert opened.status_code == 200, opened.text
+    assert opened.headers["cache-control"] == "no-store"
+    values = {item["property"]: item["value"] for item in opened.json()["properties"]}
+    assert values["vat"] == "IT12345678901"
+    assert "IT12345678901" not in json.dumps(client.get("/api/audit").json())
+    again = client.get(f"/api/customers/{order['customer_id']}").json()
+    assert again["company_name"] == MASK
+    _clean(again)
+
+
+def test_evidence_hash_is_role_independent_hmac(client: TestClient):
+    login(client, "mapper")
+    load_demo()
+    login(client, "operator")
+    operator = client.get("/api/inbox").json()["recommendations"][0]
+    login(client, "approver")
+    approver = client.get("/api/inbox").json()["recommendations"][0]
+    assert operator["evidence_hash"] == approver["evidence_hash"]
+    assert len(operator["evidence_hash"]) == 64
+    assert operator["evidence_hash"] != digest(operator["evidence"])
+    _clean(operator)
+    _clean(approver)
+
+
+def test_readable_audit_is_italian_readonly_and_filtered(client: TestClient):
+    login(client, "mapper")
+    load_demo()
+    login(client, "approver")
+    item = client.get("/api/inbox").json()["recommendations"][0]
+    assert decide(client, item).status_code == 200
+    with connect() as conn:
+        before_audit = conn.execute("SELECT count(*) AS n FROM app.audit_log").fetchone()["n"]
+        before_decisions = conn.execute("SELECT count(*) AS n FROM app.decisions_log").fetchone()["n"]
+        conn.execute(
+            """
+            INSERT INTO app.audit_log (id, at, actor, role, action, entity_ref, payload)
+            VALUES (%s, '2026-01-15 10:00:00+00', 'ada', 'admin', 'proposal', 'nessun-ordine', '{}')
+            """,
+            ("11111111-1111-1111-1111-111111111111",),
+        )
+        conn.execute(
+            """
+            INSERT INTO app.audit_log (id, at, actor, role, action, entity_ref, payload)
+            VALUES (%s, '2026-10-15 10:00:00+00', 'ada', 'admin', 'proposal', 'nessun-ordine', '{}')
+            """,
+            ("22222222-2222-2222-2222-222222222222",),
+        )
+        conn.commit()
+    login(client, "operator")
+    denied = client.get("/api/audit/readable")
+    assert denied.status_code == 403
+    login(client, "approver")
+    page = client.get("/api/audit/readable", params={"limit": 1, "offset": 0})
+    assert page.status_code == 200, page.text
+    body = page.json()
+    assert body["limit"] == 1
+    assert body["total"] > 1
+    assert len(body["events"]) == 1
+    _clean(body)
+    january = client.get("/api/audit/readable", params={"user": "ada", "date_from": "2026-01-15", "date_to": "2026-01-15"})
+    assert january.status_code == 200, january.text
+    when = {event["when"] for event in january.json()["events"]}
+    assert "15/01/2026 11:00:00" in when
+    october = client.get("/api/audit/readable", params={"user": "ada", "date_from": "2026-10-15", "date_to": "2026-10-15"})
+    october_event = october.json()["events"][0]
+    assert october_event["when"] == "15/10/2026 12:00:00"
+    assert october_event["what"] == "Proposta"
+    assert october_event["who"] == "ada · amministratore"
+    from services.audit_read import _event
+
+    fallback = _event(
+        {
+            "kind": "audit",
+            "code": "custom_event",
+            "actor": "ada",
+            "role": "admin",
+            "when_rome": "15/10/2026 12:00:00",
+            "order_key": None,
+            "detail": "nota",
+        }
+    )
+    assert fallback["what"] == "custom_event"
+    labelled = client.get("/api/audit/readable", params={"order": "1024", "user": "approver"})
+    assert labelled.status_code == 200, labelled.text
+    assert labelled.json()["events"]
+    assert any(event["what"] == "Approvazione" for event in labelled.json()["events"])
+    assert all(event["order"] == "1024" for event in labelled.json()["events"])
+    _clean(labelled.json())
+    with connect() as conn:
+        assert conn.execute("SELECT count(*) AS n FROM app.audit_log").fetchone()["n"] == before_audit + 2
+        assert conn.execute("SELECT count(*) AS n FROM app.decisions_log").fetchone()["n"] == before_decisions
+
+
+def test_readable_card_escapes_every_field():
+    import subprocess
+
+    script = """
+const { readableCard, escapeHtml } = require("./apps/web/escape.js");
+const value = '"><img src=x onerror=alert(1)>';
+const html = readableCard({ action: value, who: value, when: value, what: value, order: value, detail: value });
+if (html.includes(value) || html.includes("<img")) process.exit(2);
+if (!html.includes(escapeHtml(value))) process.exit(3);
+process.stdout.write("ok\\n");
+"""
+    result = subprocess.run(["node", "-e", script], cwd=ROOT, capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "ok\n"
+
+
+def test_testset_fallback_until_minimum_and_separated_measurement(monkeypatch: pytest.MonkeyPatch):
+    hand = load_hand_labels()
+    assert hand
+    with connect() as conn:
+        built = build_testset(conn)
+        report = evaluate_testset(conn)
+        conn.commit()
+    assert built["mapping_count"] < MIN_MEASURED_CASES
+    threshold = report["threshold"]
+    assert float(threshold["threshold"]) == 0.75
+    assert threshold["method"] == "fallback"
+    assert threshold["measured"] is False
+    assert threshold["rules_version"] == HEADER_SIMILARITY_RULE
+    assert report["groups"]["mapping"]["method"] == "too_small_for_split"
+    assert report["groups"]["mapping"]["separated"] is False
+    assert report["groups"]["mapping"]["n"] == 0
+    assert report["confronto"] == "agente = regole, nessun confronto possibile"
+    assert set(report["groups"]) == {"mapping"}
+
+    def four_mappings():
+        return [
+            {
+                "case_kind": "mapping",
+                "profile": "order",
+                "source_field": "ord_head",
+                "target_type": "Order",
+                "target_property": "source_key",
+            }
+            for _ in range(4)
+        ]
+
+    monkeypatch.setattr("services.testset.load_hand_labels", four_mappings)
+    with connect() as conn:
+        build_testset(conn)
+        partial = evaluate_testset(conn)
+        conn.commit()
+    assert partial["groups"]["mapping"]["method"] == "leave_one_out"
+    assert partial["groups"]["mapping"]["separated"] is True
+    assert partial["groups"]["mapping"]["n"] == 4
+    assert partial["threshold"]["measured"] is False
+    assert float(partial["threshold"]["threshold"]) == 0.75
+
+    def enough():
+        cases = [
+            {
+                "case_kind": "mapping",
+                "profile": "order",
+                "source_field": "ord_head",
+                "target_type": "Order",
+                "target_property": "source_key",
+            }
+            for _ in range(MIN_MEASURED_CASES)
+        ]
+        cases.append(
+            {
+                "case_kind": "recommendation",
+                "context": {
+                    "order_key": "ORD-H1",
+                    "amount": 10,
+                    "customer_key": "C1",
+                    "lines": [{"product": "ART-1", "shortage": 1, "quantity": 1}],
+                    "suppliers": [
+                        {"source_key": "SUP-SLOW", "product": "ART-1", "delay_days": 9},
+                        {"source_key": "SUP-FAST", "product": "ART-1", "delay_days": 1},
+                    ],
+                },
+                "expected_actions": [
+                    {
+                        "type": "createPurchaseOrder",
+                        "params": {
+                            "supplier": "SUP-FAST",
+                            "product": "ART-1",
+                            "quantity": 1,
+                            "order": "ORD-H1",
+                        },
+                    },
+                    {"type": "notifyCustomer", "params": {"order": "ORD-H1", "customer": "C1"}},
+                ],
+            }
+        )
+        return cases
+
+    monkeypatch.setattr("services.testset.load_hand_labels", enough)
+    with connect() as conn:
+        build_testset(conn)
+        measured = evaluate_testset(conn)
+        stored = conn.execute(
+            """
+            SELECT threshold, method, measured, rules_version
+            FROM app.mapping_thresholds
+            ORDER BY chosen_at DESC, id DESC
+            LIMIT 1
+            """
+        ).fetchone()
+        conn.commit()
+    assert stored["measured"] is True
+    assert stored["method"] == "kfold5_f1_v1"
+    assert stored["rules_version"] == HEADER_SIMILARITY_RULE
+    assert float(stored["threshold"]) == pytest.approx(0.98)
+    assert measured["groups"]["mapping"]["separated"] is True
+    assert measured["groups"]["mapping"]["n"] == MIN_MEASURED_CASES
+    assert measured["confronto"] == "agente = regole, nessun confronto possibile"
+    assert set(measured["groups"]) == {"mapping"}
+
+
+def test_unknown_sources_and_agent_recommendations_are_not_labels(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    from services.errors import AppError
+
+    load_demo()
+    with connect() as conn:
+        version = build_testset(conn)["version"]
+        with pytest.raises(psycopg.errors.CheckViolation):
+            conn.execute(
+                """
+                INSERT INTO app.labelled_cases (
+                  id, testset_version, case_kind, label_origin, decision_id, label
+                )
+                VALUES (gen_random_uuid(), %s, 'recommendation', 'agent', NULL, '{}')
+                """,
+                (version,),
+            )
+        conn.rollback()
+        version = build_testset(conn)["version"]
+        conn.execute(
+            """
+            INSERT INTO app.decisions_log (
+              id, recommendation_id, batch_id, row_index, decision, evidence_hash,
+              recommendation, confidence, actor, actor_role, agent_version, rules_version,
+              confidence_threshold, amount_threshold_eur, action_label, context_snapshot
+            )
+            SELECT gen_random_uuid(), r.id, lr.batch_id, lr.row_index, 'approve', r.evidence_hash,
+                   'non usare', 0.2, 'intruso', 'approver', 'x', 'y', 0.75, 1,
+                   '[{"type":"notifyCustomer","params":{}}]'::jsonb, '{}'::jsonb
+            FROM app.recommendations r
+            JOIN app.landing_rows lr ON lr.data ->> 'ord_head' = '1024'
+            LIMIT 1
+            """
+        )
+        decision_id = conn.execute(
+            "SELECT id FROM app.decisions_log WHERE actor = 'intruso'"
+        ).fetchone()["id"]
+        source = conn.execute(
+            """
+            SELECT batch_id, row_index FROM app.landing_rows lr
+            WHERE lr.data ->> 'ord_head' = '1024'
+            LIMIT 1
+            """
+        ).fetchone()
+        conn.execute(
+            """
+            INSERT INTO app.decisions_log_sources (decision_id, batch_id, row_index, confidence_method)
+            VALUES (%s, %s, %s, 'unknown')
+            """,
+            (decision_id, source["batch_id"], source["row_index"]),
+        )
+        second = build_testset(conn)
+        linked = conn.execute(
+            """
+            SELECT count(*) AS n FROM app.labelled_cases
+            WHERE testset_version = %s AND decision_id = %s
+            """,
+            (second["version"], decision_id),
+        ).fetchone()["n"]
+        assert linked == 0
+        assert second["version"] != version
+
+        class Guard:
+            def __init__(self, inner):
+                self._inner = inner
+
+            def execute(self, query, params=None, **kwargs):
+                text = query if isinstance(query, str) else str(query)
+                assert "decisions_log" not in text.lower()
+                if params is None:
+                    return self._inner.execute(query, **kwargs)
+                return self._inner.execute(query, params, **kwargs)
+
+        evaluate_testset(Guard(conn))
+        conn.rollback()
+    rejected = tmp_path / "hand_labels.json"
+    rejected.write_text('{"label_origin":"agent","cases":[]}\n', encoding="utf-8")
+    monkeypatch.setattr("services.testset.HAND_LABELS", rejected)
+    with pytest.raises(AppError, match="hand_written"):
+        load_hand_labels()
+
+
+def test_ieol_app_cannot_hmac_with_a_chosen_key():
+    import hashlib
+    import hmac
+
+    with app_connect() as conn:
+        with pytest.raises(psycopg.Error):
+            conn.execute("SELECT app.hmac_evidence(ARRAY[]::uuid[], 'chosen-key')")
+        conn.rollback()
+        for statement in (
+            "SELECT secret FROM app.evidence_hmac_key",
+            "UPDATE app.evidence_hmac_key SET secret = 'chosen-key'",
+            "INSERT INTO app.evidence_hmac_key (id, secret) VALUES (1, 'chosen-key')",
+        ):
+            with pytest.raises(psycopg.errors.InsufficientPrivilege):
+                conn.execute(statement)
+            conn.rollback()
+        digest = conn.execute(
+            "SELECT app.hmac_evidence(ARRAY[]::uuid[]) AS digest"
+        ).fetchone()["digest"]
+        conn.rollback()
+    chosen = hmac.new(b"chosen-key", b"", hashlib.sha256).hexdigest()
+    stored = hmac.new(b"test-hmac-key-not-for-production", b"", hashlib.sha256).hexdigest()
+    assert digest == stored
+    assert digest != chosen
+
+
+def test_cleartext_reads_go_through_one_audited_function():
+    allowed = {
+        ROOT / "services" / "db.py",
+        ROOT / "services" / "pii.py",
+    }
+    for folder in (ROOT / "services", ROOT / "apps"):
+        for path in folder.rglob("*.py"):
+            if "pii_connect" in path.read_text(encoding="utf-8"):
+                assert path in allowed, path
+    source = (ROOT / "services" / "pii.py").read_text(encoding="utf-8")
+    assert source.count("pii_connect(") == 1
+    assert "def read_cleartext" in source
+
+
+def test_pii_reads_are_audited_without_values(client: TestClient):
+    login(client, "mapper")
+    load_demo()
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT action, payload FROM app.audit_log WHERE action = 'pii_read'"
+        ).fetchall()
+    assert rows
+    for row in rows:
+        _clean(row["payload"])
+        assert row["payload"]["purpose"]
+        assert "value_cleartext" not in row["payload"]
+        assert "data_cleartext" not in row["payload"]
+
+
+def test_shield_records_how_many_rows_were_masked():
+    with connect() as conn:
+        assert conn.execute(
+            "SELECT count(*) AS n FROM app.audit_log WHERE action = 'pii_mask'"
+        ).fetchone()["n"] == 0
+        conn.execute(
+            """
+            INSERT INTO app.quality_issues (id, entity_type, business_key, check_name, detail)
+            VALUES (gen_random_uuid(), 'Customer', 'C1', 'contatto', 'scrivere a segreteria@example.com')
+            """
+        )
+        conn.execute("SELECT app.shield_existing_pii()")
+        row = conn.execute(
+            """
+            SELECT payload FROM app.audit_log
+            WHERE action = 'pii_mask'
+            ORDER BY at DESC
+            LIMIT 1
+            """
+        ).fetchone()
+        with pytest.raises(psycopg.errors.RaiseException, match="append-only"):
+            conn.execute("UPDATE app.audit_log SET actor = 'x'")
+        conn.rollback()
+    payload = row["payload"]
+    assert payload["migration"] == "0005"
+    assert payload["hash_version"] == "hmac-sha256-v1"
+    assert payload["quality_issues"] >= 1
+    assert "segreteria@example.com" not in json.dumps(payload)
+
+
+def test_hash_version_old_rows_stay_sha256_and_new_rows_use_hmac(client: TestClient):
+    script = (ROOT / "db" / "migrations" / "0005_pii_testset_audit.sql").read_text(encoding="utf-8")
+    added = script.index("ADD COLUMN IF NOT EXISTS hash_version text NOT NULL DEFAULT 'sha256'")
+    changed = script.index("ALTER COLUMN hash_version SET DEFAULT 'hmac-sha256-v1'")
+    assert added < changed
+    assert "SET hash_version" not in script
+    login(client, "mapper")
+    load_demo()
+    login(client, "approver")
+    item = client.get("/api/inbox").json()["recommendations"][0]
+    assert decide(client, item).status_code == 200
+    with connect() as conn:
+        default = conn.execute(
+            """
+            SELECT column_default
+            FROM information_schema.columns
+            WHERE table_schema = 'app' AND table_name = 'decisions_log' AND column_name = 'hash_version'
+            """
+        ).fetchone()["column_default"]
+        fresh = conn.execute(
+            """
+            SELECT hash_version FROM app.decisions_log
+            WHERE actor = 'approver'
+            ORDER BY decided_at DESC
+            LIMIT 1
+            """
+        ).fetchone()["hash_version"]
+        conn.execute(
+            """
+            INSERT INTO app.decisions_log (
+              id, recommendation_id, batch_id, row_index, decision, evidence_hash,
+              recommendation, confidence, actor, actor_role, agent_version, rules_version,
+              confidence_threshold, amount_threshold_eur, hash_version
+            )
+            SELECT gen_random_uuid(), r.id, lr.batch_id, lr.row_index, 'reject', r.evidence_hash,
+                   'storico', 0.2, 'archivio', 'approver', 'x', 'y', 0.75, 1, 'sha256'
+            FROM app.recommendations r
+            JOIN app.landing_rows lr ON lr.data ->> 'ord_head' = '1024'
+            LIMIT 1
+            """
+        )
+        historical = conn.execute(
+            "SELECT hash_version FROM app.decisions_log WHERE actor = 'archivio'"
+        ).fetchone()["hash_version"]
+        with pytest.raises(psycopg.errors.RaiseException, match="append-only"):
+            conn.execute(
+                "UPDATE app.decisions_log SET hash_version = 'hmac-sha256-v1' WHERE actor = 'archivio'"
+            )
+        conn.rollback()
+    assert "hmac-sha256-v1" in default
+    assert fresh == "hmac-sha256-v1"
+    assert historical == "sha256"
+
+
+def test_bad_date_and_entity_id_are_422(client: TestClient):
+    login(client, "admin")
+    bad_date = client.get("/api/audit/readable", params={"date_from": "non-una-data"})
+    assert bad_date.status_code == 422
+    bad_end = client.get("/api/audit/readable", params={"date_to": "2026-13-40"})
+    assert bad_end.status_code == 422
+    bad_id = client.post(
+        "/api/pii/unmask",
+        json={"entity_id": "non-e-uno-uuid", "reason": "motivo valido"},
+    )
+    assert bad_id.status_code == 422
+
+
+def test_detail_keys_use_the_italian_labels():
+    from services.audit_read import _detail
+
+    text = _detail(
+        {
+            "decision": "approve",
+            "status": "open",
+            "quantity": 3,
+            "reason": "controllo",
+            "problem": "ritardo",
+        }
+    )
+    assert text == "Decisione: Approvazione; Stato: open; Quantità: 3; Motivo: controllo; Problema: ritardo"
+    assert "decision:" not in text
+    assert "quantity:" not in text
+
+
+def test_unmask_field_and_measured_threshold_phrase():
+    import subprocess
+
+    script = r"""
+const { customerDetail, confidenceLabel, mappingConfidence } = require("./apps/web/escape.js");
+const fs = require("fs");
+const app = fs.readFileSync("./apps/web/app.js", "utf8");
+if (app.includes("window.prompt")) process.exit(2);
+const html = customerDetail({
+  id: "11111111-1111-1111-1111-111111111111",
+  company_name: "x",
+  orders: [],
+  edges: [],
+  facts: [],
+}, "admin");
+if (!html.includes("data-reason") || !html.includes("unmask-pii")) process.exit(3);
+if (html.includes("window.prompt")) process.exit(4);
+const phrase = mappingConfidence({ confidence: 0.98, calibrated: true, measured: true, support: 30 });
+if (phrase !== "soglia misurata su 30 casi") process.exit(5);
+if (phrase.includes("%")) process.exit(6);
+const plainNumber = mappingConfidence({ confidence: 0.5, calibrated: true });
+if (plainNumber !== "0.50" || plainNumber.includes("%")) process.exit(7);
+const plain = confidenceLabel({
+  confidence: 0.93,
+  confidence_method: "rule",
+  confidence_rule: "mapping.header_similarity@v1",
+  calibrated: false,
+});
+if (plain !== "0,93 · punteggio di regola, non calibrato · mapping.header_similarity@v1") process.exit(8);
+const measured = confidenceLabel({
+  confidence: 0.93,
+  confidence_method: "rule",
+  calibrated: true,
+  measured: true,
+  support: 30,
+});
+if (measured !== "soglia misurata su 30 casi" || measured.includes("%")) process.exit(9);
+process.stdout.write("ok\n");
+"""
+    result = subprocess.run(["node", "-e", script], cwd=ROOT, capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr + result.stdout
+
+
+def test_calibrated_stays_false_when_threshold_is_measured(client: TestClient):
+    login(client, "mapper")
+    load_demo()
+    with connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO app.mapping_thresholds (
+              id, threshold, method, measured, rules_version, metrics, support
+            )
+            VALUES (gen_random_uuid(), 0.91, 'kfold5_f1_v1', true, 'mapping.header_similarity@v1', '{}', 30)
+            """
+        )
+        conn.commit()
+    mappings = client.get("/api/mappings").json()["mappings"]
+    assert mappings
+    assert all(item["calibrated"] is False for item in mappings)
+    assert all(item["measured"] is True and item["support"] == 30 for item in mappings)
+    order = next(item for item in client.get("/api/orders").json()["orders"] if item["business_key"] == "1024")
+    facts = client.get(f"/api/orders/{order['id']}").json()["facts"]
+    assert facts
+    assert all(fact["calibrated"] is False for fact in facts)
+    assert all(fact["measured"] is True and fact["support"] == 30 for fact in facts)
+
+
+def test_synthetic_cases_do_not_choose_the_threshold(monkeypatch: pytest.MonkeyPatch):
+    from services.agent.evaluate import load_cases
+
+    labels = json.loads((ROOT / "evals" / "hand_labels.json").read_text(encoding="utf-8"))
+    orders = json.loads((ROOT / "evals" / "order_cases.json").read_text(encoding="utf-8"))
+    assert labels["label_origin"] == "synthetic"
+    assert orders["label_origin"] == "synthetic"
+    assert load_cases()[0]["id"] == "shortage-fast-supplier"
+
+    def many_synthetic():
+        return [
+            {
+                "case_kind": "mapping",
+                "label_origin": "synthetic",
+                "profile": "order",
+                "source_field": "ord_head",
+                "target_type": "Order",
+                "target_property": "source_key",
+            }
+            for _ in range(MIN_MEASURED_CASES)
+        ]
+
+    monkeypatch.setattr("services.testset.load_hand_labels", many_synthetic)
+    with connect() as conn:
+        built = build_testset(conn)
+        report = evaluate_testset(conn)
+        stored = conn.execute(
+            """
+            SELECT count(*) AS n FROM app.labelled_cases
+            WHERE label_origin = 'synthetic' AND testset_version = %s
+            """,
+            (built["version"],),
+        ).fetchone()["n"]
+        conn.commit()
+    assert stored == MIN_MEASURED_CASES
+    assert built["mapping_count"] == MIN_MEASURED_CASES
+    assert report["threshold"]["measured"] is False
+    assert float(report["threshold"]["threshold"]) == 0.75
+    assert report["groups"]["mapping"]["n"] == 0
+    assert report["confronto"] == "agente = regole, nessun confronto possibile"

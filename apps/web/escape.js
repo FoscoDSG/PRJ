@@ -29,6 +29,7 @@
     "dry_run",
     "external_call",
     "outcome",
+    "pii_unmask",
     "n/d",
   ]);
 
@@ -78,6 +79,8 @@
     }
     const confidence = fact && typeof fact === "object" ? fact.confidence : fact;
     if (method === "rule" && confidence != null && confidence !== "") {
+      const phrase = measuredThreshold(fact);
+      if (phrase) return phrase;
       const score = decimalScore(confidence);
       if (score != null) {
         const rule = fact.confidence_rule ? ` · ${fact.confidence_rule}` : "";
@@ -102,7 +105,17 @@
     return role === "admin" && demoMode === true;
   }
 
-  function mappingConfidence(confidence) {
+  function measuredThreshold(item) {
+    if (!item || typeof item !== "object" || item.measured !== true) return null;
+    const support = Number(item.support);
+    if (!Number.isFinite(support)) return null;
+    return `soglia misurata su ${support} casi`;
+  }
+
+  function mappingConfidence(item) {
+    const phrase = measuredThreshold(item);
+    if (phrase) return phrase;
+    const confidence = item && typeof item === "object" ? item.confidence : item;
     if (confidence == null || confidence === "") {
       return "confidenza non disponibile";
     }
@@ -135,7 +148,7 @@
         <td>${escapeHtml(item.source_name)}</td>
         <td><code>${escapeHtml(item.source_field)}</code></td>
         <td>${escapeHtml(item.target_type)}.${escapeHtml(item.target_property)}</td>
-        <td>${escapeHtml(mappingConfidence(item.confidence))}</td>
+        <td>${escapeHtml(mappingConfidence(item))}</td>
         <td>${pill(item.status)}</td>
         <td>${actions}</td>
       </tr>`;
@@ -177,7 +190,7 @@
   `;
   }
 
-  function customerDetail(customer) {
+  function customerDetail(customer, role) {
     const orders = customer.orders
       .map((order) => `<li><button type="button" data-order="${escapeHtml(order.id)}">Ordine ${escapeHtml(order.business_key)}</button></li>`)
       .join("");
@@ -192,7 +205,12 @@
     <ul class="edges">${edges}</ul>
     <h3>Fatti</h3>
     ${factList(customer.facts)}
+    ${role === "admin" ? `<label>Motivo dello smascheramento <input data-reason required minlength="5" maxlength="500" /></label><p><button type="button" id="unmask-pii" data-entity="${escapeHtml(customer.id)}">Mostra dati personali</button></p><pre id="unmask-result"></pre>` : ""}
   `;
+  }
+
+  function readableCard(item) {
+    return `<article class="card"><div class="meta">${pill(item.action)}<span class="pill">${escapeHtml(item.who || "")}</span></div><p>${escapeHtml(item.when || "")}</p><p>${escapeHtml(item.what || item.action || "")}</p><p>Ordine ${escapeHtml(item.order || "n/d")}</p><p>${escapeHtml(item.detail || "")}</p></article>`;
   }
 
   function inboxCard(item, role) {
@@ -247,6 +265,7 @@
     provenanceLabel,
     confidenceLabel,
     recommendationConfidence,
+    mappingConfidence,
     showFixtureButton,
     factList,
     driftCard,
@@ -256,5 +275,6 @@
     customerDetail,
     inboxCard,
     auditCard,
+    readableCard,
   };
 });

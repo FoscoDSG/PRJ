@@ -11,7 +11,13 @@ CASES = Path(__file__).resolve().parents[2] / "evals" / "order_cases.json"
 
 
 def load_cases(path: Path | None = None) -> list[dict]:
-    return json.loads((path or CASES).read_text(encoding="utf-8"))
+    payload = json.loads((path or CASES).read_text(encoding="utf-8"))
+    if isinstance(payload, list):
+        return payload
+    cases = payload.get("cases")
+    if not isinstance(cases, list) or payload.get("label_origin") != "synthetic":
+        raise ValueError("order_cases.json deve dichiarare label_origin synthetic")
+    return cases
 
 
 def evaluate(cases: list[dict] | None = None) -> dict:

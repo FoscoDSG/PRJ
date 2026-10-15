@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from typing import Literal
+from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -46,6 +47,12 @@ class RejectBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
     decision: Literal["reject"]
     evidence_hash: str = Field(pattern=_HASH)
+    reason: str = Field(min_length=5, max_length=500)
+
+
+class UnmaskBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    entity_id: UUID
     reason: str = Field(min_length=5, max_length=500)
 
 

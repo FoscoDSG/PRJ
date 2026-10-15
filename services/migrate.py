@@ -46,10 +46,14 @@ _DROP = re.compile(
 _TRUNCATE = re.compile(r"(?i)\bTRUNCATE\b")
 _BEFORE_TRUNCATE = re.compile(r"(?i)\bBEFORE\s+TRUNCATE\b")
 _REVOKE_LINE = re.compile(r"(?i)^\s*REVOKE\b")
+_DISABLE_TRIGGER = re.compile(r"(?i)\bDISABLE\s+TRIGGER\b")
+_ENABLE_TRIGGER = re.compile(r"(?i)\bENABLE\s+TRIGGER\b")
+_ALTER_TABLE_DISABLE = re.compile(r"(?i)\bALTER\s+TABLE\b[^;]*\bDISABLE\b")
 _BLOCK_COMMENT = re.compile(r"/\*.*?\*/", re.DOTALL)
 # Exact statements, whitespace-normalized and without a trailing semicolon,
 # allowed only in the named migration file. The same text in a new file
-# is refused.
+# is refused. 0005's trigger lines are the only disable/enable exception,
+# and only inside shield_existing_pii.
 _MIGRATION_ALLOWLIST: dict[str, frozenset[str]] = {
     "0003_decisions_source_class_checksums.sql": frozenset({
         "ALTER TABLE app.facts DROP CONSTRAINT IF EXISTS facts_source_class_check",
@@ -57,6 +61,13 @@ _MIGRATION_ALLOWLIST: dict[str, frozenset[str]] = {
     "0004_source_vocabulary_decision_sources.sql": frozenset({
         "ALTER TABLE app.facts DROP CONSTRAINT IF EXISTS facts_source_class_check",
         "ALTER COLUMN confidence DROP NOT NULL",
+    }),
+    "0005_pii_testset_audit.sql": frozenset({
+        "ALTER TABLE app.audit_log DROP CONSTRAINT IF EXISTS audit_log_action_check",
+        "ALTER TABLE app.audit_log DISABLE TRIGGER audit_no_update",
+        "ALTER TABLE app.audit_log ENABLE TRIGGER audit_no_update",
+        "ALTER TABLE app.decisions_log DISABLE TRIGGER decisions_log_no_update",
+        "ALTER TABLE app.decisions_log ENABLE TRIGGER decisions_log_no_update",
     }),
 }
 
@@ -188,7 +199,8 @@ def migration_violation(script: str, filename: str | None = None) -> str | None:
     Every DROP of a table, schema, database, column, constraint, NOT NULL,
     default, index, function, or trigger is refused, wherever it sits in
     the script and in any letter case. Comments are ignored. TRUNCATE
-    statements are refused too. The only exceptions are the exact
+    statements are refused too, as are DISABLE TRIGGER, ENABLE TRIGGER,
+    and ALTER TABLE ... DISABLE. The only exceptions are the exact
     statements listed for that migration file.
     """
     text = _without_line_comments(_BLOCK_COMMENT.sub("", script))
@@ -203,6 +215,12 @@ def migration_violation(script: str, filename: str | None = None) -> str | None:
     )
     if _TRUNCATE.search(without_revoke):
         return "TRUNCATE fuori dall'allowlist"
+    if (
+        _DISABLE_TRIGGER.search(body)
+        or _ENABLE_TRIGGER.search(body)
+        or _ALTER_TABLE_DISABLE.search(body)
+    ):
+        return "DISABLE TRIGGER fuori dall'allowlist"
     return None
 
 
@@ -238,6 +256,9 @@ def migrate(conn: psycopg.Connection) -> list[dict]:
             _execute_migration(conn, item)
             _record(conn, item, baselined=False)
             applied.append(_describe(item, baselined=False))
+        from services.evidence import install_evidence_key
+
+        install_evidence_key(conn)
         conn.commit()
     except Exception:
         conn.rollback()
