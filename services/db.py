@@ -13,7 +13,7 @@ from argon2 import PasswordHasher, Type
 from argon2.exceptions import VerificationError
 from psycopg.rows import dict_row
 
-from services.migrate import migrate
+from services.migrate import require_migrated
 
 ROLES = ("admin", "mapper", "operator", "approver")
 
@@ -104,7 +104,7 @@ def seed_users(conn: psycopg.Connection) -> None:
 
 
 def ensure_ready(conn: psycopg.Connection, packages: list) -> None:
-    migrate(conn)
+    require_migrated(conn)
     seed_users(conn)
     for package in packages:
         found = conn.execute(

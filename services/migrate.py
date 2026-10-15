@@ -7,6 +7,10 @@ changing what gets applied.
 ``migrate`` never drops objects. A database created from the historical
 ``db/schema.sql`` is baselined: ``0001_initial`` is recorded and its SQL
 is not executed. Later files still run.
+
+The API does not call ``migrate``. It only asks whether versions are
+pending. ``pg_advisory_xact_lock`` with ``MIGRATE_LOCK_KEY`` keeps two
+overlapping ``migrate`` calls from applying the same version.
 """
 
 from __future__ import annotations
@@ -24,6 +28,8 @@ ROOT = Path(__file__).resolve().parents[1]
 MIGRATIONS_DIR = ROOT / "db" / "migrations"
 LEGACY_SCHEMA_PATH = ROOT / "db" / "schema.sql"
 
+# Fixed key for pg_advisory_xact_lock. One value, shared by every process.
+MIGRATE_LOCK_KEY = 0x49454F4C4D494752
 DEMO_DATABASE_DEFAULT = "ieol_demo"
 _RESERVED_DATABASES = frozenset({"postgres", "template0", "template1"})
 _DBNAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,62}$")
@@ -125,31 +131,54 @@ def legacy_schema_state(conn: psycopg.Connection) -> str:
     return "complete"
 
 
+def pending_migrations(conn: psycopg.Connection) -> list[dict]:
+    """Return versions not yet recorded. Reads only: no lock, no writes."""
+    files = migration_files()
+    done = _recorded_versions(conn)
+    state = _state_for(files, done, conn)
+    pending = []
+    for item, action in _select_pending(files, done, state):
+        pending.append(_describe(item, baselined=action == "baseline"))
+    return pending
+
+
+def require_migrated(conn: psycopg.Connection) -> None:
+    """Refuse when versions are pending. Does not apply them."""
+    pending = pending_migrations(conn)
+    if not pending:
+        return
+    versions = ", ".join(item["version"] for item in pending)
+    name = conn.execute("SELECT current_database() AS name").fetchone()["name"]
+    raise RuntimeError(
+        f"Migrazioni in sospeso ({versions}) sul database {name}. "
+        "Avvio rifiutato. Esegui `ieol migrate`."
+    )
+
+
 def migrate(conn: psycopg.Connection) -> list[dict]:
     """Apply pending migrations and commit. Never drops or truncates.
 
-    Returns the versions recorded by this call. An empty list means the
-    database was already current.
+    Takes ``pg_advisory_xact_lock(MIGRATE_LOCK_KEY)`` for the whole
+    transaction, so a second caller waits and then sees the versions
+    already recorded. Returns the versions recorded by this call.
     """
     applied: list[dict] = []
     try:
+        conn.execute("SELECT pg_advisory_xact_lock(%s)", (MIGRATE_LOCK_KEY,))
         _ensure_registry(conn)
-        done = _applied_versions(conn)
         files = migration_files()
-        first = files[0].version
-        state = legacy_schema_state(conn) if first not in done else "absent"
-        for item in files:
-            if item.version in done:
-                continue
-            if item.version == first and state == "complete":
-                _record(conn, item, baselined=True)
-                applied.append(_describe(item, baselined=True))
-                continue
-            if item.version == first and state == "partial":
+        done = _applied_versions(conn)
+        state = _state_for(files, done, conn)
+        for item, action in _select_pending(files, done, state):
+            if action == "partial":
                 raise RuntimeError(
                     "Schema esistente incompleto rispetto a db/schema.sql: "
                     "migrazione iniziale non applicata e nessun dato cancellato."
                 )
+            if action == "baseline":
+                _record(conn, item, baselined=True)
+                applied.append(_describe(item, baselined=True))
+                continue
             _execute_migration(conn, item)
             _record(conn, item, baselined=False)
             applied.append(_describe(item, baselined=False))
@@ -263,9 +292,37 @@ def _ensure_registry(conn: psycopg.Connection) -> None:
     )
 
 
+def _recorded_versions(conn: psycopg.Connection) -> set[str]:
+    row = conn.execute("SELECT to_regclass('public.schema_migrations') AS rel").fetchone()
+    if row is None or row["rel"] is None:
+        return set()
+    return _applied_versions(conn)
+
+
 def _applied_versions(conn: psycopg.Connection) -> set[str]:
     rows = conn.execute("SELECT version FROM public.schema_migrations").fetchall()
     return {row["version"] for row in rows}
+
+
+def _state_for(files: list[Migration], done: set[str], conn: psycopg.Connection) -> str:
+    if files[0].version in done:
+        return "absent"
+    return legacy_schema_state(conn)
+
+
+def _select_pending(files: list[Migration], done: set[str], state: str) -> list[tuple[Migration, str]]:
+    first = files[0].version
+    chosen: list[tuple[Migration, str]] = []
+    for item in files:
+        if item.version in done:
+            continue
+        if item.version == first and state == "complete":
+            chosen.append((item, "baseline"))
+        elif item.version == first and state == "partial":
+            chosen.append((item, "partial"))
+        else:
+            chosen.append((item, "apply"))
+    return chosen
 
 
 def _record(conn: psycopg.Connection, item: Migration, *, baselined: bool) -> None:

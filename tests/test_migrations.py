@@ -5,18 +5,24 @@ from __future__ import annotations
 import json
 import uuid
 
+import psycopg
 import pytest
+from fastapi.testclient import TestClient
 
+from apps.api.main import app
 from apps.cli import main
 from ontology.loader import load_merged
 from services.db import connect, database_url, ensure_ready
 from services.migrate import (
     LEGACY_SCHEMA_PATH,
     MIGRATIONS_DIR,
+    MIGRATE_LOCK_KEY,
     demo_database_url,
+    ensure_database,
     legacy_schema_state,
     migrate,
     migration_files,
+    require_migrated,
     reset_demo_database,
 )
 from tests.helpers import wipe_test_database
@@ -380,6 +386,11 @@ def test_demo_reset_does_not_touch_the_main_database(capsys: pytest.CaptureFixtu
         before_oids = _relation_oids(conn)
         before_audit = _audit(conn)
         main_name = conn.execute("SELECT current_database() AS name").fetchone()["name"]
+    demo_url = demo_database_url(database_url())
+    ensure_database(demo_url)
+    with connect(demo_url) as conn:
+        migrate(conn)
+        require_migrated(conn)
     main(["demo"])
     first_out = json.loads(capsys.readouterr().out)
     assert first_out["shortage_order"]
@@ -387,21 +398,82 @@ def test_demo_reset_does_not_touch_the_main_database(capsys: pytest.CaptureFixtu
         assert _relation_oids(conn) == before_oids
         assert _audit(conn) == before_audit
         assert _rows(conn, "SELECT anag_cli FROM src.clienti WHERE anag_cli = 'MAIN'") == [("MAIN",)]
-    main(["demo", "--reset"])
-    second_out = json.loads(capsys.readouterr().out)
-    assert second_out["shortage_order"]
+    with pytest.raises(SystemExit, match="ieol migrate"):
+        main(["demo", "--reset"])
     with connect() as conn:
         assert conn.execute("SELECT current_database() AS name").fetchone()["name"] == main_name
         assert _relation_oids(conn) == before_oids
         assert _audit(conn) == before_audit
         assert _rows(conn, "SELECT anag_cli FROM src.clienti WHERE anag_cli = 'MAIN'") == [("MAIN",)]
-    demo_url = demo_database_url(database_url())
     with connect(demo_url) as conn:
         assert conn.execute("SELECT current_database() AS name").fetchone()["name"] == "ieol_test_demo"
+        assert conn.execute("SELECT to_regclass('app.users') AS rel").fetchone()["rel"] is None
+        assert conn.execute("SELECT to_regclass('public.schema_migrations') AS rel").fetchone()["rel"] is None
+        migrate(conn)
+    main(["demo"])
+    assert json.loads(capsys.readouterr().out)["shortage_order"]
+    with connect() as conn:
+        assert _relation_oids(conn) == before_oids
+        assert _audit(conn) == before_audit
+    with connect(demo_url) as conn:
         assert conn.execute("SELECT count(*) AS n FROM app.recommendations").fetchone()["n"] >= 1
         leaked = conn.execute("SELECT 1 FROM app.audit_log WHERE id = %s", (audit_id,)).fetchone()
         assert leaked is None
-        assert _rows(
-            conn,
-            "SELECT version, baselined FROM public.schema_migrations WHERE version = '0001'",
-        ) == [("0001", False)]
+
+
+def test_demo_does_not_apply_migrations(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("IEOL_DEMO_DATABASE", "ieol_test_demo_bare")
+    with pytest.raises(SystemExit, match="ieol migrate"):
+        main(["demo"])
+    with connect(demo_database_url(database_url())) as conn:
+        assert conn.execute("SELECT to_regclass('public.schema_migrations') AS rel").fetchone()["rel"] is None
+        assert conn.execute("SELECT to_regclass('app.audit_log') AS rel").fetchone()["rel"] is None
+    with connect() as conn:
+        assert conn.execute("SELECT current_database() AS name").fetchone()["name"] == "ieol_test"
+        assert conn.execute("SELECT to_regclass('app.users') AS rel").fetchone()["rel"] is not None
+
+
+def test_api_refuses_to_start_when_migrations_are_pending():
+    with connect() as conn:
+        wipe_test_database(conn)
+    with pytest.raises(RuntimeError, match="ieol migrate"):
+        with TestClient(app):
+            pass
+    with connect() as conn:
+        assert conn.execute("SELECT to_regclass('public.schema_migrations') AS rel").fetchone()["rel"] is None
+        assert conn.execute("SELECT to_regclass('app.users') AS rel").fetchone()["rel"] is None
+        assert conn.execute("SELECT to_regclass('app.audit_log') AS rel").fetchone()["rel"] is None
+
+
+def test_api_does_not_baseline_a_legacy_database():
+    with connect() as conn:
+        _install_legacy(conn)
+        ids = _seed_legacy_rows(conn)
+        before_oids = _relation_oids(conn)
+        before_audit = _audit(conn)
+    with pytest.raises(RuntimeError, match="ieol migrate"):
+        with TestClient(app):
+            pass
+    with connect() as conn:
+        assert conn.execute("SELECT to_regclass('public.schema_migrations') AS rel").fetchone()["rel"] is None
+        assert _relation_oids(conn) == before_oids
+        assert _audit(conn) == before_audit
+        assert _audit(conn)[0][0] == ids["audit_id"]
+        with pytest.raises(RuntimeError, match="ieol migrate"):
+            require_migrated(conn)
+
+
+def test_second_migrate_waits_on_the_advisory_lock():
+    holder = connect()
+    try:
+        holder.execute("SELECT pg_advisory_xact_lock(%s)", (MIGRATE_LOCK_KEY,))
+        with connect() as other:
+            other.execute("SET lock_timeout = '250ms'")
+            with pytest.raises(psycopg.errors.LockNotAvailable):
+                migrate(other)
+    finally:
+        holder.rollback()
+        holder.close()
+    with connect() as conn:
+        assert migrate(conn) == []
+        require_migrated(conn)

@@ -7,7 +7,14 @@ import json
 
 from ontology.loader import load_merged
 from services.db import connect, database_url, ensure_ready
-from services.migrate import database_name, demo_database_url, ensure_database, migrate, reset_demo_database
+from services.migrate import (
+    database_name,
+    demo_database_url,
+    ensure_database,
+    migrate,
+    require_migrated,
+    reset_demo_database,
+)
 from services.pipeline import adjust_on_hand, approve, execute_recommendation, load_fixtures
 from services.queries import list_inbox
 from services.text import stable
@@ -16,7 +23,7 @@ from services.text import stable
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="Fetta operativa dell'order management")
     sub = parser.add_subparsers(dest="command", required=True)
-    sub.add_parser("migrate", help="Applica le migrazioni pendenti sul database principale")
+    sub.add_parser("migrate", help="Applica le migrazioni pendenti sul database di DATABASE_URL")
     demo = sub.add_parser(
         "demo",
         help="Carica la fixture nel database dedicato della demo, propone e fa il dry-run",
@@ -24,7 +31,7 @@ def main(argv: list[str] | None = None) -> None:
     demo.add_argument(
         "--reset",
         action="store_true",
-        help="Cancella gli schemi app e src solo nel database della demo, poi riapplica le migrazioni",
+        help="Cancella gli schemi app e src solo nel database della demo. Le migrazioni si applicano con ieol migrate",
     )
     sub.add_parser("expire", help="Nel database della demo, cambia la giacenza e fa scadere la raccomandazione")
     sub.add_parser("execute", help="Nel database della demo, esegue il dry-run già approvato, in modo idempotente")
@@ -45,17 +52,20 @@ def main(argv: list[str] | None = None) -> None:
     except RuntimeError as exc:
         raise SystemExit(str(exc)) from exc
     with connect(demo_url) as conn:
-        if args.command == "demo" and args.reset:
-            try:
+        try:
+            if args.command == "demo" and args.reset:
                 reset_demo_database(
                     conn,
                     main_dbname=database_name(main_url),
                     expected_dbname=database_name(demo_url),
                 )
-            except RuntimeError as exc:
-                raise SystemExit(str(exc)) from exc
+            if args.command == "demo":
+                ensure_ready(conn, model.packages)
+            else:
+                require_migrated(conn)
+        except RuntimeError as exc:
+            raise SystemExit(str(exc)) from exc
         if args.command == "demo":
-            ensure_ready(conn, model.packages)
             summary = load_fixtures(conn, actor="mapper", role="mapper", model=model)
             inbox = list_inbox(conn, "approver")
             if not inbox:
@@ -85,7 +95,6 @@ def main(argv: list[str] | None = None) -> None:
                 )
             )
             return
-        migrate(conn)
         if args.command == "expire":
             expired = adjust_on_hand(conn, model, "ART-X", 500)
             conn.commit()

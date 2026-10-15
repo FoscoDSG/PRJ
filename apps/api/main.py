@@ -15,6 +15,7 @@ from starlette.middleware.sessions import SessionMiddleware
 from ontology.loader import load_merged
 from services.actions.executor import compensate
 from services.db import authenticate, connect, ensure_ready
+from services.migrate import require_migrated
 from services.errors import AppError
 from services.pipeline import (
     acknowledge_drift,
@@ -67,6 +68,7 @@ async def lifespan(app: FastAPI):
     model = load_merged()
     app.state.ontology = model
     with connect() as conn:
+        require_migrated(conn)
         ensure_ready(conn, model.packages)
     yield
 

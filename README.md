@@ -59,13 +59,13 @@ I file in `db/migrations/` sono numerati e si applicano in ordine. Il runner reg
 ieol migrate
 ```
 
-Il comando applica solo le migrazioni non ancora registrate e fa commit. Non esegue `DROP` né `TRUNCATE`. Eseguirlo di nuovo lascia i dati invariati.
+Il comando applica solo le migrazioni non ancora registrate e fa commit. Non esegue `DROP` né `TRUNCATE`. Eseguirlo di nuovo lascia i dati invariati. Due processi che lo lanciano insieme prendono `pg_advisory_xact_lock` con una chiave fissa: il secondo attende il commit del primo e trova le versioni già registrate.
 
 Un database già creato con `db/schema.sql` viene riconosciuto. Se ci sono tutte le tabelle, le colonne, la funzione e il trigger dell'audit, la migrazione `0001_initial` è segnata come baseline (`baselined = true`) e il suo SQL non viene eseguito. Righe, identità delle tabelle e registro audit restano quelli già presenti. Se lo schema c'è solo in parte, il comando si ferma senza scrivere.
 
 `db/schema.sql` resta il riferimento storico. Una modifica successiva è un file nuovo in `db/migrations/`. Una migrazione già applicata non si riscrive.
 
-All'avvio l'API esegue le stesse migrazioni, sempre senza cancellare dati.
+All'avvio l'API non applica migrazioni. Controlla se ne restano in sospeso e, in quel caso, rifiuta di partire con il messaggio di eseguire `ieol migrate`. Solo quel comando aggiorna lo schema.
 
 ## Demo
 
@@ -78,9 +78,16 @@ ieol expire
 ieol execute
 ```
 
-`ieol expire` e `ieol execute` continuano la stessa demo, sullo stesso database dedicato.
+`ieol expire` e `ieol execute` continuano la stessa demo, sullo stesso database dedicato. Nessuno dei tre comandi applica migrazioni.
 
-`--reset` è la conferma esplicita: cancella gli schemi `app` e `src` solo dentro il database della demo e poi riapplica le migrazioni. Senza `--reset` quegli schemi restano al loro posto.
+Prima di `ieol demo` lo schema del database dedicato va aggiornato con `ieol migrate`, puntando `DATABASE_URL` a quel database:
+
+```text
+DATABASE_URL=postgresql://ubuntu@/ieol_demo ieol migrate
+ieol demo
+```
+
+`--reset` è la conferma esplicita: cancella gli schemi `app` e `src` solo dentro il database della demo. Dopo il reset lo schema si ricostruisce di nuovo con `ieol migrate` su quel database. Senza `--reset` quegli schemi restano al loro posto.
 
 `IEOL_DEMO_DATABASE` cambia il nome (default `ieol_demo`). `IEOL_DEMO_DATABASE_URL` indica un URL completo. Il nome deve essere diverso da quello del database principale.
 
