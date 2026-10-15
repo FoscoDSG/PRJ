@@ -1,0 +1,42 @@
+{
+  "label_origin": "hand_written",
+  "cases": [
+    {
+      "case_kind": "mapping",
+      "profile": "order",
+      "source_field": "ord_head",
+      "target_type": "Order",
+      "target_property": "source_key"
+    },
+    {
+      "case_kind": "recommendation",
+      "context": {
+        "order_key": "ORD-H1",
+        "amount": 100,
+        "customer_key": "C1",
+        "lines": [
+          {"product": "ART-1", "shortage": 2, "quantity": 2}
+        ],
+        "suppliers": [
+          {"source_key": "SUP-SLOW", "product": "ART-1", "delay_days": 12},
+          {"source_key": "SUP-FAST", "product": "ART-1", "delay_days": 3}
+        ]
+      },
+      "expected_actions": [
+        {
+          "type": "createPurchaseOrder",
+          "params": {
+            "supplier": "SUP-FAST",
+            "product": "ART-1",
+            "quantity": 2,
+            "order": "ORD-H1"
+          }
+        },
+        {
+          "type": "notifyCustomer",
+          "params": {"order": "ORD-H1", "customer": "C1"}
+        }
+      ]
+    }
+  ]
+}

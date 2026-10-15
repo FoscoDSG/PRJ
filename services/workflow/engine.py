@@ -11,7 +11,7 @@ from psycopg.types.json import Json
 from services.agent.order_agent import AGENT_VERSION, build_context
 from services.audit import record
 from services.errors import AppError
-from services.mapping.engine import THRESHOLD
+from services.mapping.threshold import active_threshold
 from services.rules.engine import CFO_THRESHOLD, RULES_VERSION
 
 OPEN_STATES = ("detected", "proposed", "approved", "modified", "dry_run_ok")
@@ -338,6 +338,33 @@ def _record_decision(
         row.get("confidence_method"),
         row.get("confidence_rule"),
     )
+    threshold, _measured = active_threshold(conn)
+    context = build_context(conn, str(row["order_entity_id"]))
+    if decision == "reject":
+        action_label: list = []
+    else:
+        action_label = list(row["actions"] or [])
+    snapshot = {
+        "order_key": context["order_key"],
+        "amount": context["amount"],
+        "customer_key": context["customer_key"],
+        "lines": [
+            {
+                "product": line.get("product"),
+                "shortage": line.get("shortage"),
+                "quantity": line.get("quantity"),
+            }
+            for line in context["lines"]
+        ],
+        "suppliers": [
+            {
+                "source_key": supplier.get("source_key"),
+                "product": supplier.get("product"),
+                "delay_days": supplier.get("delay_days"),
+            }
+            for supplier in context["suppliers"]
+        ],
+    }
     decision_id = str(uuid.uuid4())
     conn.execute(
         """
@@ -345,9 +372,9 @@ def _record_decision(
           id, recommendation_id, batch_id, row_index, decision, evidence_hash,
           recommendation, confidence, confidence_method, confidence_rule,
           actor, actor_role, agent_version, rules_version,
-          confidence_threshold, amount_threshold_eur
+          confidence_threshold, amount_threshold_eur, action_label, context_snapshot
         )
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         """,
         (
             decision_id,
@@ -364,19 +391,57 @@ def _record_decision(
             role,
             AGENT_VERSION,
             RULES_VERSION,
-            THRESHOLD,
+            threshold,
             CFO_THRESHOLD,
+            Json(action_label),
+            Json(snapshot),
         ),
     )
     for source in sources:
+        source_method = _source_confidence_method(conn, source["batch_id"], source["row_index"])
         conn.execute(
             """
-            INSERT INTO app.decisions_log_sources (decision_id, batch_id, row_index)
-            VALUES (%s, %s, %s)
+            INSERT INTO app.decisions_log_sources (
+              decision_id, batch_id, row_index, confidence_method
+            )
+            VALUES (%s, %s, %s, %s)
             ON CONFLICT DO NOTHING
             """,
-            (decision_id, source["batch_id"], source["row_index"]),
+            (decision_id, source["batch_id"], source["row_index"], source_method),
         )
+
+
+def _source_confidence_method(conn: psycopg.Connection, batch_id: str, row_index: int) -> str:
+    """Weakest method of the facts written from this landing row.
+
+    unknown wins. Otherwise a human fact wins over a rule. Calculated facts
+    are not mapping targets and do not force unknown.
+    """
+    rows = conn.execute(
+        """
+        SELECT f.confidence_method
+        FROM app.landing_rows lr
+        JOIN app.landing_batches lb ON lb.id = lr.batch_id
+        JOIN app.field_mappings fm
+          ON fm.source_name = lb.source_name
+         AND fm.valid_to IS NULL
+         AND fm.status = 'confirmed'
+         AND jsonb_exists(lr.data, fm.source_field)
+        JOIN app.facts f
+          ON f.source = lb.source_name
+         AND f.property = fm.target_property
+         AND f.valid_to IS NULL
+         AND f.origin IS DISTINCT FROM 'calculated'
+        WHERE lr.batch_id = %s AND lr.row_index = %s
+        """,
+        (batch_id, row_index),
+    ).fetchall()
+    methods = [row["confidence_method"] or "unknown" for row in rows]
+    if not methods or any(method == "unknown" for method in methods):
+        return "unknown"
+    if any(method == "human" for method in methods):
+        return "human"
+    return "rule"
 
 
 def _source_rows(conn: psycopg.Connection, order_entity_id: str) -> list[dict]:

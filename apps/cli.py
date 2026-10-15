@@ -23,8 +23,11 @@ from services.migrate import (
     require_migrated,
     reset_demo_database,
 )
+from services.errors import AppError
+from services.pii import redact
 from services.pipeline import adjust_on_hand, approve, execute_recommendation, load_fixtures
 from services.queries import list_inbox
+from services.testset import build_testset, evaluate_testset
 from services.text import stable
 from services.workflow.engine import expire_stale
 
@@ -53,6 +56,10 @@ def main(argv: list[str] | None = None) -> None:
     )
     sub.add_parser("expire", help="Nel database della demo, cambia la giacenza e fa scadere la raccomandazione")
     sub.add_parser("execute", help="Nel database della demo, esegue il dry-run già approvato, in modo idempotente")
+    testset = sub.add_parser("testset", help="Costruisce o valuta il test set etichettato")
+    testset_commands = testset.add_subparsers(dest="testset_command", required=True)
+    testset_commands.add_parser("build", help="Congela i casi da decisioni umane e dalla fixture manoscritta")
+    testset_commands.add_parser("eval", help="Calcola n, errori e intervalli, e registra la soglia")
     args = parser.parse_args(argv)
     if args.command == "migrate":
         try:
@@ -79,6 +86,20 @@ def main(argv: list[str] | None = None) -> None:
         except RuntimeError as exc:
             raise SystemExit(str(exc)) from exc
         print(json.dumps({"expired": expired}, ensure_ascii=False))
+        return
+    if args.command == "testset":
+        try:
+            with app_connect() as conn:
+                require_migrated(conn)
+                if args.testset_command == "build":
+                    result = build_testset(conn)
+                else:
+                    result = evaluate_testset(conn)
+                conn.commit()
+        except (RuntimeError, AppError) as exc:
+            message = exc.message if isinstance(exc, AppError) else str(exc)
+            raise SystemExit(message) from exc
+        print(json.dumps(redact(stable(result)), ensure_ascii=False))
         return
     model = load_merged()
     try:
@@ -127,14 +148,16 @@ def main(argv: list[str] | None = None) -> None:
             conn.commit()
             print(
                 json.dumps(
-                    stable(
-                        {
-                            "shortage_order": item["order_key"],
-                            "problem": item["problem"],
-                            "requires_cfo": item["requires_cfo"],
-                            "recommendations": summary["recommendations"],
-                            "dry_run": preview["dry_run"],
-                        }
+                    redact(
+                        stable(
+                            {
+                                "shortage_order": item["order_key"],
+                                "problem": item["problem"],
+                                "requires_cfo": item["requires_cfo"],
+                                "recommendations": summary["recommendations"],
+                                "dry_run": preview["dry_run"],
+                            }
+                        )
                     ),
                     ensure_ascii=False,
                     indent=2,

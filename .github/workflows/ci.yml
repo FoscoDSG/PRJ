@@ -34,6 +34,8 @@ jobs:
       DATABASE_URL: postgresql://postgres:ci-test-password@127.0.0.1:5432/ieol_test
       TEST_DATABASE_URL: postgresql://postgres:ci-test-password@127.0.0.1:5432/ieol_test
       IEOL_APP_DATABASE_URL: postgresql://ieol_app:ieol-app-test-password@127.0.0.1:5432/ieol_test
+      IEOL_PII_DATABASE_URL: postgresql://ieol_pii:ieol-pii-test-password@127.0.0.1:5432/ieol_test
+      IEOL_EVIDENCE_HMAC_KEY: ci-test-hmac-key
       IEOL_SESSION_SECRET: ci-test-session-secret
       IEOL_SEED_ADMIN_PASSWORD: ci-test-admin-password
       IEOL_SEED_MAPPER_PASSWORD: ci-test-mapper-password
@@ -66,6 +68,12 @@ jobs:
                   )
               )
               owner.execute("GRANT CONNECT ON DATABASE ieol_test TO ieol_app")
+              owner.execute(
+                  sql.SQL("ALTER ROLE ieol_pii WITH LOGIN PASSWORD {}").format(
+                      sql.Literal("ieol-pii-test-password")
+                  )
+              )
+              owner.execute("GRANT CONNECT ON DATABASE ieol_test TO ieol_pii")
           with app_connect() as conn:
               conn.execute("RESET ROLE")
               row = conn.execute(
@@ -79,6 +87,16 @@ jobs:
                   conn.rollback()
               else:
                   raise SystemExit("RESET ROLE ha concesso un update sull'audit")
+              try:
+                  conn.execute("SELECT value_cleartext FROM app.facts")
+              except psycopg.errors.InsufficientPrivilege:
+                  conn.rollback()
+              else:
+                  raise SystemExit("ieol_app legge il chiaro dei dati personali")
+          from services.db import pii_connect
+          with pii_connect() as pii:
+              pii.execute("SELECT value_cleartext FROM app.facts")
+              pii.rollback()
           PY
       - name: Pytest
         run: pytest

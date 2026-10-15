@@ -327,7 +327,7 @@ def test_source_class_is_declared_and_not_inferred_from_the_name(client: TestCli
         fact = conn.execute(
             """
             SELECT source_class FROM app.facts
-            WHERE property = 'company_name' AND value = '"Nome Erp"'::jsonb AND valid_to IS NULL
+            WHERE property = 'company_name' AND value_cleartext = '"Nome Erp"'::jsonb AND valid_to IS NULL
             """
         ).fetchone()
         assert _source_class(conn, "erp_clienti", "original") == "unknown"
@@ -352,7 +352,7 @@ def test_migration_checksum_mismatch_stops_migrate():
         ).fetchall()
         files = list((ROOT / "db" / "migrations").glob("*.sql"))
         by_version = {path.name.split("_", 1)[0]: path for path in files}
-        assert [row["version"] for row in recorded] == ["0001", "0002", "0003", "0004"]
+        assert [row["version"] for row in recorded] == ["0001", "0002", "0003", "0004", "0005"]
         for row in recorded:
             assert row["checksum"] == migration_checksum(by_version[row["version"]])
         conn.execute(

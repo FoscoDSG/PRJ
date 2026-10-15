@@ -23,7 +23,7 @@ from services.ingest.document_connector import read_order_document
 from services.ingest.excel_connector import read_excel
 from services.ingest.landing import land
 from services.ingest.sql_connector import extract_sql
-from services.mapping.engine import THRESHOLD
+from services.mapping.threshold import active_threshold
 from services.rules.engine import requires_cfo
 from services.text import coerce_number
 from services.sources import register_source
@@ -214,13 +214,14 @@ def reject_mapping(conn: psycopg.Connection, mapping_id: str, role: str) -> dict
 
 def confirm_confident(conn: psycopg.Connection, role: str, model: Ontology) -> int:
     _require_mapper(role)
+    threshold, _measured = active_threshold(conn)
     rows = conn.execute(
         """
         SELECT id::text, target_type, target_property
         FROM app.field_mappings
         WHERE status = 'proposed' AND valid_to IS NULL AND confidence >= %s
         """,
-        (THRESHOLD,),
+        (threshold,),
     ).fetchall()
     count = 0
     for row in rows:

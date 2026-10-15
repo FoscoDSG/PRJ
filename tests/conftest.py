@@ -11,10 +11,15 @@ os.environ.setdefault("IEOL_INSECURE_COOKIES", "1")
 os.environ["IEOL_DEMO_MODE"] = "1"
 os.environ["IEOL_DEMO_PASSWORD"] = "test-password-9f"
 APP_PASSWORD = "ieol-app-test-password"
+PII_PASSWORD = "ieol-pii-test-password"
 _dbname = conninfo_to_dict(os.environ["DATABASE_URL"]).get("dbname") or "ieol_test"
 os.environ["IEOL_APP_DATABASE_URL"] = (
     f"postgresql://ieol_app:{APP_PASSWORD}@127.0.0.1:5432/{_dbname}"
 )
+os.environ["IEOL_PII_DATABASE_URL"] = (
+    f"postgresql://ieol_pii:{PII_PASSWORD}@127.0.0.1:5432/{_dbname}"
+)
+os.environ["IEOL_EVIDENCE_HMAC_KEY"] = "test-hmac-key-not-for-production"
 
 for _role in ("admin", "mapper", "operator", "approver"):
     _password = secrets.token_urlsafe(24)
@@ -41,6 +46,12 @@ def fresh_database():
         )
         conn.execute(
             sql.SQL("ALTER ROLE ieol_app WITH LOGIN PASSWORD {}").format(sql.Literal(APP_PASSWORD))
+        )
+        conn.execute(
+            sql.SQL("GRANT CONNECT ON DATABASE {} TO ieol_pii").format(sql.Identifier(dbname))
+        )
+        conn.execute(
+            sql.SQL("ALTER ROLE ieol_pii WITH LOGIN PASSWORD {}").format(sql.Literal(PII_PASSWORD))
         )
         seed_users(conn)
         conn.commit()

@@ -46,14 +46,19 @@ def discover_sql(conn: psycopg.Connection, table: str) -> list[dict[str, str]]:
 
 
 def extract_sql(conn: psycopg.Connection, table: str) -> dict[str, Any]:
+    """Read source rows as ieol_pii. ieol_app cannot select the cleartext columns."""
+    from services.db import pii_connect
+
     statement = sql.SQL("SELECT * FROM {}").format(_table(table))
-    cursor = conn.execute(statement)
-    if cursor.description is None:
-        raise ValueError("Il connector SQL accetta solo SELECT")
-    columns_raw = [item.name for item in cursor.description]
-    records = []
-    for row in cursor.fetchall():
-        records.append({column: stable(row[column]) for column in columns_raw})
+    with pii_connect() as reader:
+        cursor = reader.execute(statement)
+        if cursor.description is None:
+            raise ValueError("Il connector SQL accetta solo SELECT")
+        columns_raw = [item.name for item in cursor.description]
+        records = []
+        for row in cursor.fetchall():
+            records.append({column: stable(row[column]) for column in columns_raw})
+        reader.rollback()
     columns, rows = rows_from_dicts(records)
     return {
         "columns": columns,

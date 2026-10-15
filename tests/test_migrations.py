@@ -175,17 +175,19 @@ _FRESH = [
     {"version": "0002", "name": "provenance_audit_quality", "baselined": False},
     {"version": "0003", "name": "decisions_source_class_checksums", "baselined": False},
     {"version": "0004", "name": "source_vocabulary_decision_sources", "baselined": False},
+    {"version": "0005", "name": "pii_testset_audit", "baselined": False},
 ]
 
 
 def test_migration_files_do_not_drop_or_truncate():
     files = migration_files()
-    assert [item.version for item in files] == ["0001", "0002", "0003", "0004"]
+    assert [item.version for item in files] == ["0001", "0002", "0003", "0004", "0005"]
     assert [item.name for item in files] == [
         "initial",
         "provenance_audit_quality",
         "decisions_source_class_checksums",
         "source_vocabulary_decision_sources",
+        "pii_testset_audit",
     ]
     for item in files:
         text = item.path.read_text(encoding="utf-8")
@@ -210,6 +212,9 @@ def test_migration_files_do_not_drop_or_truncate():
     drop_null = "ALTER COLUMN confidence DROP NOT NULL;\n"
     assert migration_violation(drop_null, "0004_source_vocabulary_decision_sources.sql") is None
     assert migration_violation(drop_null, "0003_decisions_source_class_checksums.sql") is not None
+    allowed_audit = "ALTER TABLE app.audit_log DROP CONSTRAINT IF EXISTS audit_log_action_check\n"
+    assert migration_violation(allowed_audit, "0005_pii_testset_audit.sql") is None
+    assert migration_violation(allowed_audit, "0006_later.sql") is not None
     assert migration_violation(drop_null, "0005_new.sql") is not None
     new_file = "0005_new.sql"
     assert migration_violation("DROP TRIGGER audit_guard ON app.audit_log;\n", new_file) is not None
@@ -303,6 +308,7 @@ def test_legacy_database_is_baselined_without_touching_data_or_audit():
         {"version": "0002", "name": "provenance_audit_quality", "baselined": False},
         {"version": "0003", "name": "decisions_source_class_checksums", "baselined": False},
         {"version": "0004", "name": "source_vocabulary_decision_sources", "baselined": False},
+        {"version": "0005", "name": "pii_testset_audit", "baselined": False},
     ]
     assert again == []
     assert third == []
@@ -317,6 +323,7 @@ def test_legacy_database_is_baselined_without_touching_data_or_audit():
         ("0002", "provenance_audit_quality", False),
         ("0003", "decisions_source_class_checksums", False),
         ("0004", "source_vocabulary_decision_sources", False),
+        ("0005", "pii_testset_audit", False),
     ]
 
 
@@ -490,6 +497,7 @@ def test_upgraded_schema_is_baselined_without_touching_audit():
         {"version": "0002", "name": "provenance_audit_quality", "baselined": True},
         {"version": "0003", "name": "decisions_source_class_checksums", "baselined": False},
         {"version": "0004", "name": "source_vocabulary_decision_sources", "baselined": False},
+        {"version": "0005", "name": "pii_testset_audit", "baselined": False},
     ]
     assert again == []
     assert fact == [("0.42", "system_of_record", "unknown", None)]
@@ -499,6 +507,7 @@ def test_upgraded_schema_is_baselined_without_touching_audit():
         ("0002", "provenance_audit_quality", True),
         ("0003", "decisions_source_class_checksums", False),
         ("0004", "source_vocabulary_decision_sources", False),
+        ("0005", "pii_testset_audit", False),
     ]
 
 

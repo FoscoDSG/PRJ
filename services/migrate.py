@@ -58,6 +58,9 @@ _MIGRATION_ALLOWLIST: dict[str, frozenset[str]] = {
         "ALTER TABLE app.facts DROP CONSTRAINT IF EXISTS facts_source_class_check",
         "ALTER COLUMN confidence DROP NOT NULL",
     }),
+    "0005_pii_testset_audit.sql": frozenset({
+        "ALTER TABLE app.audit_log DROP CONSTRAINT IF EXISTS audit_log_action_check",
+    }),
 }
 
 # Columns created by db/schema.sql. Extra columns still count as the legacy

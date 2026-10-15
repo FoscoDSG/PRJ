@@ -10,6 +10,7 @@ from psycopg.types.json import Json
 
 from services.errors import AppError
 from services.mapping.engine import propose_mappings
+from services.pii import stage_landing
 
 MAX_LANDING_ROWS = 5000
 
@@ -41,6 +42,7 @@ def land(
             "drift": None,
         }
     batch_id = str(uuid.uuid4())
+    stage_landing(batch_id, list(extracted["rows"]))
     conn.execute(
         """
         INSERT INTO app.landing_batches (id, source_name, watermark, row_count)

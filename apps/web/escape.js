@@ -29,6 +29,7 @@
     "dry_run",
     "external_call",
     "outcome",
+    "pii_unmask",
     "n/d",
   ]);
 
@@ -78,6 +79,10 @@
     }
     const confidence = fact && typeof fact === "object" ? fact.confidence : fact;
     if (method === "rule" && confidence != null && confidence !== "") {
+      const number = Number(confidence);
+      if (fact.calibrated === true && Number.isFinite(number)) {
+        return `${Math.round(number * 100)}%`;
+      }
       const score = decimalScore(confidence);
       if (score != null) {
         const rule = fact.confidence_rule ? ` · ${fact.confidence_rule}` : "";
@@ -102,13 +107,17 @@
     return role === "admin" && demoMode === true;
   }
 
-  function mappingConfidence(confidence) {
+  function mappingConfidence(item) {
+    const confidence = item && typeof item === "object" ? item.confidence : item;
     if (confidence == null || confidence === "") {
       return "confidenza non disponibile";
     }
     const number = Number(confidence);
     if (!Number.isFinite(number)) {
       return "confidenza non disponibile";
+    }
+    if (item && typeof item === "object" && item.calibrated === true) {
+      return `${Math.round(number * 100)}%`;
     }
     return number.toFixed(2);
   }
@@ -135,7 +144,7 @@
         <td>${escapeHtml(item.source_name)}</td>
         <td><code>${escapeHtml(item.source_field)}</code></td>
         <td>${escapeHtml(item.target_type)}.${escapeHtml(item.target_property)}</td>
-        <td>${escapeHtml(mappingConfidence(item.confidence))}</td>
+        <td>${escapeHtml(mappingConfidence(item))}</td>
         <td>${pill(item.status)}</td>
         <td>${actions}</td>
       </tr>`;
@@ -177,7 +186,7 @@
   `;
   }
 
-  function customerDetail(customer) {
+  function customerDetail(customer, role) {
     const orders = customer.orders
       .map((order) => `<li><button type="button" data-order="${escapeHtml(order.id)}">Ordine ${escapeHtml(order.business_key)}</button></li>`)
       .join("");
@@ -192,7 +201,12 @@
     <ul class="edges">${edges}</ul>
     <h3>Fatti</h3>
     ${factList(customer.facts)}
+    ${role === "admin" ? `<p><button type="button" id="unmask-pii" data-entity="${escapeHtml(customer.id)}">Mostra dati personali</button></p><pre id="unmask-result"></pre>` : ""}
   `;
+  }
+
+  function readableCard(item) {
+    return `<article class="card"><div class="meta">${pill(item.action)}<span class="pill">${escapeHtml(item.who || "")}</span></div><p>${escapeHtml(item.when || "")}</p><p>${escapeHtml(item.what || item.action || "")}</p><p>Ordine ${escapeHtml(item.order || "n/d")}</p><p>${escapeHtml(item.detail || "")}</p></article>`;
   }
 
   function inboxCard(item, role) {
@@ -256,5 +270,6 @@
     customerDetail,
     inboxCard,
     auditCard,
+    readableCard,
   };
 });

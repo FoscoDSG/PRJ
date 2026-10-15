@@ -49,6 +49,12 @@ class RejectBody(BaseModel):
     reason: str = Field(min_length=5, max_length=500)
 
 
+class UnmaskBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    entity_id: str = Field(min_length=36, max_length=36)
+    reason: str = Field(min_length=5, max_length=500)
+
+
 class StockBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
     on_hand: int = Field(ge=0, le=10_000_000)

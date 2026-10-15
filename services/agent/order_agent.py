@@ -12,7 +12,9 @@ from typing import Any, Protocol
 import jsonschema
 import psycopg
 
-from services.text import digest, stable
+from services.evidence import evidence_hmac
+from services.pii import MASK, is_pii_property, mask_evidence_item
+from services.text import stable
 
 AGENT_VERSION = "order-agent@v1"
 
@@ -120,16 +122,21 @@ def build_context(conn: psycopg.Connection, order_id: str) -> dict[str, Any]:
             )
             _collect(evidence, "Supplier", supplier["business_key"], facts, ("delay_days", "name"))
     evidence_sorted = sorted(evidence, key=lambda item: (item["entity_key"], item["property"], item["fact_id"]))
+    evidence_hash = evidence_hmac(conn, [item["fact_id"] for item in evidence_sorted])
+    for supplier in suppliers:
+        if is_pii_property("name", "Supplier"):
+            supplier["name"] = MASK
+    company = _value(customer_facts, "company_name")
     return {
         "order_id": order["id"],
         "order_key": order["business_key"],
         "amount": _value(order_facts, "amount") or 0,
         "customer_key": str(customer_key or ""),
-        "customer_name": _value(customer_facts, "company_name"),
+        "customer_name": None if company is None else MASK,
         "lines": lines,
         "suppliers": suppliers,
-        "evidence": evidence_sorted,
-        "evidence_hash": digest(evidence_sorted),
+        "evidence": [mask_evidence_item(item) for item in evidence_sorted],
+        "evidence_hash": evidence_hash,
     }
 
 

@@ -26,6 +26,15 @@ PROFILE_ORDER = {
 
 
 def materialize(conn: psycopg.Connection, ontology: Ontology) -> dict[str, int]:
+    from services.pii import clear_staged
+
+    try:
+        return _materialize(conn, ontology)
+    finally:
+        clear_staged()
+
+
+def _materialize(conn: psycopg.Connection, ontology: Ontology) -> dict[str, int]:
     sources = conn.execute(
         """
         SELECT DISTINCT source_name FROM app.field_mappings
@@ -84,14 +93,9 @@ def _materialize_source(conn: psycopg.Connection, ontology: Ontology, source_nam
         """,
         (source_name,),
     ).fetchall()
-    rows = conn.execute(
-        """
-        SELECT row_index, data FROM app.landing_rows
-        WHERE batch_id = %s
-        ORDER BY row_index
-        """,
-        (batch["id"],),
-    ).fetchall()
+    from services.pii import landing_rows
+
+    rows = landing_rows(conn, str(batch["id"]))
     profile = mappings[0]["profile"] if mappings else "unknown"
     from services.mapping.engine import rule_id_for
 
