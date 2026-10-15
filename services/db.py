@@ -42,6 +42,24 @@ def _legacy_sha256(password: str) -> str:
     return hashlib.sha256(f"ieol:{password}".encode()).hexdigest()
 
 
+def _verify_scrypt(password: str, stored: str) -> bool:
+    try:
+        scheme, salt_hex, digest_hex = stored.split("$", 2)
+        if scheme != "scrypt":
+            return False
+        actual = hashlib.scrypt(
+            password.encode(),
+            salt=bytes.fromhex(salt_hex),
+            n=2**14,
+            r=8,
+            p=1,
+            dklen=32,
+        )
+        return hmac.compare_digest(actual, bytes.fromhex(digest_hex))
+    except (ValueError, TypeError):
+        return False
+
+
 def _is_legacy_sha256(stored: str) -> bool:
     return len(stored) == 64 and all(char in "0123456789abcdef" for char in stored)
 
@@ -59,11 +77,12 @@ def connect(url: str | None = None) -> psycopg.Connection:
     return psycopg.connect(url or database_url(), row_factory=dict_row, autocommit=False)
 
 
-def apply_schema(conn: psycopg.Connection) -> None:
+def apply_schema(conn: psycopg.Connection, *, seed_demo: bool = False) -> None:
     conn.execute("DROP SCHEMA IF EXISTS app CASCADE")
     conn.execute("DROP SCHEMA IF EXISTS src CASCADE")
     conn.execute(SCHEMA_PATH.read_text(encoding="utf-8"))
-    seed_users(conn)
+    if seed_demo:
+        seed_users(conn)
     conn.commit()
 
 
@@ -99,8 +118,7 @@ def ensure_ready(conn: psycopg.Connection, packages: list) -> None:
     row = conn.execute("SELECT to_regclass('app.users') AS rel").fetchone()
     if row is None or row["rel"] is None:
         apply_schema(conn)
-    else:
-        seed_users(conn)
+    seed_users(conn)
     for package in packages:
         found = conn.execute(
             """
@@ -128,7 +146,8 @@ def authenticate(conn: psycopg.Connection, username: str, password: str) -> dict
     if row is None or not _password_ok(row["password_hash"], password):
         return None
     stored = row["password_hash"]
-    if _is_legacy_sha256(stored) or (stored.startswith("$argon2") and _HASHER.check_needs_rehash(stored)):
+    legacy = _is_legacy_sha256(stored) or stored.startswith("scrypt$")
+    if legacy or (stored.startswith("$argon2") and _HASHER.check_needs_rehash(stored)):
         conn.execute(
             "UPDATE app.users SET password_hash = %s WHERE username = %s",
             (password_hash(password), row["username"]),
@@ -142,6 +161,8 @@ def _password_ok(stored: str, password: str) -> bool:
             return bool(_HASHER.verify(stored, password))
         except VerificationError:
             return False
+    if stored.startswith("scrypt$"):
+        return _verify_scrypt(password, stored)
     if _is_legacy_sha256(stored):
         return hmac.compare_digest(stored, _legacy_sha256(password))
     return False

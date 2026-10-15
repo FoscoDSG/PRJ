@@ -6,7 +6,7 @@ import argparse
 import json
 
 from ontology.loader import load_merged
-from services.db import apply_schema, connect
+from services.db import apply_schema, connect, ensure_ready
 from services.pipeline import adjust_on_hand, approve, execute_recommendation, load_fixtures
 from services.queries import list_inbox
 from services.text import stable
@@ -15,20 +15,30 @@ from services.text import stable
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="Fetta operativa dell'order management")
     sub = parser.add_subparsers(dest="command", required=True)
-    sub.add_parser("demo", help="Carica la fixture, propone e fa il dry-run")
+    demo = sub.add_parser("demo", help="Carica la fixture, propone e fa il dry-run")
+    demo.add_argument("--reset", action="store_true", help="Cancella e ricrea il database prima del caricamento")
     sub.add_parser("expire", help="Cambia la giacenza e fa scadere la raccomandazione")
     sub.add_parser("execute", help="Esegue il dry-run già approvato, in modo idempotente")
     args = parser.parse_args(argv)
     model = load_merged()
     with connect() as conn:
         if args.command == "demo":
-            apply_schema(conn)
+            if args.reset:
+                apply_schema(conn, seed_demo=True)
+            else:
+                ensure_ready(conn, model.packages)
             summary = load_fixtures(conn, actor="mapper", role="mapper", model=model)
-            inbox = list_inbox(conn)
+            inbox = list_inbox(conn, "approver")
             if not inbox:
                 raise SystemExit("Nessuna raccomandazione: lo shortage non è stato rilevato")
-            item = inbox[0]
-            preview = approve(conn, item["id"], actor="approver", role="approver")
+            item = next((row for row in inbox if row["status"] in ("proposed", "modified")), None)
+            if item is None:
+                item = next((row for row in inbox if row["status"] == "dry_run_ok"), None)
+                if item is None:
+                    raise SystemExit("Nessuna raccomandazione: lo shortage non è stato rilevato")
+                preview = {"dry_run": item["dry_run"]}
+            else:
+                preview = approve(conn, item["id"], actor="approver", role="approver")
             conn.commit()
             print(
                 json.dumps(
@@ -52,7 +62,7 @@ def main(argv: list[str] | None = None) -> None:
             print(json.dumps({"expired": expired}, indent=2))
             return
         if args.command == "execute":
-            inbox = list_inbox(conn)
+            inbox = list_inbox(conn, "approver")
             ready = next((item for item in inbox if item["status"] == "dry_run_ok"), None)
             if ready is None:
                 raise SystemExit("Nessun dry-run da eseguire. Lancia prima ieol demo")

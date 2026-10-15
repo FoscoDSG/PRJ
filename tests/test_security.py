@@ -36,10 +36,15 @@ def test_login_form_has_no_prefilled_credentials(client: TestClient):
     assert "/assets/escape.js" in page
 
 
-def test_session_secret_required():
-    env = os.environ.copy()
+def _drop_session_secrets(env: dict) -> dict:
     env.pop("SESSION_SECRET", None)
+    env.pop("IEOL_SESSION_SECRET", None)
     env.pop("IEOL_DEV", None)
+    return env
+
+
+def test_session_secret_required():
+    env = _drop_session_secrets(os.environ.copy())
     env["PYTHONPATH"] = str(ROOT)
     result = subprocess.run(
         [sys.executable, "-c", "import apps.api.main"],
@@ -54,9 +59,9 @@ def test_session_secret_required():
 
 
 def test_blank_session_secret_is_rejected():
-    env = os.environ.copy()
+    env = _drop_session_secrets(os.environ.copy())
     env["SESSION_SECRET"] = "   "
-    env.pop("IEOL_DEV", None)
+    env["IEOL_SESSION_SECRET"] = "   "
     env["PYTHONPATH"] = str(ROOT)
     result = subprocess.run(
         [sys.executable, "-c", "import apps.api.main"],
@@ -70,8 +75,7 @@ def test_blank_session_secret_is_rejected():
 
 
 def test_dev_mode_starts_without_session_secret():
-    env = os.environ.copy()
-    env.pop("SESSION_SECRET", None)
+    env = _drop_session_secrets(os.environ.copy())
     env["IEOL_DEV"] = "1"
     env["PYTHONPATH"] = str(ROOT)
     result = subprocess.run(
@@ -140,6 +144,28 @@ def test_role_name_password_is_replaced_from_env(client: TestClient, monkeypatch
     assert client.post("/api/login", json={"username": "mapper", "password": "mapper"}).status_code == 401
     allowed = client.post("/api/login", json={"username": "mapper", "password": replacement})
     assert allowed.status_code == 200, allowed.text
+
+
+def test_scrypt_login_rehashes_to_argon2(client: TestClient):
+    password = secrets.token_urlsafe(18)
+    salt = os.urandom(16)
+    digest = hashlib.scrypt(password.encode(), salt=salt, n=2**14, r=8, p=1, dklen=32)
+    stored = f"scrypt${salt.hex()}${digest.hex()}"
+    with connect() as conn:
+        conn.execute(
+            "INSERT INTO app.users (username, password_hash, role) VALUES (%s, %s, %s)",
+            ("scrypt-user", stored, "operator"),
+        )
+        conn.commit()
+    allowed = client.post("/api/login", json={"username": "scrypt-user", "password": password})
+    assert allowed.status_code == 200, allowed.text
+    with connect() as conn:
+        upgraded = conn.execute(
+            "SELECT password_hash FROM app.users WHERE username = %s",
+            ("scrypt-user",),
+        ).fetchone()["password_hash"]
+    assert upgraded.startswith("$argon2id$")
+    assert not upgraded.startswith("scrypt$")
 
 
 def test_legacy_sha256_login_rehashes_to_argon2(client: TestClient):

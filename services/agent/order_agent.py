@@ -149,7 +149,7 @@ def _fact_rows(conn: psycopg.Connection, entity_id: str | None) -> list[dict]:
     return list(
         conn.execute(
             """
-            SELECT id::text AS fact_id, property, value, origin
+            SELECT id::text AS fact_id, property, value, origin, classification
             FROM app.facts
             WHERE entity_id = %s AND valid_to IS NULL
             """,
@@ -177,6 +177,7 @@ def _collect(evidence: list[dict], entity_type: str, entity_key: str, facts: lis
                 "property": fact["property"],
                 "value": stable(fact["value"]),
                 "origin": fact["origin"],
+                "classification": fact["classification"],
             }
         )
 

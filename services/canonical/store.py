@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import uuid
 from typing import Any
 
@@ -133,12 +134,11 @@ def _write_profile(
     if profile == "customer":
         source_key = _text(values.get("source_key"))
         vat = _vat(values.get("vat"))
-        business_key = vat or source_key
+        business_key = _identity_key(vat) or source_key
         if not business_key:
             return 0, 0
         entity_id = _ensure_entity(conn, "Customer", business_key)
         _alias(conn, "Customer", source_key, entity_id)
-        _alias(conn, "Customer", vat, entity_id)
         payload = dict(values)
         if vat:
             payload["vat"] = vat
@@ -477,6 +477,13 @@ def _text(value: Any) -> str | None:
     if value in (None, ""):
         return None
     return str(value).strip()
+
+
+def _identity_key(vat: str | None) -> str | None:
+    if not vat:
+        return None
+    digest = hashlib.sha256(vat.encode()).hexdigest()[:20]
+    return f"id:{digest}"
 
 
 def _vat(value: Any) -> str | None:

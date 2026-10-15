@@ -10,11 +10,12 @@ import psycopg
 
 from ontology.loader import Ontology, load_merged
 from services.actions.executor import dry_run, execute
-from services.agent.order_agent import run_order_agent
+from services.agent.order_agent import build_context, run_order_agent
 from services.agent.stub_model import StubOrderModel
 from services.canonical.store import _put_fact, materialize
 from services.errors import AppError
 from services.ingest.csv_connector import read_csv
+from services.ingest.document_connector import read_order_document
 from services.ingest.excel_connector import read_excel
 from services.ingest.landing import land
 from services.ingest.sql_connector import extract_sql
@@ -61,9 +62,35 @@ def ingest_excel(conn: psycopg.Connection, path: Path, source_name: str, actor: 
     return land(conn, source_name=source_name, extracted=read_excel(path), actor=actor, role=role)
 
 
+def ingest_document(conn: psycopg.Connection, path: Path, actor: str, role: str, model: Ontology) -> dict:
+    _require_mapper(role)
+    try:
+        document = read_order_document(path)
+    except ValueError as exc:
+        raise AppError(400, str(exc)) from exc
+    landed = []
+    for source_name, extracted in document["sources"]:
+        landed.append({"source": source_name, **land(conn, source_name=source_name, extracted=extracted, actor=actor, role=role)})
+    confirmed = confirm_confident(conn, role, model)
+    counts = refresh_canonical(conn, model)
+    recommendations = run_agents(conn, actor=actor, role=role)
+    return {
+        "order_key": document["order_key"],
+        "source_kind": document["source_kind"],
+        "sources": landed,
+        "confirmed_mappings": confirmed,
+        "canonical": counts,
+        "recommendations": recommendations,
+    }
+
+
 def ingest_sql(conn: psycopg.Connection, table: str, source_name: str, actor: str, role: str) -> dict:
     _require_mapper(role)
-    return land(conn, source_name=source_name, extracted=extract_sql(conn, table), actor=actor, role=role)
+    try:
+        extracted = extract_sql(conn, table)
+    except ValueError as exc:
+        raise AppError(400, str(exc)) from exc
+    return land(conn, source_name=source_name, extracted=extracted, actor=actor, role=role)
 
 
 def confirm_mapping(conn: psycopg.Connection, mapping_id: str, actor: str, role: str, model: Ontology) -> dict:
@@ -139,14 +166,17 @@ def run_agents(conn: psycopg.Connection, *, actor: str, role: str, model: Any | 
     ).fetchall()
     created = []
     for order in orders:
-        open_row = conn.execute(
+        context = build_context(conn, order["id"])
+        existing = conn.execute(
             """
             SELECT 1 FROM app.recommendations
-            WHERE order_entity_id = %s AND status IN ('proposed', 'modified', 'approved', 'dry_run_ok')
+            WHERE order_entity_id = %s
+              AND status <> 'expired'
+              AND evidence_hash = %s
             """,
-            (order["id"],),
+            (order["id"], context["evidence_hash"]),
         ).fetchone()
-        if open_row:
+        if existing:
             continue
         result = run_order_agent(conn, order["id"], provider)
         if not result["actions"]:

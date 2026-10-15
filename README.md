@@ -4,7 +4,9 @@ La visione di prodotto è in `README (1).md`. Qui ci sono solo i segreti necessa
 
 ## Sessione
 
-`SESSION_SECRET` firma il cookie di sessione. Se manca, l'API rifiuta l'avvio.
+`IEOL_SESSION_SECRET` firma il cookie di sessione. È accettato anche `SESSION_SECRET`. Se mancano entrambi, l'API rifiuta l'avvio.
+
+Il cookie è `https_only`, salvo `IEOL_INSECURE_COOKIES=1` per un HTTP locale.
 
 In sviluppo locale si può impostare `IEOL_DEV=1`: in quel caso, e solo in quel caso, viene usata una chiave incorporata, inadatta a qualsiasi ambiente condiviso. Non impostare `IEOL_DEV` in produzione.
 
@@ -39,10 +41,10 @@ Lo script non stampa password né hash.
 
 Le password nuove sono argon2id (parametri di default di argon2-cffi: memoria 64 MiB, 3 iterazioni, parallelismo 4).
 
-Gli hash SHA-256 storici (`sha256("ieol:" + password)` con sale fisso) restano validi al login e, al primo accesso riuscito, vengono sostituiti con argon2id. Non serve un reset di massa, salvo il caso sopra: se la password è il nome del ruolo viene ritirata all'avvio, anche senza un login.
+Gli hash SHA-256 storici (`sha256("ieol:" + password)` con sale fisso) e gli hash `scrypt$` restano validi al login e, al primo accesso riuscito, vengono sostituiti con argon2id. Non serve un reset di massa, salvo il caso sopra: se la password è il nome del ruolo viene ritirata all'avvio, anche senza un login.
 
 ## Database
 
-`DATABASE_URL` ha default `postgresql://ubuntu@/ieol`. I test usano `postgresql://ubuntu@/ieol_test` e richiedono un ruolo PostgreSQL `ubuntu` con accesso peer a quel database.
+`DATABASE_URL` ha default `postgresql://ubuntu@/ieol`. I test usano `TEST_DATABASE_URL` se presente, altrimenti `postgresql://ubuntu@/ieol_test`, e richiedono un ruolo PostgreSQL `ubuntu` con accesso peer a quel database.
 
 Vedi anche `.env.example`.

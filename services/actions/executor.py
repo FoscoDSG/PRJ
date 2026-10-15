@@ -12,7 +12,7 @@ from ontology.loader import Ontology
 from services.audit import record
 from services.errors import AppError
 from services.graph.projection import record_trigger
-from services.workflow.engine import mark_dry_run, mark_executed, mark_failed
+from services.workflow.engine import expire_stale, mark_dry_run, mark_executed, mark_failed
 
 
 def dry_run(
@@ -49,52 +49,61 @@ def execute(
     actor: str,
     role: str,
 ) -> dict[str, Any]:
+    expire_stale(conn)
     row = conn.execute(
         "SELECT * FROM app.recommendations WHERE id = %s FOR UPDATE",
         (recommendation_id,),
     ).fetchone()
     if row is None:
         raise AppError(404, "Raccomandazione assente")
+    if row["status"] == "expired":
+        conn.commit()
+        raise AppError(409, "Le evidenze sono cambiate: la raccomandazione è scaduta")
     if row["status"] == "executed":
         return _existing_result(conn, recommendation_id)
     if row["status"] != "dry_run_ok":
         raise AppError(409, "Esegui solo dopo il dry-run")
+    stored = _latest_dry_run(conn, recommendation_id)
+    if not stored:
+        raise AppError(409, "Manca il payload approvato")
     created: list[dict[str, Any]] = []
     try:
-        for action in row["actions"]:
-            payload = _payload(conn, action, row)
-            key = _idempotency_key(recommendation_id, action)
-            if action["type"] in ("createPurchaseOrder", "createOrder"):
-                document = _sandbox(conn, action["type"], key, payload)
-                record(
-                    conn,
-                    action="external_call",
-                    actor=actor,
-                    role=role,
-                    entity_ref=document["id"],
-                    payload={"port": "ErpPort", "idempotency_key": key, "payload": payload},
-                )
-                created.append(document)
-            elif action["type"] in ("notifyCustomer", "sendConfirmation"):
-                email = _email(conn, key, payload)
-                record(
-                    conn,
-                    action="external_call",
-                    actor=actor,
-                    role=role,
-                    entity_ref=email["id"],
-                    payload={"port": "EmailPort", "idempotency_key": key, "payload": payload},
-                )
-                created.append(email)
-        event_id = _event(conn, ontology, row, created)
-        record_trigger(conn, str(row["order_entity_id"]), event_id)
-        result = {"documents": created, "event_id": event_id}
-        mark_executed(conn, recommendation_id, actor=actor, role=role, payload=result)
+        with conn.transaction():
+            for index, payload in enumerate(stored):
+                action_type = payload["action"]
+                key = f"{_idempotency_key_from_payload(recommendation_id, payload)}:{index}"
+                if action_type in ("createPurchaseOrder", "createOrder"):
+                    document = _sandbox(conn, action_type, key, payload)
+                    record(
+                        conn,
+                        action="external_call",
+                        actor=actor,
+                        role=role,
+                        entity_ref=document["id"],
+                        payload={"port": "ErpPort", "idempotency_key": key, "payload": payload},
+                    )
+                    created.append(document)
+                elif action_type in ("notifyCustomer", "sendConfirmation"):
+                    email = _email(conn, key, payload)
+                    record(
+                        conn,
+                        action="external_call",
+                        actor=actor,
+                        role=role,
+                        entity_ref=email["id"],
+                        payload={"port": "EmailPort", "idempotency_key": key, "payload": payload},
+                    )
+                    created.append(email)
+            event_id = _event(conn, ontology, row, created)
+            record_trigger(conn, str(row["order_entity_id"]), event_id)
+            result = {"documents": created, "event_id": event_id}
+            mark_executed(conn, recommendation_id, actor=actor, role=role, payload=result)
         return result
     except AppError:
         raise
     except Exception as exc:
         mark_failed(conn, recommendation_id, actor=actor, role=role, message=str(exc))
+        conn.commit()
         raise AppError(500, "Esecuzione fallita") from exc
 
 
@@ -170,6 +179,33 @@ def _payload(conn: psycopg.Connection, action: dict, recommendation: dict) -> di
         "subject": f"Aggiornamento ordine {order_key}",
         "body": recommendation["problem"],
     }
+
+
+def _latest_dry_run(conn: psycopg.Connection, recommendation_id: str) -> list[dict]:
+    stored = conn.execute(
+        """
+        SELECT payloads FROM app.action_batches
+        WHERE recommendation_id = %s AND kind = 'dry_run'
+        ORDER BY created_at DESC
+        LIMIT 1
+        """,
+        (recommendation_id,),
+    ).fetchone()
+    if stored is None:
+        return []
+    return list(stored["payloads"] or [])
+
+
+def _idempotency_key_from_payload(recommendation_id: str, payload: dict) -> str:
+    return ":".join(
+        [
+            recommendation_id,
+            str(payload.get("action") or ""),
+            str(payload.get("supplier") or ""),
+            str(payload.get("product") or ""),
+            str(payload.get("order") or ""),
+        ]
+    )
 
 
 def _idempotency_key(recommendation_id: str, action: dict) -> str:
