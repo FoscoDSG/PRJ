@@ -14,7 +14,7 @@ from starlette.middleware.sessions import SessionMiddleware
 
 from ontology.loader import load_merged
 from services.actions.executor import compensate
-from services.db import authenticate, connect, ensure_ready
+from services.db import authenticate, connect, demo_mode, ensure_ready
 from services.errors import AppError
 from services.pipeline import (
     acknowledge_drift,
@@ -28,6 +28,7 @@ from services.pipeline import (
     ingest_excel,
     ingest_sql,
     load_fixtures,
+    release_document,
     ontology,
     refresh_canonical,
     reject_mapping,
@@ -102,6 +103,11 @@ def health() -> dict:
     return {"status": "ok"}
 
 
+@app.get("/api/config")
+def config() -> dict:
+    return {"demo_mode": demo_mode()}
+
+
 @app.post("/api/login")
 def login(request: Request, body: dict) -> dict:
     with connect() as conn:
@@ -120,11 +126,13 @@ def logout(request: Request) -> dict:
 
 @app.get("/api/me")
 def me(user: dict = Depends(require_user)) -> dict:
-    return user
+    return {**user, "demo_mode": demo_mode()}
 
 
 @app.post("/api/demo/load")
 def demo_load(user: dict = Depends(require_user)) -> dict:
+    if not demo_mode():
+        raise AppError(403, "Il demo è chiuso")
     model = ontology()
     with connect() as conn:
         result = load_fixtures(conn, user["username"], user["role"], model)
@@ -196,6 +204,61 @@ async def ingest_document_route(file: UploadFile = File(...), user: dict = Depen
         if path is not None:
             path.unlink(missing_ok=True)
     return _ok(result)
+
+
+@app.get("/api/quarantine")
+def quarantine(user: dict = Depends(require_user)) -> dict:
+    del user
+    with connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT id::text, source_name, order_key, reasons, status
+            FROM app.quarantine_documents
+            ORDER BY created_at DESC
+            """
+        ).fetchall()
+    return _ok({"documents": list(rows)})
+
+
+@app.post("/api/quarantine/{quarantine_id}/release")
+def release(quarantine_id: str, user: dict = Depends(require_user)) -> dict:
+    with connect() as conn:
+        result = release_document(conn, quarantine_id, user["role"], ontology())
+        conn.commit()
+    return _ok(result)
+
+
+@app.get("/api/identity-reviews")
+def identity_reviews(user: dict = Depends(require_user)) -> dict:
+    del user
+    from services.identity.resolve import list_reviews
+
+    with connect() as conn:
+        return _ok({"reviews": list_reviews(conn)})
+
+
+@app.post("/api/identity-reviews/{review_id}/confirm")
+def confirm_identity(review_id: str, user: dict = Depends(require_user)) -> dict:
+    if user["role"] not in ("admin", "mapper"):
+        raise AppError(403, "Serve il ruolo mapper")
+    from services.identity.resolve import confirm_review
+
+    with connect() as conn:
+        result = confirm_review(conn, review_id)
+        conn.commit()
+    return result
+
+
+@app.post("/api/identity-reviews/{review_id}/reject")
+def reject_identity(review_id: str, user: dict = Depends(require_user)) -> dict:
+    if user["role"] not in ("admin", "mapper"):
+        raise AppError(403, "Serve il ruolo mapper")
+    from services.identity.resolve import reject_review
+
+    with connect() as conn:
+        result = reject_review(conn, review_id)
+        conn.commit()
+    return result
 
 
 @app.post("/api/ingest/sql")

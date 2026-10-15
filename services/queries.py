@@ -133,7 +133,14 @@ def list_inbox(conn: psycopg.Connection, role: str) -> list[dict]:
         ).fetchone()
         item = dict(row)
         item["evidence"] = _mask_evidence(item["evidence"], role)
-        item["dry_run"] = _mask_tree(payloads["payloads"], role) if payloads else None
+        from services.actions.executor import payloads_for
+
+        preview_payloads = payloads["payloads"] if payloads else payloads_for(conn, item)
+        item["preview"] = {
+            "formula": STOCK_FORMULA,
+            "payloads": _mask_tree(preview_payloads, role),
+        }
+        item["dry_run"] = item["preview"]["payloads"] if payloads else None
         inbox.append(item)
     return inbox
 

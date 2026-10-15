@@ -6,7 +6,7 @@ import argparse
 import json
 
 from ontology.loader import load_merged
-from services.db import apply_schema, connect, ensure_ready
+from services.db import apply_schema, connect, ensure_ready, migrate
 from services.pipeline import adjust_on_hand, approve, execute_recommendation, load_fixtures
 from services.queries import list_inbox
 from services.text import stable
@@ -15,13 +15,18 @@ from services.text import stable
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="Fetta operativa dell'order management")
     sub = parser.add_subparsers(dest="command", required=True)
-    demo = sub.add_parser("demo", help="Carica la fixture, propone e fa il dry-run")
-    demo.add_argument("--reset", action="store_true", help="Cancella e ricrea il database prima del caricamento")
+    demo = sub.add_parser("demo", help="Carica la fixture su un database già migrato")
+    demo.add_argument("--reset", action="store_true", help="Distrugge i dati e ricrea il database. Non usarlo se i dati vanno conservati")
+    sub.add_parser("migrate", help="Applica le migrazioni. Una seconda esecuzione non cambia nulla")
     sub.add_parser("expire", help="Cambia la giacenza e fa scadere la raccomandazione")
     sub.add_parser("execute", help="Esegue il dry-run già approvato, in modo idempotente")
     args = parser.parse_args(argv)
     model = load_merged()
     with connect() as conn:
+        if args.command == "migrate":
+            applied = migrate(conn)
+            print(json.dumps({"applied": applied}))
+            return
         if args.command == "demo":
             if args.reset:
                 apply_schema(conn, seed_demo=True)

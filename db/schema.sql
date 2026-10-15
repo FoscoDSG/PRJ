@@ -1,3 +1,4 @@
+-- Superseded by db/migrations. Apply changes with `ieol migrate`.
 CREATE SCHEMA IF NOT EXISTS app;
 CREATE SCHEMA IF NOT EXISTS src;
 

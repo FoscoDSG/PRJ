@@ -15,9 +15,10 @@ from argon2.exceptions import VerificationError
 from psycopg.rows import dict_row
 
 ROOT = Path(__file__).resolve().parents[1]
-SCHEMA_PATH = ROOT / "db" / "schema.sql"
+MIGRATIONS = ROOT / "db" / "migrations"
 
 ROLES = ("admin", "mapper", "operator", "approver")
+SOURCE_RANK = {"ai": 1, "manual": 2, "crm": 3, "erp": 4, "calculated": 5}
 
 # argon2-cffi defaults: argon2id, t=3, m=64 MiB, p=4.
 _HASHER = PasswordHasher(
@@ -64,6 +65,10 @@ def _is_legacy_sha256(stored: str) -> bool:
     return len(stored) == 64 and all(char in "0123456789abcdef" for char in stored)
 
 
+def demo_mode() -> bool:
+    return os.environ.get("IEOL_DEMO_MODE") == "1"
+
+
 def _seed_password(role: str) -> str | None:
     raw = os.environ.get(f"IEOL_SEED_{role.upper()}_PASSWORD")
     if raw is None or raw == "":
@@ -77,13 +82,40 @@ def connect(url: str | None = None) -> psycopg.Connection:
     return psycopg.connect(url or database_url(), row_factory=dict_row, autocommit=False)
 
 
+def migrate(conn: psycopg.Connection) -> list[str]:
+    conn.execute("CREATE SCHEMA IF NOT EXISTS app")
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS app.schema_migrations (
+          version text PRIMARY KEY,
+          applied_at timestamptz NOT NULL DEFAULT now()
+        )
+        """
+    )
+    applied = []
+    for path in sorted(MIGRATIONS.glob("*.sql")):
+        version = path.stem
+        done = conn.execute(
+            "SELECT 1 FROM app.schema_migrations WHERE version = %s",
+            (version,),
+        ).fetchone()
+        if done:
+            continue
+        conn.execute(path.read_text(encoding="utf-8"))
+        conn.execute("INSERT INTO app.schema_migrations (version) VALUES (%s)", (version,))
+        applied.append(version)
+    conn.commit()
+    return applied
+
+
 def apply_schema(conn: psycopg.Connection, *, seed_demo: bool = False) -> None:
     conn.execute("DROP SCHEMA IF EXISTS app CASCADE")
     conn.execute("DROP SCHEMA IF EXISTS src CASCADE")
-    conn.execute(SCHEMA_PATH.read_text(encoding="utf-8"))
+    conn.commit()
+    migrate(conn)
     if seed_demo:
         seed_users(conn)
-    conn.commit()
+        conn.commit()
 
 
 def seed_users(conn: psycopg.Connection) -> None:
@@ -106,7 +138,6 @@ def seed_users(conn: psycopg.Connection) -> None:
             continue
         if not _password_ok(row["password_hash"], role):
             continue
-        # The historical demo password was the role name. Replace it.
         replacement = password if password is not None else secrets.token_urlsafe(32)
         conn.execute(
             "UPDATE app.users SET password_hash = %s WHERE username = %s",
@@ -115,9 +146,7 @@ def seed_users(conn: psycopg.Connection) -> None:
 
 
 def ensure_ready(conn: psycopg.Connection, packages: list) -> None:
-    row = conn.execute("SELECT to_regclass('app.users') AS rel").fetchone()
-    if row is None or row["rel"] is None:
-        apply_schema(conn)
+    migrate(conn)
     seed_users(conn)
     for package in packages:
         found = conn.execute(
