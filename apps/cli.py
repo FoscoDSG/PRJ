@@ -1,4 +1,4 @@
-"""Command line slice: fixture, recommendation, dry-run, and evidence expiry."""
+"""Command line slice: migrations, fixture, recommendation, dry-run, and evidence expiry."""
 
 from __future__ import annotations
 
@@ -6,7 +6,8 @@ import argparse
 import json
 
 from ontology.loader import load_merged
-from services.db import apply_schema, connect, ensure_ready
+from services.db import connect, database_url, ensure_ready
+from services.migrate import database_name, demo_database_url, ensure_database, migrate, reset_demo_database
 from services.pipeline import adjust_on_hand, approve, execute_recommendation, load_fixtures
 from services.queries import list_inbox
 from services.text import stable
@@ -15,18 +16,46 @@ from services.text import stable
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="Fetta operativa dell'order management")
     sub = parser.add_subparsers(dest="command", required=True)
-    demo = sub.add_parser("demo", help="Carica la fixture, propone e fa il dry-run")
-    demo.add_argument("--reset", action="store_true", help="Cancella e ricrea il database prima del caricamento")
-    sub.add_parser("expire", help="Cambia la giacenza e fa scadere la raccomandazione")
-    sub.add_parser("execute", help="Esegue il dry-run già approvato, in modo idempotente")
+    sub.add_parser("migrate", help="Applica le migrazioni pendenti sul database principale")
+    demo = sub.add_parser(
+        "demo",
+        help="Carica la fixture nel database dedicato della demo, propone e fa il dry-run",
+    )
+    demo.add_argument(
+        "--reset",
+        action="store_true",
+        help="Cancella gli schemi app e src solo nel database della demo, poi riapplica le migrazioni",
+    )
+    sub.add_parser("expire", help="Nel database della demo, cambia la giacenza e fa scadere la raccomandazione")
+    sub.add_parser("execute", help="Nel database della demo, esegue il dry-run già approvato, in modo idempotente")
     args = parser.parse_args(argv)
+    if args.command == "migrate":
+        try:
+            with connect() as conn:
+                applied = migrate(conn)
+        except RuntimeError as exc:
+            raise SystemExit(str(exc)) from exc
+        print(json.dumps({"applied": applied}, ensure_ascii=False))
+        return
     model = load_merged()
-    with connect() as conn:
+    try:
+        main_url = database_url()
+        demo_url = demo_database_url(main_url)
+        ensure_database(demo_url)
+    except RuntimeError as exc:
+        raise SystemExit(str(exc)) from exc
+    with connect(demo_url) as conn:
+        if args.command == "demo" and args.reset:
+            try:
+                reset_demo_database(
+                    conn,
+                    main_dbname=database_name(main_url),
+                    expected_dbname=database_name(demo_url),
+                )
+            except RuntimeError as exc:
+                raise SystemExit(str(exc)) from exc
         if args.command == "demo":
-            if args.reset:
-                apply_schema(conn, seed_demo=True)
-            else:
-                ensure_ready(conn, model.packages)
+            ensure_ready(conn, model.packages)
             summary = load_fixtures(conn, actor="mapper", role="mapper", model=model)
             inbox = list_inbox(conn, "approver")
             if not inbox:
@@ -56,6 +85,7 @@ def main(argv: list[str] | None = None) -> None:
                 )
             )
             return
+        migrate(conn)
         if args.command == "expire":
             expired = adjust_on_hand(conn, model, "ART-X", 500)
             conn.commit()

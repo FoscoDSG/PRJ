@@ -1,4 +1,4 @@
-"""PostgreSQL connection, schema bootstrap, and demo users."""
+"""PostgreSQL connection, migrations, and users."""
 
 from __future__ import annotations
 
@@ -7,15 +7,13 @@ import hmac
 import os
 import secrets
 import uuid
-from pathlib import Path
 
 import psycopg
 from argon2 import PasswordHasher, Type
 from argon2.exceptions import VerificationError
 from psycopg.rows import dict_row
 
-ROOT = Path(__file__).resolve().parents[1]
-SCHEMA_PATH = ROOT / "db" / "schema.sql"
+from services.migrate import migrate
 
 ROLES = ("admin", "mapper", "operator", "approver")
 
@@ -77,15 +75,6 @@ def connect(url: str | None = None) -> psycopg.Connection:
     return psycopg.connect(url or database_url(), row_factory=dict_row, autocommit=False)
 
 
-def apply_schema(conn: psycopg.Connection, *, seed_demo: bool = False) -> None:
-    conn.execute("DROP SCHEMA IF EXISTS app CASCADE")
-    conn.execute("DROP SCHEMA IF EXISTS src CASCADE")
-    conn.execute(SCHEMA_PATH.read_text(encoding="utf-8"))
-    if seed_demo:
-        seed_users(conn)
-    conn.commit()
-
-
 def seed_users(conn: psycopg.Connection) -> None:
     for role in ROLES:
         password = _seed_password(role)
@@ -115,9 +104,7 @@ def seed_users(conn: psycopg.Connection) -> None:
 
 
 def ensure_ready(conn: psycopg.Connection, packages: list) -> None:
-    row = conn.execute("SELECT to_regclass('app.users') AS rel").fetchone()
-    if row is None or row["rel"] is None:
-        apply_schema(conn)
+    migrate(conn)
     seed_users(conn)
     for package in packages:
         found = conn.execute(

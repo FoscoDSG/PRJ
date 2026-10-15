@@ -1,3 +1,7 @@
+-- Schema storico della V1. Non va più applicato a mano: usare `ieol migrate`.
+-- db/migrations/0001_initial.sql lo riproduce. Un database già creato con
+-- questo file viene adottato come baseline, senza ricreare le tabelle.
+
 CREATE SCHEMA IF NOT EXISTS app;
 CREATE SCHEMA IF NOT EXISTS src;
 
