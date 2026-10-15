@@ -32,6 +32,21 @@ ACTION_LABELS = {
     "quantity": "Quantità",
     "reason": "Motivo",
     "problem": "Problema",
+    "open": "Aperto",
+    "acknowledged": "Visto",
+    "detected": "Rilevato",
+    "proposed": "Proposto",
+    "confirmed": "Confermato",
+    "approved": "Approvato",
+    "modified": "Modificato",
+    "rejected": "Rifiutato",
+    "released": "Rilasciato",
+    "dry_run_ok": "Prova a secco pronta",
+    "executed": "Eseguito",
+    "failed": "Fallito",
+    "expired": "Scaduto",
+    "queued": "In coda",
+    "compensated": "Compensato",
 }
 
 _EVENTS = """

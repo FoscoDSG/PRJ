@@ -69,6 +69,9 @@ _MIGRATION_ALLOWLIST: dict[str, frozenset[str]] = {
         "ALTER TABLE app.decisions_log DISABLE TRIGGER decisions_log_no_update",
         "ALTER TABLE app.decisions_log ENABLE TRIGGER decisions_log_no_update",
     }),
+    "0006_hash_version_v2.sql": frozenset({
+        "ALTER TABLE app.decisions_log DROP CONSTRAINT IF EXISTS decisions_log_hash_version_check",
+    }),
 }
 
 # Columns created by db/schema.sql. Extra columns still count as the legacy

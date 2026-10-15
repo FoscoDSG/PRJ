@@ -157,7 +157,7 @@ I file in `db/migrations/` sono numerati e si applicano in ordine. Il runner reg
 ieol migrate
 ```
 
-Il comando legge `DATABASE_URL`, applica solo le migrazioni non ancora registrate e fa commit. Rifiuta ogni `DROP` di `TABLE`, `SCHEMA`, `DATABASE`, `COLUMN`, `CONSTRAINT`, `NOT NULL`, `DEFAULT`, `INDEX`, `FUNCTION` e `TRIGGER`, in qualsiasi punto della riga, senza distinzione di maiuscole, dopo aver ignorato i commenti SQL. Rifiuta anche `TRUNCATE`, `DISABLE TRIGGER`, `ENABLE TRIGGER` e `ALTER TABLE ... DISABLE`. `BEFORE TRUNCATE` e `REVOKE ... TRUNCATE` restano ammessi: non svuotano una relazione. L'eccezione è un'allowlist di istruzioni esatte, per file. In `0003_decisions_source_class_checksums.sql` e in `0004_source_vocabulary_decision_sources.sql` è ammessa la riga `ALTER TABLE app.facts DROP CONSTRAINT IF EXISTS facts_source_class_check`. In `0004` è ammessa anche `ALTER COLUMN confidence DROP NOT NULL`. In `0005_pii_testset_audit.sql` è ammessa `ALTER TABLE app.audit_log DROP CONSTRAINT IF EXISTS audit_log_action_check` e, solo dentro `shield_existing_pii`, le quattro righe che disabilitano e riabilitano i trigger append-only di audit e decisioni. La stessa istruzione in un file nuovo è rifiutata. Un altro `DISABLE TRIGGER` nello stesso file è rifiutato. Eseguirlo di nuovo lascia i dati invariati. Due processi che lo lanciano insieme prendono `pg_advisory_xact_lock` con una chiave fissa: il secondo attende il commit del primo e trova le versioni già registrate.
+Il comando legge `DATABASE_URL`, applica solo le migrazioni non ancora registrate e fa commit. Rifiuta ogni `DROP` di `TABLE`, `SCHEMA`, `DATABASE`, `COLUMN`, `CONSTRAINT`, `NOT NULL`, `DEFAULT`, `INDEX`, `FUNCTION` e `TRIGGER`, in qualsiasi punto della riga, senza distinzione di maiuscole, dopo aver ignorato i commenti SQL. Rifiuta anche `TRUNCATE`, `DISABLE TRIGGER`, `ENABLE TRIGGER` e `ALTER TABLE ... DISABLE`. `BEFORE TRUNCATE` e `REVOKE ... TRUNCATE` restano ammessi: non svuotano una relazione. L'eccezione è un'allowlist di istruzioni esatte, per file. In `0003_decisions_source_class_checksums.sql` e in `0004_source_vocabulary_decision_sources.sql` è ammessa la riga `ALTER TABLE app.facts DROP CONSTRAINT IF EXISTS facts_source_class_check`. In `0004` è ammessa anche `ALTER COLUMN confidence DROP NOT NULL`. In `0005_pii_testset_audit.sql` è ammessa `ALTER TABLE app.audit_log DROP CONSTRAINT IF EXISTS audit_log_action_check` e, solo dentro `shield_existing_pii`, le quattro righe che disabilitano e riabilitano i trigger append-only di audit e decisioni. La stessa istruzione in un file nuovo è rifiutata. In `0006_hash_version_v2.sql` è ammessa solo `ALTER TABLE app.decisions_log DROP CONSTRAINT IF EXISTS decisions_log_hash_version_check`. La stessa riga in `0005` o in un file successivo è rifiutata. Un altro `DISABLE TRIGGER` nello stesso file è rifiutato. Eseguirlo di nuovo lascia i dati invariati. Due processi che lo lanciano insieme prendono `pg_advisory_xact_lock` con una chiave fissa: il secondo attende il commit del primo e trova le versioni già registrate.
 
 Un database già creato con `db/schema.sql` viene riconosciuto. Se ci sono tutte le tabelle, le colonne, la funzione e il trigger dell'audit, la migrazione `0001_initial` è segnata come baseline (`baselined = true`) e il suo SQL non viene eseguito. Righe, identità delle tabelle e registro audit restano quelli già presenti. Se lo schema c'è solo in parte, il comando si ferma senza scrivere.
 
@@ -169,6 +169,20 @@ Un database già creato con `db/schema.sql` viene riconosciuto. Se ci sono tutte
 
 `0005_pii_testset_audit` aggiunge le colonne di chiaro (`value_cleartext`, `data_cleartext`, `samples_cleartext`, `recipient_cleartext`) e il ruolo `ieol_pii`, senza login finché non si esegue `ALTER ROLE`. `ieol_app` perde il `SELECT` di tabella e riceve solo le colonne mascherate: non può leggere il chiaro. I trigger spostano i dati personali al momento dell'inserimento. Lo stesso file scansiona le righe già presenti e le riscrive solo se contengono ancora chiaro; audit e decisioni, append-only, vengono aggiornati solo in quel caso e il chiaro non viene copiato nel payload. L'hash delle evidenze è un HMAC. `ieol migrate` scrive `IEOL_EVIDENCE_HMAC_KEY` in `app.evidence_hmac_key`, una riga che `ieol_app` non può leggere né sostituire. `app.hmac_evidence` accetta solo gli id dei fatti, non una chiave scelta dal chiamante. Il chiaro delle altre letture passa da una sola funzione auditata, come `ieol_pii`. Aggiunge `hash_version` su `decisions_log`: le righe già presenti restano `sha256` (il default della colonna, senza `UPDATE`), le righe nuove sono `hmac-sha256-v1`. Aggiunge il test set (`testset_versions`, `labelled_cases`, `testset_evals`) e `mapping_thresholds`, tutti append-only. `ieol testset build` e `ieol testset eval` usano `IEOL_APP_DATABASE_URL`. I casi vengono da decisioni umane con tutte le fonti a confidenza diversa da `unknown`, da fixture `hand_written`, oppure da etichette `synthetic` (quelle scritte dall'agente in `evals/hand_labels.json` e `evals/order_cases.json`). I synthetic restano nel test set per i test del codice e non contano nel minimo di 30 né nella scelta della soglia. Sotto 30 casi di mapping non synthetic la soglia resta 0,75, metodo `fallback`, `measured` false, con la versione di regola `mapping.header_similarity@v1`. Da 30 in su la soglia è la mediana dei fold. `measured` non è una calibrazione: l'interfaccia non mostra una percentuale e, se la soglia è misurata, scrive `soglia misurata su N casi`. L'agente in esecuzione è lo stesso delle regole, quindi il report dice `agente = regole, nessun confronto possibile` e non pubblica due gruppi di metriche. Se `shield_existing_pii` maschera delle righe, scrive in audit quante sono e con quale versione. Il check delle azioni di audit ammette `pii_unmask`, `pii_read` e `pii_mask`. Un database di sviluppo che aveva già applicato una `0005` precedente va ricreato: il file è cambiato e il checksum non coincide.
 
+`0006_hash_version_v2` allarga il `CHECK` di `decisions_log.hash_version` e ammette anche `hmac-sha256-v2`. Non cambia il default, che resta `hmac-sha256-v1`. Non riscrive le righe. L'applicazione continua a scrivere `hmac-sha256-v1`. Non ruota la chiave. L'unica istruzione in allowlist è `ALTER TABLE app.decisions_log DROP CONSTRAINT IF EXISTS decisions_log_hash_version_check`: toglie il vincolo della `0005` e lo ricrea con i tre valori `sha256`, `hmac-sha256-v1` e `hmac-sha256-v2`.
+
+### Rotazione della chiave HMAC
+
+Questa versione non ruota la chiave. Prepara solo il valore `hmac-sha256-v2` sul registro delle decisioni.
+
+`app.evidence_hmac_key` ha una sola riga. `ieol migrate` la riscrive con `IEOL_EVIDENCE_HMAC_KEY`. La verifica delle evidenze ricalcola l'HMAC con quella chiave corrente: sostituirla fa scadere le raccomandazioni già firmate. Una rotazione vera, da fare in un cambio successivo, deve quindi:
+
+1. Tenere la chiave `hmac-sha256-v1` finché il codice non verifica gli hash vecchi in base a `hash_version`.
+2. Non cambiare `IEOL_EVIDENCE_HMAC_KEY`, e non lasciare che `ieol migrate` sovrascriva l'unica riga, prima che il codice sappia tenere la chiave v1 e la chiave v2 insieme.
+3. Scrivere `hmac-sha256-v2` solo sulle decisioni nuove. Le righe già presenti restano `sha256` o `hmac-sha256-v1`. Il registro è append-only: nessun aggiornamento delle righe esistenti.
+
+Finché quei tre punti non sono nel codice, la chiave in esercizio resta quella attuale e le decisioni nuove restano `hmac-sha256-v1`.
+
 `db/schema.sql` resta il riferimento storico. Una modifica successiva è un file nuovo in `db/migrations/`. Una migrazione già applicata non si riscrive. In esercizio lo schema si aggiorna solo con `ieol migrate`: `db/schema.sql` non si applica a mano.
 
 ### Aggiornare un database già in uso
@@ -176,7 +190,7 @@ Un database già creato con `db/schema.sql` viene riconosciuto. Se ci sono tutte
 Su un database che ha già la `0002`:
 
 1. Backup con `pg_dump`, come nel deploy.
-2. `ieol migrate` con `DATABASE_URL` dell'owner. Applica solo i file non ancora registrati (`0003`, `0004` e `0005` se il database è fermo alla `0002`) e scrive i checksum. Non riesegue i file già registrati. `0001` e `0002` non si modificano.
+2. `ieol migrate` con `DATABASE_URL` dell'owner. Applica solo i file non ancora registrati (`0003`, `0004`, `0005` e `0006` se il database è fermo alla `0002`; solo `0006` se è già alla `0005`) e scrive i checksum. Non riesegue i file già registrati. `0001` e `0002` non si modificano. `0006` non ruota la chiave e non cambia il default di `hash_version`.
 3. Se `ieol_app` non può ancora autenticarsi: `ALTER ROLE ieol_app WITH LOGIN PASSWORD '...'`. Impostare `IEOL_APP_DATABASE_URL` con quell'utente e lo stesso database. L'API entra così, senza `SET ROLE`. `RESET ROLE` su quella sessione non restituisce i privilegi dell'owner. Per il chiaro: `ALTER ROLE ieol_pii WITH LOGIN PASSWORD '...'` e `IEOL_PII_DATABASE_URL`. Impostare `IEOL_EVIDENCE_HMAC_KEY`: senza quella variabile l'API non parte. La chiave non va nel client.
 4. Riavviare l'API con `IEOL_APP_DATABASE_URL`, `IEOL_PII_DATABASE_URL` e `IEOL_EVIDENCE_HMAC_KEY`. Se resta una migrazione in sospeso, l'avvio indica di eseguire `ieol migrate`.
 5. Le fonti già caricate non hanno una classe dichiarata. I fatti `erp` e `crm` sono stati convertiti. I fatti che restano `unknown` bloccano l'approvazione con 422 (`provenienza sconosciuta`) e il pulsante Approva resta disabilitato con la stessa dicitura. Per sbloccarla si registra di nuovo la fonte con la classe giusta e si rimaterializza: un fatto il cui valore non cambia mantiene la classe precedente finché non viene riscritto.
@@ -227,7 +241,7 @@ Con il default peer e il database `ieol_test` già creato, basta `pytest`. `pyte
 
 Ordine, su un database che contiene già dati:
 
-1. Backup, prima di qualsiasi migrazione:
+1. Backup, prima di qualsiasi migrazione. Il dump è dato personale: vedi la sezione Backup.
 
    ```bash
    pg_dump --format=custom --file=ieol-pre-migrate.dump "$DATABASE_URL"
@@ -253,6 +267,10 @@ Ordine, su un database che contiene già dati:
    `db/schema.sql` non si esegue a mano, né su un database nuovo né su uno già popolato. È il riferimento storico: un database nato da quel file viene riconosciuto da `ieol migrate` e marcato come baseline, senza rieseguire `0001_initial`.
 
 4. Riavviare l'API. Se resta una migrazione in sospeso il processo si rifiuta di partire e indica `ieol migrate`. L'avvio non migra da solo.
+
+### Backup
+
+`pg_dump` e la copia del volume del database contengono, nello stesso archivio, i dati personali in chiaro e la chiave HMAC delle evidenze (`app.evidence_hmac_key`). Il backup va protetto come dato personale: accesso limitato, cifratura a riposo, fuori da git, dai ticket e dai log. Non si invia in chiaro e non si lascia sul disco di una macchina condivisa.
 
 Gli account il cui hash è ancora la password uguale al nome del ruolo, e per i quali manca `IEOL_SEED_<RUOLO>_PASSWORD`, vengono bloccati all'avvio: l'hash è sostituito con un segreto casuale che non viene stampato. Il login con il nome del ruolo fallisce. Reimpostare la variabile a un avvio successivo non sblocca quell'account, perché l'hash non coincide più con il nome del ruolo. Un ruolo assente dal database, con variabile vuota, non viene creato e quindi non ha accesso.
 

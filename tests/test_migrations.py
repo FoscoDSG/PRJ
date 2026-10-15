@@ -188,18 +188,20 @@ _FRESH = [
     {"version": "0003", "name": "decisions_source_class_checksums", "baselined": False},
     {"version": "0004", "name": "source_vocabulary_decision_sources", "baselined": False},
     {"version": "0005", "name": "pii_testset_audit", "baselined": False},
+    {"version": "0006", "name": "hash_version_v2", "baselined": False},
 ]
 
 
 def test_migration_files_do_not_drop_or_truncate():
     files = migration_files()
-    assert [item.version for item in files] == ["0001", "0002", "0003", "0004", "0005"]
+    assert [item.version for item in files] == ["0001", "0002", "0003", "0004", "0005", "0006"]
     assert [item.name for item in files] == [
         "initial",
         "provenance_audit_quality",
         "decisions_source_class_checksums",
         "source_vocabulary_decision_sources",
         "pii_testset_audit",
+        "hash_version_v2",
     ]
     for item in files:
         text = item.path.read_text(encoding="utf-8")
@@ -227,6 +229,12 @@ def test_migration_files_do_not_drop_or_truncate():
     allowed_audit = "ALTER TABLE app.audit_log DROP CONSTRAINT IF EXISTS audit_log_action_check\n"
     assert migration_violation(allowed_audit, "0005_pii_testset_audit.sql") is None
     assert migration_violation(allowed_audit, "0006_later.sql") is not None
+    drop_hash = (
+        "ALTER TABLE app.decisions_log DROP CONSTRAINT IF EXISTS decisions_log_hash_version_check;\n"
+    )
+    assert migration_violation(drop_hash, "0006_hash_version_v2.sql") is None
+    assert migration_violation(drop_hash, "0005_pii_testset_audit.sql") is not None
+    assert migration_violation(drop_hash, "0007_later.sql") is not None
     disable_audit = "ALTER TABLE app.audit_log DISABLE TRIGGER audit_no_update;\n"
     enable_audit = "ALTER TABLE app.audit_log ENABLE TRIGGER audit_no_update;\n"
     disable_decisions = "ALTER TABLE app.decisions_log DISABLE TRIGGER decisions_log_no_update;\n"
@@ -358,6 +366,7 @@ def test_legacy_database_is_baselined_without_touching_data_or_audit():
         {"version": "0003", "name": "decisions_source_class_checksums", "baselined": False},
         {"version": "0004", "name": "source_vocabulary_decision_sources", "baselined": False},
         {"version": "0005", "name": "pii_testset_audit", "baselined": False},
+        {"version": "0006", "name": "hash_version_v2", "baselined": False},
     ]
     assert again == []
     assert third == []
@@ -373,6 +382,7 @@ def test_legacy_database_is_baselined_without_touching_data_or_audit():
         ("0003", "decisions_source_class_checksums", False),
         ("0004", "source_vocabulary_decision_sources", False),
         ("0005", "pii_testset_audit", False),
+        ("0006", "hash_version_v2", False),
     ]
 
 
@@ -547,6 +557,7 @@ def test_upgraded_schema_is_baselined_without_touching_audit():
         {"version": "0003", "name": "decisions_source_class_checksums", "baselined": False},
         {"version": "0004", "name": "source_vocabulary_decision_sources", "baselined": False},
         {"version": "0005", "name": "pii_testset_audit", "baselined": False},
+        {"version": "0006", "name": "hash_version_v2", "baselined": False},
     ]
     assert again == []
     assert fact == [("0.42", "system_of_record", "unknown", None)]
@@ -557,6 +568,7 @@ def test_upgraded_schema_is_baselined_without_touching_audit():
         ("0003", "decisions_source_class_checksums", False),
         ("0004", "source_vocabulary_decision_sources", False),
         ("0005", "pii_testset_audit", False),
+        ("0006", "hash_version_v2", False),
     ]
 
 
