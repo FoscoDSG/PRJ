@@ -16,7 +16,7 @@ from psycopg.rows import dict_row
 from services.migrate import require_migrated
 
 ROLES = ("admin", "mapper", "operator", "approver")
-SOURCE_RANK = {"ai": 1, "manual": 2, "crm": 3, "erp": 4, "calculated": 5}
+SOURCE_RANK = {"unknown": 0, "ai": 1, "manual": 2, "crm": 3, "erp": 4, "calculated": 5}
 
 # argon2-cffi defaults: argon2id, t=3, m=64 MiB, p=4.
 _HASHER = PasswordHasher(

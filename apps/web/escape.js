@@ -51,6 +51,57 @@
     return `<article class="card"><strong>Schema drift su ${escapeHtml(item.source_name)}</strong><pre>${escapeHtml(JSON.stringify(item.diff, null, 2))}</pre><button type="button" data-drift="${escapeHtml(item.id)}">Segna visto</button></article>`;
   }
 
+  const PROVENANCE_LABELS = {
+    erp: "ERP",
+    crm: "CRM",
+    manual: "manuale",
+    ai: "AI",
+    calculated: "calcolata",
+  };
+
+  function provenanceLabel(sourceClass) {
+    if (sourceClass == null || sourceClass === "" || sourceClass === "unknown") {
+      return "provenienza sconosciuta";
+    }
+    return PROVENANCE_LABELS[sourceClass] || "provenienza sconosciuta";
+  }
+
+  function confidenceLabel(confidence) {
+    if (confidence == null || confidence === "") {
+      return "confidenza non disponibile";
+    }
+    const number = Number(confidence);
+    if (!Number.isFinite(number)) {
+      return "confidenza non disponibile";
+    }
+    return `${Math.round(number * 100)}%`;
+  }
+
+  function mappingConfidence(confidence) {
+    if (confidence == null || confidence === "") {
+      return "confidenza non disponibile";
+    }
+    const number = Number(confidence);
+    if (!Number.isFinite(number)) {
+      return "confidenza non disponibile";
+    }
+    return number.toFixed(2);
+  }
+
+  function factValue(value) {
+    if (value != null && typeof value === "object") {
+      return JSON.stringify(value);
+    }
+    return value;
+  }
+
+  function factList(facts) {
+    const items = (facts || []).map((fact) => {
+      return `<li><code>${escapeHtml(fact.property)}</code>: ${escapeHtml(factValue(fact.value))} · ${escapeHtml(provenanceLabel(fact.source_class))} · ${escapeHtml(confidenceLabel(fact.confidence))}</li>`;
+    });
+    return `<ul class="edges">${items.join("") || "<li>Nessun fatto</li>"}</ul>`;
+  }
+
   function mappingRow(item) {
     const actions = item.status === "proposed"
       ? `<button type="button" data-confirm="${escapeHtml(item.id)}">Conferma</button> <button type="button" class="ghost" data-reject="${escapeHtml(item.id)}">Rifiuta</button>`
@@ -59,7 +110,7 @@
         <td>${escapeHtml(item.source_name)}</td>
         <td><code>${escapeHtml(item.source_field)}</code></td>
         <td>${escapeHtml(item.target_type)}.${escapeHtml(item.target_property)}</td>
-        <td>${escapeHtml(Number(item.confidence).toFixed(2))}</td>
+        <td>${escapeHtml(mappingConfidence(item.confidence))}</td>
         <td>${pill(item.status)}</td>
         <td>${actions}</td>
       </tr>`;
@@ -97,7 +148,7 @@
     <ul class="edges">${edges || "<li>Nessun arco</li>"}</ul>
     ${customer}
     <h3>Fatti</h3>
-    <pre>${escapeHtml(JSON.stringify(order.facts, null, 2))}</pre>
+    ${factList(order.facts)}
   `;
   }
 
@@ -114,7 +165,8 @@
     <ul>${orders}</ul>
     <h3>Grafo</h3>
     <ul class="edges">${edges}</ul>
-    <pre>${escapeHtml(JSON.stringify(customer.facts, null, 2))}</pre>
+    <h3>Fatti</h3>
+    ${factList(customer.facts)}
   `;
   }
 
@@ -160,6 +212,9 @@
     PILL_CLASSES,
     escapeHtml,
     pill,
+    provenanceLabel,
+    confidenceLabel,
+    factList,
     driftCard,
     mappingRow,
     orderCard,

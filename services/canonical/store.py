@@ -374,6 +374,13 @@ def _write_facts(
         if prop is None or value is None:
             continue
         fact_origin = origin or prop.origin
+        raw_confidence = confidence.get(name) if confidence else None
+        if raw_confidence is None:
+            fact_confidence = None
+            method = "unknown"
+        else:
+            fact_confidence = float(raw_confidence)
+            method = "rule"
         if _put_fact(
             conn,
             entity_id=entity_id,
@@ -382,8 +389,9 @@ def _write_facts(
             classification=prop.classification,
             origin=fact_origin,
             source=source,
-            confidence=float(confidence.get(name, 1.0)),
+            confidence=fact_confidence,
             source_class=_source_class(source, fact_origin),
+            confidence_method=method,
         ):
             written += 1
     return written
@@ -400,6 +408,7 @@ def _put_fact(
     source: str | None,
     confidence: float | None,
     source_class: str | None = None,
+    confidence_method: str = "unknown",
 ) -> bool:
     if origin == "inferred" and source_class not in (None, "ai"):
         raise ValueError("origin inferred è riservata a un modello")
@@ -407,7 +416,11 @@ def _put_fact(
     if origin == "inferred":
         fact_class = "ai"
     if confidence is None:
-        raise ValueError(f"confidence obbligatoria per {name}")
+        method = "unknown"
+    elif confidence_method not in ("rule", "human", "unknown"):
+        raise ValueError(f"confidence_method non ammesso: {confidence_method}")
+    else:
+        method = confidence_method
     current = conn.execute(
         """
         SELECT id, value, source_class FROM app.facts
@@ -420,8 +433,8 @@ def _put_fact(
     if current is not None and origin != "calculated":
         from services.db import SOURCE_RANK
 
-        current_rank = SOURCE_RANK.get(current["source_class"] or "manual", 2)
-        new_rank = SOURCE_RANK.get(fact_class, 2)
+        current_rank = SOURCE_RANK.get(current["source_class"] or "unknown", 0)
+        new_rank = SOURCE_RANK.get(fact_class, 0)
         if new_rank < current_rank:
             return False
     if current is not None:
@@ -429,9 +442,10 @@ def _put_fact(
     conn.execute(
         """
         INSERT INTO app.facts (
-          id, entity_id, property, value, classification, origin, source, confidence, source_class
+          id, entity_id, property, value, classification, origin, source,
+          confidence, source_class, confidence_method
         )
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         """,
         (
             str(uuid.uuid4()),
@@ -443,6 +457,7 @@ def _put_fact(
             source,
             confidence,
             fact_class,
+            method,
         ),
     )
     return True
@@ -458,7 +473,9 @@ def _source_class(source: str, origin: str) -> str:
         return "erp"
     if "crm" in lowered:
         return "crm"
-    return "manual"
+    if lowered in {"manual", "human", "adjustment"} or lowered.startswith("manual"):
+        return "manual"
+    return "unknown"
 
 
 def _has_fact(conn: psycopg.Connection, entity_id: str, name: str) -> bool:

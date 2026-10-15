@@ -1,11 +1,39 @@
 -- Provenance, append-only audit against TRUNCATE, and the V1 quality tables.
 -- Safe to re-run: columns and tables are created only when missing, and
--- existing fact and audit rows are kept. A database that already has these
--- objects is baselined and this file is not executed.
+-- existing fact and audit rows are kept. Confidence stays nullable: nothing
+-- backfills it to 1, and nothing marks an existing fact as manual.
+-- source_class and confidence_method default to unknown. A database that
+-- already has these objects is baselined and this file is not executed.
 
-ALTER TABLE app.facts ADD COLUMN IF NOT EXISTS source_class text NOT NULL DEFAULT 'manual';
-UPDATE app.facts SET confidence = 1 WHERE confidence IS NULL;
-ALTER TABLE app.facts ALTER COLUMN confidence SET NOT NULL;
+ALTER TABLE app.facts ADD COLUMN IF NOT EXISTS source_class text NOT NULL DEFAULT 'unknown';
+ALTER TABLE app.facts ALTER COLUMN source_class SET DEFAULT 'unknown';
+ALTER TABLE app.facts ADD COLUMN IF NOT EXISTS confidence_method text NOT NULL DEFAULT 'unknown';
+ALTER TABLE app.facts ALTER COLUMN confidence_method SET DEFAULT 'unknown';
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1
+    FROM pg_constraint
+    WHERE conname = 'facts_source_class_check'
+      AND conrelid = 'app.facts'::regclass
+  ) THEN
+    ALTER TABLE app.facts
+      ADD CONSTRAINT facts_source_class_check
+      CHECK (source_class IN ('erp', 'crm', 'manual', 'ai', 'calculated', 'unknown'));
+  END IF;
+  IF NOT EXISTS (
+    SELECT 1
+    FROM pg_constraint
+    WHERE conname = 'facts_confidence_method_check'
+      AND conrelid = 'app.facts'::regclass
+  ) THEN
+    ALTER TABLE app.facts
+      ADD CONSTRAINT facts_confidence_method_check
+      CHECK (confidence_method IN ('rule', 'human', 'unknown'));
+  END IF;
+END;
+$$;
 
 DO $$
 BEGIN
@@ -59,11 +87,6 @@ CREATE TABLE IF NOT EXISTS app.price_list (
   product_source_key text PRIMARY KEY,
   price numeric NOT NULL
 );
-
-INSERT INTO app.price_list (product_source_key, price) VALUES
-  ('ART-X', 120),
-  ('ART-Y', 200)
-ON CONFLICT (product_source_key) DO NOTHING;
 
 CREATE TABLE IF NOT EXISTS app.quarantine_documents (
   id uuid PRIMARY KEY,

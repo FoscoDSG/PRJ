@@ -1,4 +1,5 @@
 import os
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -207,6 +208,19 @@ def test_evidence_expiry_and_audit_is_append_only(client: TestClient):
     client.post("/api/demo/load")
     expired = client.post("/api/stock/ART-X", json={"on_hand": 500})
     assert expired.status_code == 200, expired.text
+    with connect() as conn:
+        adjusted = conn.execute(
+            """
+            SELECT f.source_class, f.confidence IS NULL AS missing, f.confidence_method
+            FROM app.facts f
+            JOIN app.entities e ON e.id = f.entity_id
+            WHERE f.property = 'on_hand' AND f.valid_to IS NULL
+              AND e.business_key = 'ART-X|WH1'
+            """
+        ).fetchone()
+    assert adjusted["source_class"] == "manual"
+    assert adjusted["missing"] is True
+    assert adjusted["confidence_method"] == "unknown"
     inbox = client.get("/api/inbox").json()["recommendations"]
     assert inbox[0]["status"] == "expired"
     login(client, "approver")
@@ -305,12 +319,121 @@ def test_migrations_apply_twice():
     assert count["n"] >= 2
 
 
-def test_facts_always_have_confidence(client: TestClient):
+def test_facts_keep_optional_confidence_and_unknown_provenance(client: TestClient):
     login(client, "mapper")
-    client.post("/api/demo/load")
+    loaded = client.post("/api/demo/load")
+    assert loaded.status_code == 200, loaded.text
     with connect() as conn:
-        missing = conn.execute("SELECT count(*) AS n FROM app.facts WHERE confidence IS NULL").fetchone()
-    assert missing["n"] == 0
+        rows = conn.execute(
+            """
+            SELECT source_class, confidence_method,
+                   confidence IS NULL AS missing,
+                   count(*) AS n
+            FROM app.facts
+            WHERE valid_to IS NULL
+            GROUP BY 1, 2, 3
+            """
+        ).fetchall()
+        prices = {
+            row["product_source_key"]: int(row["price"])
+            for row in conn.execute(
+                "SELECT product_source_key, price FROM app.price_list ORDER BY product_source_key"
+            ).fetchall()
+        }
+    assert prices == {"ART-X": 120, "ART-Y": 200}
+    assert rows
+    assert all(row["source_class"] != "manual" for row in rows)
+    assert any(row["missing"] for row in rows)
+    assert all(row["confidence_method"] == "unknown" for row in rows if row["missing"])
+    assert all(row["confidence_method"] == "rule" for row in rows if not row["missing"])
+    assert any(not row["missing"] and row["source_class"] == "unknown" for row in rows)
+
+    order = next(item for item in client.get("/api/orders").json()["orders"] if item["business_key"] == "1024")
+    detail = client.get(f"/api/orders/{order['id']}").json()
+    shortage = next(fact for fact in detail["facts"] if fact["property"] == "shortage_qty")
+    status = next(fact for fact in detail["facts"] if fact["property"] == "status")
+    assert shortage["confidence"] is None
+    assert shortage["confidence_method"] == "unknown"
+    assert shortage["source_class"] == "calculated"
+    assert status["confidence_method"] == "rule"
+    assert status["source_class"] == "unknown"
+    assert status["confidence"] not in (None, 1)
+
+    rendered = subprocess.run(
+        ["node", "-e", _FACT_LABEL_SCRIPT],
+        cwd=Path(__file__).resolve().parents[1],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert rendered.returncode == 0, rendered.stderr
+    assert rendered.stdout == "ok\n"
+
+
+_FACT_LABEL_SCRIPT = r"""
+const { orderDetail, customerDetail } = require("./apps/web/escape.js");
+const unknown = orderDetail({
+  business_key: "1024",
+  stock_formula: "disponibile",
+  facts: [{ property: "status", value: "open", source_class: "unknown", confidence: null }],
+  lines: [],
+  edges: [],
+});
+if (!unknown.includes("provenienza sconosciuta") || !unknown.includes("confidenza non disponibile")) {
+  console.error(unknown);
+  process.exit(2);
+}
+if (unknown.includes("100%") || unknown.includes("manuale")) {
+  console.error(unknown);
+  process.exit(3);
+}
+const calculated = orderDetail({
+  business_key: "1024",
+  stock_formula: "disponibile",
+  facts: [{ property: "shortage_qty", value: 80, source_class: "calculated", confidence: null }],
+  lines: [],
+  edges: [],
+});
+if (!calculated.includes("calcolata") || !calculated.includes("confidenza non disponibile")) {
+  console.error(calculated);
+  process.exit(4);
+}
+if (calculated.includes("100%") || calculated.includes("manuale") || calculated.includes("provenienza sconosciuta")) {
+  console.error(calculated);
+  process.exit(5);
+}
+const scored = orderDetail({
+  business_key: "1024",
+  stock_formula: "disponibile",
+  facts: [{ property: "status", value: "open", source_class: "unknown", confidence: 0.86 }],
+  lines: [],
+  edges: [],
+});
+if (!scored.includes("provenienza sconosciuta") || !scored.includes("86%")) {
+  console.error(scored);
+  process.exit(6);
+}
+if (scored.includes("confidenza non disponibile") || scored.includes("100%") || scored.includes("manuale")) {
+  console.error(scored);
+  process.exit(7);
+}
+const known = customerDetail({
+  company_name: "ACME",
+  business_key: "C1",
+  orders: [],
+  edges: [],
+  facts: [{ property: "note", value: "bozza", source_class: "manual", confidence: 1 }],
+});
+if (!known.includes("manuale") || !known.includes("100%")) {
+  console.error(known);
+  process.exit(8);
+}
+if (known.includes("provenienza sconosciuta") || known.includes("confidenza non disponibile")) {
+  console.error(known);
+  process.exit(9);
+}
+process.stdout.write("ok\n");
+"""
 
 
 def test_baseline_matches_labeled_cases():
