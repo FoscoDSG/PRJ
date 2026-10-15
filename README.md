@@ -23,7 +23,7 @@ cp .env.example .env
 
 ### PostgreSQL con Docker Compose
 
-`docker-compose.yml` avvia un Postgres 16 locale. L'utente è `ieol`, la password è `ieol-local-only`, i database creati al primo avvio sono `ieol`, `ieol_test` e `ieol_demo`. Quella password vale solo per questo container di sviluppo.
+`docker-compose.yml` avvia un Postgres 16 locale. La porta dell'host è `127.0.0.1:5432`, quindi il container non è raggiungibile dalle altre interfacce. L'utente è `ieol`, la password è `ieol-local-only`, i database creati al primo avvio sono `ieol`, `ieol_test` e `ieol_demo`. Quella password vale solo per questo container di sviluppo.
 
 ```bash
 docker compose up -d
@@ -84,7 +84,7 @@ In HTTP locale il cookie va reso leggibile dal browser con `IEOL_INSECURE_COOKIE
 | `IEOL_SEED_APPROVER_PASSWORD` | Password iniziale del ruolo `approver`. |
 | `IEOL_DEMO_DATABASE` | Nome del database di `ieol demo`. Default `ieol_demo`. |
 | `IEOL_DEMO_DATABASE_URL` | URL completo del database di demo, al posto del nome. |
-| `IEOL_DEMO_MODE` | `1` abilita `POST /api/demo/load`. Fuori da una demo esplicita resta spento. |
+| `IEOL_DEMO_MODE` | `1` abilita `POST /api/demo/load` sul database di `DATABASE_URL`. Fuori da una demo esplicita resta spento. Vedi il limite noto sotto. |
 
 ### Sessione
 
@@ -131,7 +131,11 @@ Gli hash SHA-256 storici (`sha256("ieol:" + password)` con sale fisso) e gli has
 
 `IEOL_DEMO_DATABASE` cambia il nome (default `ieol_demo`). `IEOL_DEMO_DATABASE_URL` indica un URL completo. Il nome deve essere diverso da quello del database principale e non può essere `postgres`, `template0` o `template1`.
 
-`IEOL_DEMO_MODE=1` apre il caricamento fixture via API. `ieol demo` da riga di comando non dipende da questa variabile: usa il database dedicato descritto sotto.
+`ieol demo` da riga di comando non dipende da `IEOL_DEMO_MODE`: usa il database dedicato descritto sotto.
+
+### Limite noto di `POST /api/demo/load`
+
+L'endpoint scrive sul database di `DATABASE_URL`, lo stesso collegato all'API. Non dirotta la scrittura su `ieol_demo` e non rifiuta la richiesta quando il database collegato ha un altro nome: con `DATABASE_URL` puntato a `ieol`, `mapper` e `admin` caricano le fixture lì e `ieol_demo` resta vuoto. Con `IEOL_DEMO_MODE=1` la chiamata è consentita a `admin` e a `mapper`; `operator` e `approver` ricevono 403 (`Serve il ruolo mapper`) e non scrivono. Senza sessione la risposta è 401. Senza `IEOL_DEMO_MODE=1` la risposta è 403 (`Il demo è chiuso`) e non c'è scrittura. Il pulsante «Carica fixture» compare per ogni ruolo autenticato quando la modalità demo è accesa; il rifiuto dei ruoli diversi da `admin` e `mapper` avviene solo sulla richiesta.
 
 ## Migrazioni
 

@@ -6,7 +6,7 @@ services:
       POSTGRES_PASSWORD: ieol-local-only
       POSTGRES_DB: ieol
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     volumes:
       - ieol-pg:/var/lib/postgresql/data
       - ./docker/init-databases.sql:/docker-entrypoint-initdb.d/10-init-databases.sql:ro
