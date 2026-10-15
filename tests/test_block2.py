@@ -15,14 +15,16 @@ from apps.cli import main
 from services.agent.baseline import BASELINE_CONFIDENCE_RULE
 from services.agent.order_agent import AGENT_VERSION, build_context, run_order_agent
 from services.agent.stub_model import StubOrderModel
-from services.canonical.store import _source_class
+from ontology.loader import load_merged
+from services.canonical.store import _put_fact, _source_class
+from services.pipeline import refresh_canonical, run_agents
+from services.sources import SOURCE_CLASSES, register_source, weakest_source_class
 from services.db import SOURCE_RANK, app_connect, assert_demo_database, connect, database_url, reset_password
 from services.errors import AppError
 from services.ingest.landing import MAX_LANDING_ROWS
 from services.mapping.engine import THRESHOLD
 from services.migrate import demo_database_url, ensure_database, migrate, migration_checksum, require_migrated
 from services.rules.engine import CFO_THRESHOLD, RULES_VERSION
-from services.sources import SOURCE_CLASSES, register_source
 from tests.test_flow import decide, load_demo, login
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -167,6 +169,141 @@ def test_unknown_provenance_cannot_be_approved(client: TestClient):
     assert status == "proposed"
 
 
+def test_calculated_fact_takes_the_weakest_input_class(client: TestClient):
+    assert weakest_source_class([]) == "unknown"
+    assert weakest_source_class(["system_of_record", "operational"]) == "operational"
+    assert weakest_source_class(["external", "manual", "system_of_record"]) == "manual"
+    assert weakest_source_class(["system_of_record", "unknown"]) == "unknown"
+    assert list(SOURCE_CLASSES) == [
+        "system_of_record",
+        "operational",
+        "external",
+        "manual",
+        "unknown",
+    ]
+    load_demo()
+    login(client, "approver")
+    with connect() as conn:
+        shortage = conn.execute(
+            """
+            SELECT f.source_class, f.confidence IS NULL AS missing, f.confidence_method, f.origin
+            FROM app.facts f
+            JOIN app.entities e ON e.id = f.entity_id
+            WHERE e.type = 'Order' AND e.business_key = '1024'
+              AND f.property = 'shortage_qty' AND f.valid_to IS NULL
+            """
+        ).fetchone()
+        assert shortage["origin"] == "calculated"
+        assert shortage["source_class"] == "system_of_record"
+        assert shortage["missing"] is True
+        assert shortage["confidence_method"] == "unknown"
+        conn.execute(
+            """
+            UPDATE app.facts AS f
+            SET source_class = 'unknown'
+            FROM app.entities AS e
+            WHERE f.entity_id = e.id
+              AND e.type = 'StockPosition'
+              AND e.business_key = 'ART-X|WH1'
+              AND f.property = 'on_hand'
+              AND f.valid_to IS NULL
+            """
+        )
+        refresh_canonical(conn, load_merged())
+        run_agents(conn, actor="approver", role="approver")
+        derived = conn.execute(
+            """
+            SELECT e.type, e.business_key, f.property, f.source_class,
+                   f.confidence IS NULL AS missing, f.confidence_method
+            FROM app.facts f
+            JOIN app.entities e ON e.id = f.entity_id
+            WHERE f.valid_to IS NULL
+              AND f.origin = 'calculated'
+              AND (
+                (e.type = 'StockPosition' AND e.business_key = 'ART-X|WH1' AND f.property = 'available')
+                OR (e.type = 'OrderLine' AND e.business_key = '1024|ART-X' AND f.property = 'shortage')
+                OR (e.type = 'Order' AND e.business_key = '1024' AND f.property = 'shortage_qty')
+              )
+            """
+        ).fetchall()
+        entity_id = str(uuid.uuid4())
+        conn.execute(
+            "INSERT INTO app.entities (id, type, business_key) VALUES (%s, 'Order', %s)",
+            (entity_id, f"rule-{entity_id[:8]}"),
+        )
+        _put_fact(
+            conn,
+            entity_id=entity_id,
+            name="margin",
+            value=0.2,
+            classification="internal",
+            origin="calculated",
+            source="calculated",
+            confidence=0.91,
+            source_class="system_of_record",
+            confidence_method="rule",
+            confidence_rule=None,
+        )
+        bare = conn.execute(
+            """
+            SELECT confidence IS NULL AS missing, confidence_method, confidence_rule
+            FROM app.facts
+            WHERE entity_id = %s AND property = 'margin' AND valid_to IS NULL
+            """,
+            (entity_id,),
+        ).fetchone()
+        _put_fact(
+            conn,
+            entity_id=entity_id,
+            name="margin",
+            value=0.25,
+            classification="internal",
+            origin="calculated",
+            source="calculated",
+            confidence=0.91,
+            source_class="operational",
+            confidence_method="unknown",
+            confidence_rule="margin.declared@v1",
+        )
+        declared = conn.execute(
+            """
+            SELECT confidence, confidence_method, confidence_rule, source_class
+            FROM app.facts
+            WHERE entity_id = %s AND property = 'margin' AND valid_to IS NULL
+            """,
+            (entity_id,),
+        ).fetchone()
+        conn.commit()
+    assert {row["property"]: row["source_class"] for row in derived} == {
+        "available": "unknown",
+        "shortage": "unknown",
+        "shortage_qty": "unknown",
+    }
+    assert all(row["missing"] is True and row["confidence_method"] == "unknown" for row in derived)
+    assert bare["missing"] is True
+    assert bare["confidence_method"] == "unknown"
+    assert bare["confidence_rule"] is None
+    assert float(declared["confidence"]) == 0.91
+    assert declared["confidence_method"] == "rule"
+    assert declared["confidence_rule"] == "margin.declared@v1"
+    assert declared["source_class"] == "operational"
+    inbox = client.get("/api/inbox").json()["recommendations"]
+    target = next(
+        item
+        for item in inbox
+        if item["order_key"] == "1024"
+        and item["status"] == "proposed"
+        and any(
+            fact.get("property") == "shortage_qty" and fact.get("source_class") == "unknown"
+            for fact in item["evidence"]
+        )
+    )
+    assert target["blocked_reason"] == "provenienza sconosciuta"
+    denied = decide(client, target)
+    assert denied.status_code == 422
+    assert denied.json()["detail"] == "Approvazione rifiutata: provenienza sconosciuta"
+
+
 def test_source_class_is_declared_and_not_inferred_from_the_name(client: TestClient):
     login(client, "mapper")
     denied = client.post(
@@ -198,7 +335,7 @@ def test_source_class_is_declared_and_not_inferred_from_the_name(client: TestCli
         assert _source_class(conn, "manual_adjustment", "original") == "unknown"
         register_source(conn, "erp_clienti", "operational")
         assert _source_class(conn, "erp_clienti", "original") == "operational"
-        assert _source_class(conn, "erp_clienti", "calculated") == "operational"
+        assert _source_class(conn, "erp_clienti", "calculated") == "unknown"
         assert _source_class(conn, "erp_clienti", "inferred") == "unknown"
         assert set(SOURCE_RANK) == set(SOURCE_CLASSES)
         with pytest.raises(AppError, match="altra provenienza"):

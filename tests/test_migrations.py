@@ -188,8 +188,9 @@ def test_migration_files_do_not_drop_or_truncate():
         "source_vocabulary_decision_sources",
     ]
     for item in files:
-        assert migration_violation(item.path.read_text(encoding="utf-8")) is None
-        for line in item.path.read_text(encoding="utf-8").splitlines():
+        text = item.path.read_text(encoding="utf-8")
+        assert migration_violation(text, item.path.name) is None
+        for line in text.splitlines():
             code = line.split("--", 1)[0].strip().lower()
             assert not code.startswith("drop table")
             assert not code.startswith("drop schema")
@@ -202,7 +203,40 @@ def test_migration_files_do_not_drop_or_truncate():
         is not None
     )
     allowed = "ALTER TABLE app.facts DROP CONSTRAINT IF EXISTS facts_source_class_check;\n"
-    assert migration_violation(allowed) is None
+    assert migration_violation(allowed) is not None
+    assert migration_violation(allowed, "0005_new.sql") is not None
+    assert migration_violation(allowed, "0003_decisions_source_class_checksums.sql") is None
+    assert migration_violation(allowed, "0004_source_vocabulary_decision_sources.sql") is None
+    drop_null = "ALTER COLUMN confidence DROP NOT NULL;\n"
+    assert migration_violation(drop_null, "0004_source_vocabulary_decision_sources.sql") is None
+    assert migration_violation(drop_null, "0003_decisions_source_class_checksums.sql") is not None
+    assert migration_violation(drop_null, "0005_new.sql") is not None
+    new_file = "0005_new.sql"
+    assert migration_violation("DROP TRIGGER audit_guard ON app.audit_log;\n", new_file) is not None
+    assert migration_violation("ALTER TABLE app.facts DROP COLUMN source_class;\n", new_file) is not None
+    assert migration_violation("SELECT 1; dRoP tRiGgEr guard ON app.audit_log;\n", new_file) is not None
+    assert migration_violation("ALTER TABLE app.facts drop column confidence;\n", new_file) is not None
+    assert migration_violation("SELECT 1; DROP FUNCTION app.prevent_append_only();\n", new_file) is not None
+    assert migration_violation("ALTER TABLE app.facts ALTER COLUMN source DROP DEFAULT;\n", new_file) is not None
+    assert (
+        migration_violation(
+            "alter table app.facts drop constraint if exists facts_source_class_check;\n",
+            "0003_decisions_source_class_checksums.sql",
+        )
+        is not None
+    )
+    assert migration_violation(
+        "-- DROP TRIGGER t ON app.audit_log\n/* DROP COLUMN x; TRUNCATE app.audit_log; */\nSELECT 1;\n",
+        new_file,
+    ) is None
+    assert migration_violation(
+        "CREATE TRIGGER t BEFORE TRUNCATE ON app.audit_log FOR EACH STATEMENT EXECUTE FUNCTION app.prevent_audit_mutation();\n",
+        new_file,
+    ) is None
+    assert migration_violation(
+        "REVOKE UPDATE, DELETE, TRUNCATE ON app.audit_log FROM ieol_app;\n",
+        new_file,
+    ) is None
     assert MIGRATIONS_DIR.joinpath("0001_initial.sql").is_file()
     assert not (MIGRATIONS_DIR / "001_initial.sql").exists()
     assert not (MIGRATIONS_DIR / "002_provenance_audit_quality.sql").exists()

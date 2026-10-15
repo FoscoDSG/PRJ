@@ -134,8 +134,10 @@ def list_inbox(conn: psycopg.Connection, role: str) -> list[dict]:
         ).fetchone()
         item = dict(row)
         item["confidence"] = stable(item["confidence"])
-        item["evidence"] = _with_provenance(conn, _mask_evidence(item["evidence"], role))
-        item["blocked_reason"] = _blocked_reason(conn, item)
+        evidence = _mask_evidence(item["evidence"], role)
+        classes = _fact_classes(conn, _fact_ids(evidence))
+        item["evidence"] = _with_provenance(evidence, classes)
+        item["blocked_reason"] = _blocked_reason(item, classes)
         from services.actions.executor import payloads_for
 
         preview_payloads = payloads["payloads"] if payloads else payloads_for(conn, item)
@@ -165,46 +167,44 @@ def list_audit(conn: psycopg.Connection, role: str) -> list[dict]:
     return visible
 
 
-def _blocked_reason(conn: psycopg.Connection, item: dict) -> str | None:
-    """Why approval is refused. Reads only: the inbox does not write."""
-    if item["status"] not in ("proposed", "modified"):
-        return None
-    evidence = item["evidence"] if isinstance(item["evidence"], list) else []
-    fact_ids = [
-        fact["fact_id"]
-        for fact in evidence
-        if isinstance(fact, dict) and fact.get("fact_id")
+def _fact_ids(evidence: Any) -> list[str]:
+    if not isinstance(evidence, list):
+        return []
+    return [
+        item.get("fact_id")
+        for item in evidence
+        if isinstance(item, dict) and item.get("fact_id")
     ]
+
+
+def _fact_classes(conn: psycopg.Connection, fact_ids: list[str]) -> dict[str, str | None]:
     if not fact_ids:
-        return "provenienza sconosciuta"
-    found = conn.execute(
+        return {}
+    rows = conn.execute(
         "SELECT id::text AS id, source_class FROM app.facts WHERE id = ANY(%s::uuid[])",
         (fact_ids,),
     ).fetchall()
-    by_id = {row["id"]: row["source_class"] for row in found}
-    if len(by_id) != len(set(fact_ids)) or any(
-        by_id.get(fact_id) in (None, "unknown") for fact_id in fact_ids
+    return {row["id"]: row["source_class"] for row in rows}
+
+
+def _blocked_reason(item: dict, classes: dict[str, str | None]) -> str | None:
+    """Why approval is refused. Reads only: the inbox does not write."""
+    if item["status"] not in ("proposed", "modified"):
+        return None
+    fact_ids = _fact_ids(item["evidence"])
+    if not fact_ids:
+        return "provenienza sconosciuta"
+    if len(classes) != len(set(fact_ids)) or any(
+        classes.get(fact_id) in (None, "unknown") for fact_id in fact_ids
     ):
         return "provenienza sconosciuta"
     return None
 
 
-def _with_provenance(conn: psycopg.Connection, evidence: Any) -> Any:
+def _with_provenance(evidence: Any, classes: dict[str, str | None]) -> Any:
     """Attach the stored source class for display. It is not part of the evidence hash."""
-    if not isinstance(evidence, list):
+    if not isinstance(evidence, list) or not classes:
         return evidence
-    fact_ids = [
-        item.get("fact_id")
-        for item in evidence
-        if isinstance(item, dict) and item.get("fact_id")
-    ]
-    if not fact_ids:
-        return evidence
-    rows = conn.execute(
-        "SELECT id::text AS id, source_class FROM app.facts WHERE id = ANY(%s::uuid[])",
-        (fact_ids,),
-    ).fetchall()
-    by_id = {row["id"]: row["source_class"] for row in rows}
     enriched = []
     for item in evidence:
         if not isinstance(item, dict):
@@ -212,8 +212,8 @@ def _with_provenance(conn: psycopg.Connection, evidence: Any) -> Any:
             continue
         copy = dict(item)
         fact_id = copy.get("fact_id")
-        if fact_id in by_id:
-            copy["source_class"] = by_id[fact_id]
+        if fact_id in classes:
+            copy["source_class"] = classes[fact_id]
         enriched.append(copy)
     return enriched
 

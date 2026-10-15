@@ -367,7 +367,7 @@ def test_facts_keep_optional_confidence_and_unknown_provenance(client: TestClien
     assert shortage["confidence"] is None
     assert shortage["confidence_method"] == "unknown"
     assert shortage["confidence_rule"] is None
-    assert shortage["source_class"] == "operational"
+    assert shortage["source_class"] == "system_of_record"
     assert shortage["origin"] == "calculated"
     assert status["confidence_method"] == "rule"
     assert status["confidence_rule"] == "mapping.header_similarity@v1"

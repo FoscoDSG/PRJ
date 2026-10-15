@@ -6,7 +6,23 @@ import psycopg
 
 from services.errors import AppError
 
+# Strongest first. A calculated fact takes the weakest class among its inputs.
 SOURCE_CLASSES = ("system_of_record", "operational", "external", "manual", "unknown")
+
+
+def weakest_source_class(classes: list[str]) -> str:
+    """Return the weakest declared class. No inputs, or any unknown input, is unknown."""
+    if not classes:
+        return "unknown"
+    rank = {name: index for index, name in enumerate(SOURCE_CLASSES)}
+    weakest = "unknown"
+    weakest_rank = -1
+    for name in classes:
+        key = name if name in rank else "unknown"
+        if rank[key] > weakest_rank:
+            weakest = key
+            weakest_rank = rank[key]
+    return weakest
 
 
 def register_source(conn: psycopg.Connection, name: str, source_class: str) -> None:

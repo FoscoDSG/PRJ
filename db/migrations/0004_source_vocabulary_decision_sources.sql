@@ -5,13 +5,16 @@
 --   erp        -> system_of_record
 --   crm        -> operational
 --   ai         -> unknown          (output di un modello, non è una fonte dichiarata)
---   calculated -> operational      (fatto calcolato dal processo; origin resta calculated)
+--   calculated -> operational      (token storico già scritto; origin resta calculated)
 --   manual, external, unknown, system_of_record, operational restano.
+-- La classe di un fatto calcolato nuovo non viene da questo CASE: la calcola
+-- l'applicazione, come la più debole tra le classi degli input.
 --
--- The DROP CONSTRAINT below is the only statement on the migration allowlist.
--- It replaces facts_source_class_check. DROP TABLE, DROP SCHEMA, DROP DATABASE
--- and TRUNCATE stay forbidden. 0003 uses the same statement to widen the
--- check; this file uses it again after the conversion, to tighten it.
+-- Allowlist di questo file, istruzioni esatte:
+--   ALTER TABLE app.facts DROP CONSTRAINT IF EXISTS facts_source_class_check
+--   ALTER COLUMN confidence DROP NOT NULL
+-- Ogni altro DROP e ogni TRUNCATE restano rifiutati. 0003 ha in allowlist
+-- solo la stessa DROP CONSTRAINT, per allargare il CHECK prima della conversione.
 
 UPDATE app.facts
 SET source_class = CASE source_class

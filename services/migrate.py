@@ -36,16 +36,29 @@ DEMO_DATABASE_DEFAULT = "ieol_demo"
 _RESERVED_DATABASES = frozenset({"postgres", "template0", "template1"})
 _DBNAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,62}$")
 _MIGRATION_FILE = re.compile(r"^(\d{4})_[a-z0-9_]+\.sql$")
-# Reject statements that drop or empty relations. BEFORE TRUNCATE and
-# REVOKE TRUNCATE stay allowed: they protect the audit log.
-# DROP CONSTRAINT is rejected too, except the one statement below.
-# 0003 passes the original check because that check only matches DROP
-# TABLE, DROP SCHEMA, DROP DATABASE, and TRUNCATE at the start of a line.
-# `ALTER TABLE ... DROP CONSTRAINT` does not match it. The allowlist makes
-# that constraint replacement explicit instead of leaving it implicit.
-_DESTRUCTIVE = re.compile(r"(?im)^\s*(DROP\s+(TABLE|SCHEMA|DATABASE)\b|TRUNCATE\b)")
-_DROP_CONSTRAINT = re.compile(r"(?i)\bDROP\s+CONSTRAINT\b")
-_ALLOWLISTED_CONSTRAINT_DROP = "ALTER TABLE app.facts DROP CONSTRAINT IF EXISTS facts_source_class_check"
+# Deny by default. Any of these DROP forms is refused, at any position,
+# in any case, after SQL comments are removed. A TRUNCATE statement is
+# refused too. BEFORE TRUNCATE and REVOKE ... TRUNCATE stay: they do not
+# empty a relation.
+_DROP = re.compile(
+    r"(?i)\bDROP\s+(TABLE|SCHEMA|DATABASE|COLUMN|CONSTRAINT|NOT\s+NULL|DEFAULT|INDEX|FUNCTION|TRIGGER)\b"
+)
+_TRUNCATE = re.compile(r"(?i)\bTRUNCATE\b")
+_BEFORE_TRUNCATE = re.compile(r"(?i)\bBEFORE\s+TRUNCATE\b")
+_REVOKE_LINE = re.compile(r"(?i)^\s*REVOKE\b")
+_BLOCK_COMMENT = re.compile(r"/\*.*?\*/", re.DOTALL)
+# Exact statements, whitespace-normalized and without a trailing semicolon,
+# allowed only in the named migration file. The same text in a new file
+# is refused.
+_MIGRATION_ALLOWLIST: dict[str, frozenset[str]] = {
+    "0003_decisions_source_class_checksums.sql": frozenset({
+        "ALTER TABLE app.facts DROP CONSTRAINT IF EXISTS facts_source_class_check",
+    }),
+    "0004_source_vocabulary_decision_sources.sql": frozenset({
+        "ALTER TABLE app.facts DROP CONSTRAINT IF EXISTS facts_source_class_check",
+        "ALTER COLUMN confidence DROP NOT NULL",
+    }),
+}
 
 # Columns created by db/schema.sql. Extra columns still count as the legacy
 # schema; missing ones mean the database is partial and must not be rewritten.
@@ -169,25 +182,27 @@ def require_migrated(conn: psycopg.Connection) -> None:
     _assert_recorded_checksums(conn)
 
 
-def migration_violation(script: str) -> str | None:
+def migration_violation(script: str, filename: str | None = None) -> str | None:
     """Return why a migration script is refused, or None when it may run.
 
-    DROP TABLE, DROP SCHEMA, DROP DATABASE, and TRUNCATE are always refused.
-    DROP CONSTRAINT is refused unless the statement is the allowlisted
-    replacement of ``facts_source_class_check`` (0003 widens it, 0004
-    tightens it after converting legacy values).
+    Every DROP of a table, schema, database, column, constraint, NOT NULL,
+    default, index, function, or trigger is refused, wherever it sits in
+    the script and in any letter case. Comments are ignored. TRUNCATE
+    statements are refused too. The only exceptions are the exact
+    statements listed for that migration file.
     """
-    text = _without_line_comments(script)
-    kept: list[str] = []
-    for line in text.splitlines():
-        if _normalize_sql(line) == _ALLOWLISTED_CONSTRAINT_DROP:
-            continue
-        kept.append(line)
+    text = _without_line_comments(_BLOCK_COMMENT.sub("", script))
+    allowed = _MIGRATION_ALLOWLIST.get(filename or "", frozenset())
+    kept = [line for line in text.splitlines() if _normalize_sql(line) not in allowed]
     body = "\n".join(kept)
-    if _DESTRUCTIVE.search(body):
-        return "DROP TABLE, DROP SCHEMA, DROP DATABASE o TRUNCATE"
-    if _DROP_CONSTRAINT.search(body):
-        return "DROP CONSTRAINT fuori dall'allowlist"
+    if _DROP.search(body):
+        return "DROP fuori dall'allowlist"
+    scrubbed = _BEFORE_TRUNCATE.sub(" ", body)
+    without_revoke = "\n".join(
+        line for line in scrubbed.splitlines() if not _REVOKE_LINE.match(line)
+    )
+    if _TRUNCATE.search(without_revoke):
+        return "TRUNCATE fuori dall'allowlist"
     return None
 
 
@@ -576,7 +591,7 @@ def _describe(item: Migration, *, baselined: bool) -> dict:
 
 def _execute_migration(conn: psycopg.Connection, item: Migration) -> None:
     script = item.path.read_text(encoding="utf-8")
-    violation = migration_violation(script)
+    violation = migration_violation(script, item.path.name)
     if violation is not None:
         raise RuntimeError(
             f"La migrazione {item.path.name} contiene {violation} e non viene applicata"
