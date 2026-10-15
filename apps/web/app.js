@@ -89,6 +89,21 @@ function show(view) {
   if (view === "audit") loadAudit();
 }
 
+document.querySelector("#upload-document").addEventListener("change", async (event) => {
+  const file = event.target.files[0];
+  if (!file) return;
+  const body = new FormData();
+  body.append("file", file);
+  try {
+    const result = await api("/api/ingest/document", { method: "POST", body });
+    showFlash(`Ordine ${result.order_key} letto dal ${result.source_kind}. È nel modello e, se manca stock, in inbox.`);
+    loadMappings();
+  } catch (err) {
+    showFlash(err.message);
+  }
+  event.target.value = "";
+});
+
 document.querySelector("#load-fixture").addEventListener("click", async () => {
   try {
     const result = await api("/api/demo/load", { method: "POST" });

@@ -9,6 +9,7 @@ dependencies = [
   "psycopg[binary]>=3.2",
   "pyyaml>=6",
   "openpyxl>=3.1",
+  "pypdf>=5.1",
   "jsonschema>=4.23",
   "python-multipart>=0.0.12",
   "itsdangerous>=2.2",

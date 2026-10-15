@@ -248,6 +248,56 @@ def test_operator_cannot_rebuild_or_upload_without_limit(client: TestClient, mon
     assert oversized.status_code == 413
 
 
+def test_email_and_pdf_orders_enter_the_same_model(client: TestClient, tmp_path: Path):
+    from pypdf import PdfWriter
+    from pypdf.generic import DictionaryObject, NameObject, StreamObject
+
+    login(client, "mapper")
+    assert client.post("/api/demo/load").status_code == 200
+    email = client.post(
+        "/api/ingest/document",
+        files={"file": ("ordine_email.txt", Path("fixtures/ordine_email.txt").read_bytes(), "text/plain")},
+    )
+    assert email.status_code == 200, email.text
+    assert email.json()["order_key"] == "1099"
+    orders = client.get("/api/orders").json()["orders"]
+    created = next(item for item in orders if item["business_key"] == "1099")
+    assert created["shortage_qty"] == 1000
+    assert created["customer_name"] == "Nuova Srl"
+
+    text = Path("fixtures/ordine_email.txt").read_text(encoding="utf-8").replace("1099", "1100").replace("C009", "C010")
+    writer = PdfWriter()
+    writer.add_blank_page(width=400, height=500)
+    page = writer.pages[0]
+    font = DictionaryObject(
+        {
+            NameObject("/Type"): NameObject("/Font"),
+            NameObject("/Subtype"): NameObject("/Type1"),
+            NameObject("/BaseFont"): NameObject("/Helvetica"),
+        }
+    )
+    resources = DictionaryObject({NameObject("/Font"): DictionaryObject({NameObject("/F1"): writer._add_object(font)})})
+    lines = ["BT /F1 10 Tf 40 460 Td"]
+    for line in text.splitlines():
+        escaped = line.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
+        lines.append(f"({escaped}) Tj T*")
+    lines.append("ET")
+    stream = StreamObject()
+    stream.set_data("\n".join(lines).encode("latin-1"))
+    page[NameObject("/Contents")] = writer._add_object(stream)
+    page[NameObject("/Resources")] = resources
+    pdf_path = tmp_path / "ordine.pdf"
+    with pdf_path.open("wb") as handle:
+        writer.write(handle)
+    pdf = client.post(
+        "/api/ingest/document",
+        files={"file": ("ordine.pdf", pdf_path.read_bytes(), "application/pdf")},
+    )
+    assert pdf.status_code == 200, pdf.text
+    assert pdf.json()["source_kind"] == "pdf"
+    assert pdf.json()["order_key"] == "1100"
+
+
 def test_sql_connector_rejects_application_tables(client: TestClient):
     login(client, "mapper")
     denied = client.post("/api/ingest/sql", json={"table": "app.users", "source_name": "users"})

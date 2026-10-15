@@ -24,6 +24,7 @@ from services.pipeline import (
     confirm_mapping,
     execute_recommendation,
     ingest_csv,
+    ingest_document,
     ingest_excel,
     ingest_sql,
     load_fixtures,
@@ -132,27 +133,47 @@ async def ingest_excel_route(
     return await _ingest_upload(file, source_name, user, excel=True)
 
 
-async def _ingest_upload(file: UploadFile, source_name: str | None, user: dict, excel: bool) -> dict:
+async def _save_upload(file: UploadFile) -> Path:
     suffix = Path(file.filename or "upload").suffix
+    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as temporary:
+        path = Path(temporary.name)
+        size = 0
+        while True:
+            chunk = await file.read(1024 * 1024)
+            if not chunk:
+                break
+            size += len(chunk)
+            if size > MAX_UPLOAD_BYTES:
+                path.unlink(missing_ok=True)
+                raise AppError(413, "File troppo grande")
+            temporary.write(chunk)
+    return path
+
+
+async def _ingest_upload(file: UploadFile, source_name: str | None, user: dict, excel: bool) -> dict:
     path: Path | None = None
     try:
-        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as temporary:
-            path = Path(temporary.name)
-            size = 0
-            while True:
-                chunk = await file.read(1024 * 1024)
-                if not chunk:
-                    break
-                size += len(chunk)
-                if size > MAX_UPLOAD_BYTES:
-                    raise AppError(413, "File troppo grande")
-                temporary.write(chunk)
+        path = await _save_upload(file)
         name = source_name or Path(file.filename or "upload").stem
         with connect() as conn:
             if excel:
                 result = ingest_excel(conn, path, name, user["username"], user["role"])
             else:
                 result = ingest_csv(conn, path, name, user["username"], user["role"])
+            conn.commit()
+    finally:
+        if path is not None:
+            path.unlink(missing_ok=True)
+    return _ok(result)
+
+
+@app.post("/api/ingest/document")
+async def ingest_document_route(file: UploadFile = File(...), user: dict = Depends(require_user)) -> dict:
+    path: Path | None = None
+    try:
+        path = await _save_upload(file)
+        with connect() as conn:
+            result = ingest_document(conn, path, user["username"], user["role"], ontology())
             conn.commit()
     finally:
         if path is not None:

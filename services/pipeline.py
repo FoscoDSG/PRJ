@@ -15,6 +15,7 @@ from services.agent.stub_model import StubOrderModel
 from services.canonical.store import _put_fact, materialize
 from services.errors import AppError
 from services.ingest.csv_connector import read_csv
+from services.ingest.document_connector import read_order_document
 from services.ingest.excel_connector import read_excel
 from services.ingest.landing import land
 from services.ingest.sql_connector import extract_sql
@@ -59,6 +60,28 @@ def ingest_csv(conn: psycopg.Connection, path: Path, source_name: str, actor: st
 def ingest_excel(conn: psycopg.Connection, path: Path, source_name: str, actor: str, role: str) -> dict:
     _require_mapper(role)
     return land(conn, source_name=source_name, extracted=read_excel(path), actor=actor, role=role)
+
+
+def ingest_document(conn: psycopg.Connection, path: Path, actor: str, role: str, model: Ontology) -> dict:
+    _require_mapper(role)
+    try:
+        document = read_order_document(path)
+    except ValueError as exc:
+        raise AppError(400, str(exc)) from exc
+    landed = []
+    for source_name, extracted in document["sources"]:
+        landed.append({"source": source_name, **land(conn, source_name=source_name, extracted=extracted, actor=actor, role=role)})
+    confirmed = confirm_confident(conn, role, model)
+    counts = refresh_canonical(conn, model)
+    recommendations = run_agents(conn, actor=actor, role=role)
+    return {
+        "order_key": document["order_key"],
+        "source_kind": document["source_kind"],
+        "sources": landed,
+        "confirmed_mappings": confirmed,
+        "canonical": counts,
+        "recommendations": recommendations,
+    }
 
 
 def ingest_sql(conn: psycopg.Connection, table: str, source_name: str, actor: str, role: str) -> dict:

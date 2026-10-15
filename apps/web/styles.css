@@ -27,7 +27,9 @@ button {
   padding: 0.55rem 1rem;
   cursor: pointer;
 }
-button.ghost { background: transparent; color: var(--teal-ink); border: 1px solid var(--line); }
+button.ghost, label.file { background: transparent; color: var(--teal-ink); border: 1px solid var(--line); }
+label.file { display: inline-flex; align-items: center; border-radius: 999px; padding: 0.55rem 1rem; cursor: pointer; font-family: "Avenir Next", "Segoe UI", sans-serif; }
+label.file input { display: none; }
 button:disabled { opacity: 0.5; cursor: not-allowed; }
 h1, h2, h3 { font-weight: 600; letter-spacing: -0.03em; margin: 0; }
 h1 { font-size: 1.8rem; }
