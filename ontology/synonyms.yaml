@@ -1,0 +1,153 @@
+# Sinonimi di intestazione per il mapping.
+# I numeri sono punteggi di regola, non probabilità e non una calibrazione.
+# Fonti usate per scrivere le voci: Odoo 17 (res_partner.xlsx, product_template.xls,
+# product_purchase.xls e le etichette italiane nei file it.po), HubSpot
+# (pagine delle proprietà) e Danea Easyfatt (pagina del tracciato XML).
+# Ogni voce ha source file:<nome> oppure doc:<url>. Shopify e FatturaPA non compaiono.
+version: "1"
+rule: mapping.synonym@v1
+score_kind: "punteggio di regola, non probabilità"
+sources:
+  - id: odoo17_res_partner
+    file: res_partner.xlsx
+    note: "Campi res.partner di Odoo 17 (nome tecnico o etichetta)."
+  - id: odoo17_product_template
+    file: product_template.xls
+    note: "Campi product.template di Odoo 17, inclusi qty_available e virtual_available."
+  - id: odoo17_product_purchase
+    file: product_purchase.xls
+    note: "Campi product.supplierinfo di Odoo 17 (scheda acquisto del prodotto)."
+  - id: hubspot_contacts
+    note: "Proprietà predefinite dei contatti HubSpot."
+  - id: hubspot_companies
+    note: "Proprietà predefinite delle aziende HubSpot."
+  - id: hubspot_deals
+    note: "Proprietà predefinite delle trattative HubSpot."
+  - id: danea_easyfatt_ordini
+    note: "Tag del tracciato Easyfatt-Xml documenti (ordini) e il nome italiano indicato da Danea accanto al tag."
+entries:
+  # Customer
+  - {header: "Company Name", language: en, source: doc:https://knowledge.hubspot.com/properties/hubspot-crm-default-company-properties, profile: customer, target_type: Customer, target_property: company_name, score: 0.93}
+  - {header: "Nome azienda", language: it, source: file:odoo/addons/base/i18n/it.po, profile: customer, target_type: Customer, target_property: company_name, score: 0.93}
+  - {header: complete_name, language: en, source: file:res_partner.xlsx, profile: customer, target_type: Customer, target_property: name, score: 0.90}
+  - {header: "Nome completo", language: it, source: file:odoo/addons/base/i18n/it.po, profile: customer, target_type: Customer, target_property: name, score: 0.90}
+  - {header: vat, language: en, source: file:res_partner.xlsx, profile: customer, target_type: Customer, target_property: vat, score: 0.96}
+  - {header: "Tax ID", language: en, source: file:res_partner.xlsx, profile: customer, target_type: Customer, target_property: vat, score: 0.94}
+  - {header: CustomerVatCode, language: en, source: doc:https://www.danea.it/software/easyfatt/xml/documenti/, profile: customer, target_type: Customer, target_property: vat, score: 0.95}
+  - {header: "Partita Iva", language: it, source: doc:https://www.danea.it/software/easyfatt/xml/documenti/, profile: customer, target_type: Customer, target_property: vat, score: 0.96}
+  - {header: email_formatted, language: en, source: file:res_partner.xlsx, profile: customer, target_type: Customer, target_property: email, score: 0.90}
+  - {header: CustomerEmail, language: en, source: doc:https://www.danea.it/software/easyfatt/xml/documenti/, profile: customer, target_type: Customer, target_property: email, score: 0.93}
+  - {header: "Indirizzo e-mail", language: it, source: doc:https://www.danea.it/software/easyfatt/xml/documenti/, profile: customer, target_type: Customer, target_property: email, score: 0.91}
+  - {header: CustomerCode, language: en, source: doc:https://www.danea.it/software/easyfatt/xml/documenti/, profile: customer, target_type: Customer, target_property: source_key, score: 0.94}
+  - {header: Reference, language: en, source: file:res_partner.xlsx, profile: customer, target_type: Customer, target_property: source_key, score: 0.88}
+  - {header: "Codice anagrafica", language: it, source: doc:https://www.danea.it/software/easyfatt/xml/documenti/, profile: customer, target_type: Customer, target_property: source_key, score: 0.93}
+  # Person and Organization, recognized on a customer file
+  - {header: CustomerName, language: en, source: doc:https://www.danea.it/software/easyfatt/xml/documenti/, profile: customer, target_type: Person, target_property: full_name, score: 0.86}
+  - {header: "Cognome e nome o denominazione sociale", language: it, source: doc:https://www.danea.it/software/easyfatt/xml/documenti/, profile: customer, target_type: Person, target_property: full_name, score: 0.86}
+  - {header: commercial_company_name, language: en, source: file:res_partner.xlsx, profile: customer, target_type: Organization, target_property: name, score: 0.88}
+  - {header: "Company Name Entity", language: en, source: file:res_partner.xlsx, profile: customer, target_type: Organization, target_property: name, score: 0.86}
+  - {header: "Ragione sociale azienda", language: it, source: file:odoo/addons/base/i18n/it.po, profile: customer, target_type: Organization, target_property: name, score: 0.84}
+  # Supplier (Odoo product.supplierinfo and the Danea supplier side of a purchase document)
+  - {header: "Delivery Lead Time", language: en, source: file:product_purchase.xls, profile: supplier, target_type: Supplier, target_property: delay_days, score: 0.92}
+  - {header: delay, language: en, source: file:product_purchase.xls, profile: supplier, target_type: Supplier, target_property: delay_days, score: 0.90}
+  - {header: "Tempo di risposta per consegne", language: it, source: file:addons/product/i18n/it.po, profile: supplier, target_type: Supplier, target_property: delay_days, score: 0.91}
+  - {header: "Vendor Product Code", language: en, source: file:product_purchase.xls, profile: supplier, target_type: Supplier, target_property: product_source_key, score: 0.93}
+  - {header: product_code, language: en, source: file:product_purchase.xls, profile: supplier, target_type: Supplier, target_property: product_source_key, score: 0.93}
+  - {header: SupplierCode, language: en, source: doc:https://www.danea.it/software/easyfatt/xml/documenti/, profile: supplier, target_type: Supplier, target_property: product_source_key, score: 0.94}
+  - {header: "Codice prodotto del fornitore", language: it, source: doc:https://www.danea.it/software/easyfatt/xml/documenti/, profile: supplier, target_type: Supplier, target_property: product_source_key, score: 0.93}
+  - {header: partner_id, language: en, source: file:product_purchase.xls, profile: supplier, target_type: Supplier, target_property: source_key, score: 0.80}
+  - {header: "Company Name", language: en, source: doc:https://knowledge.hubspot.com/properties/hubspot-crm-default-company-properties, profile: supplier, target_type: Supplier, target_property: name, score: 0.86}
+  - {header: "Nome azienda", language: it, source: file:odoo/addons/base/i18n/it.po, profile: supplier, target_type: Supplier, target_property: name, score: 0.86}
+  - {header: "Codice anagrafica", language: it, source: doc:https://www.danea.it/software/easyfatt/xml/documenti/, profile: supplier, target_type: Supplier, target_property: source_key, score: 0.84}
+  # Product
+  - {header: default_code, language: en, source: file:product_template.xls, profile: product, target_type: Product, target_property: source_key, score: 0.96}
+  - {header: "Internal Reference", language: en, source: file:product_template.xls, profile: product, target_type: Product, target_property: source_key, score: 0.94}
+  - {header: barcode, language: en, source: file:product_template.xls, profile: product, target_type: Product, target_property: source_key, score: 0.88}
+  - {header: "Codice prodotto", language: it, source: doc:https://www.danea.it/software/easyfatt/xml/documenti/, profile: product, target_type: Product, target_property: source_key, score: 0.93}
+  - {header: "Riferimento interno", language: it, source: file:addons/product/i18n/it.po, profile: product, target_type: Product, target_property: source_key, score: 0.93}
+  - {header: standard_price, language: en, source: file:product_template.xls, profile: product, target_type: Product, target_property: cost, score: 0.94}
+  - {header: Cost, language: en, source: file:product_template.xls, profile: product, target_type: Product, target_property: cost, score: 0.92}
+  - {header: Costo, language: it, source: file:addons/product/i18n/it.po, profile: product, target_type: Product, target_property: cost, score: 0.92}
+  - {header: description_sale, language: en, source: file:product_template.xls, profile: product, target_type: Product, target_property: name, score: 0.84}
+  - {header: "Sales Description", language: en, source: file:product_template.xls, profile: product, target_type: Product, target_property: name, score: 0.86}
+  - {header: Description, language: en, source: doc:https://www.danea.it/software/easyfatt/xml/documenti/, profile: product, target_type: Product, target_property: name, score: 0.86}
+  - {header: "Descrizione vendite", language: it, source: file:addons/product/i18n/it.po, profile: product, target_type: Product, target_property: name, score: 0.85}
+  # Order
+  - {header: "Deal Name", language: en, source: doc:https://knowledge.hubspot.com/properties/hubspots-default-deal-properties, profile: order, target_type: Order, target_property: source_key, score: 0.90}
+  - {header: dealname, language: en, source: doc:https://knowledge.hubspot.com/properties/hubspots-default-deal-properties, profile: order, target_type: Order, target_property: source_key, score: 0.90}
+  - {header: "Numero documento", language: it, source: doc:https://www.danea.it/software/easyfatt/xml/documenti/, profile: order, target_type: Order, target_property: source_key, score: 0.93}
+  - {header: amount, language: en, source: doc:https://knowledge.hubspot.com/properties/hubspots-default-deal-properties, profile: order, target_type: Order, target_property: amount, score: 0.90}
+  - {header: TotalWithoutTax, language: en, source: doc:https://www.danea.it/software/easyfatt/xml/documenti/, profile: order, target_type: Order, target_property: amount, score: 0.86}
+  - {header: "Totale documento al netto dell'imposta IVA", language: it, source: doc:https://www.danea.it/software/easyfatt/xml/documenti/, profile: order, target_type: Order, target_property: amount, score: 0.84}
+  - {header: "Deal Stage", language: en, source: doc:https://knowledge.hubspot.com/properties/hubspots-default-deal-properties, profile: order, target_type: Order, target_property: status, score: 0.90}
+  - {header: dealstage, language: en, source: doc:https://knowledge.hubspot.com/properties/hubspots-default-deal-properties, profile: order, target_type: Order, target_property: status, score: 0.88}
+  - {header: "Fase della trattativa", language: it, source: doc:https://knowledge.hubspot.com/it/records/search-your-crm, profile: order, target_type: Order, target_property: status, score: 0.88}
+  - {header: "Close Date", language: en, source: doc:https://knowledge.hubspot.com/properties/hubspots-default-deal-properties, profile: order, target_type: Order, target_property: ordered_at, score: 0.90}
+  - {header: closedate, language: en, source: doc:https://knowledge.hubspot.com/properties/hubspots-default-deal-properties, profile: order, target_type: Order, target_property: ordered_at, score: 0.88}
+  - {header: Date, language: en, source: doc:https://www.danea.it/software/easyfatt/xml/documenti/, profile: order, target_type: Order, target_property: ordered_at, score: 0.86}
+  - {header: "Data del documento", language: it, source: doc:https://www.danea.it/software/easyfatt/xml/documenti/, profile: order, target_type: Order, target_property: ordered_at, score: 0.92}
+  - {header: CustomerCode, language: en, source: doc:https://www.danea.it/software/easyfatt/xml/documenti/, profile: order, target_type: Order, target_property: customer_source_key, score: 0.93}
+  - {header: "Codice anagrafica", language: it, source: doc:https://www.danea.it/software/easyfatt/xml/documenti/, profile: order, target_type: Order, target_property: customer_source_key, score: 0.90}
+  - {header: DocumentType, language: en, source: doc:https://www.danea.it/software/easyfatt/xml/documenti/, profile: order, target_type: Event, target_property: event_type, score: 0.82}
+  - {header: "tipo di documento", language: it, source: doc:https://www.danea.it/software/easyfatt/xml/documenti/, profile: order, target_type: Event, target_property: event_type, score: 0.80}
+  - {header: InternalComment, language: en, source: doc:https://www.danea.it/software/easyfatt/xml/documenti/, profile: order, target_type: Event, target_property: summary, score: 0.80}
+  - {header: Commento, language: it, source: doc:https://www.danea.it/software/easyfatt/xml/documenti/, profile: order, target_type: Event, target_property: summary, score: 0.78}
+  - {header: CustomerCity, language: en, source: doc:https://www.danea.it/software/easyfatt/xml/documenti/, profile: customer, target_type: Location, target_property: name, score: 0.72}
+  - {header: "Città", language: it, source: doc:https://www.danea.it/software/easyfatt/xml/documenti/, profile: customer, target_type: Location, target_property: name, score: 0.70}
+  # Order line
+  - {header: Quantity, language: en, source: file:product_purchase.xls, profile: order_line, target_type: OrderLine, target_property: quantity, score: 0.86}
+  - {header: "Quantità prodotti", language: it, source: doc:https://www.danea.it/software/easyfatt/xml/documenti/, profile: order_line, target_type: OrderLine, target_property: quantity, score: 0.93}
+  - {header: Price, language: en, source: doc:https://www.danea.it/software/easyfatt/xml/documenti/, profile: order_line, target_type: OrderLine, target_property: unit_price, score: 0.90}
+  - {header: "Sales Price", language: en, source: file:product_template.xls, profile: order_line, target_type: OrderLine, target_property: unit_price, score: 0.84}
+  - {header: "Prezzo di vendita", language: it, source: file:addons/product/i18n/it.po, profile: order_line, target_type: OrderLine, target_property: unit_price, score: 0.84}
+  - {header: Code, language: en, source: doc:https://www.danea.it/software/easyfatt/xml/documenti/, profile: order_line, target_type: OrderLine, target_property: product_source_key, score: 0.90}
+  - {header: "Codice prodotto", language: it, source: doc:https://www.danea.it/software/easyfatt/xml/documenti/, profile: order_line, target_type: OrderLine, target_property: product_source_key, score: 0.92}
+  - {header: Number, language: en, source: doc:https://www.danea.it/software/easyfatt/xml/documenti/, profile: order_line, target_type: OrderLine, target_property: order_source_key, score: 0.82}
+  - {header: "Numero documento", language: it, source: doc:https://www.danea.it/software/easyfatt/xml/documenti/, profile: order_line, target_type: OrderLine, target_property: order_source_key, score: 0.86}
+  - {header: Notes, language: en, source: doc:https://www.danea.it/software/easyfatt/xml/documenti/, profile: order_line, target_type: Event, target_property: summary, score: 0.76}
+  - {header: "Note della riga", language: it, source: doc:https://www.danea.it/software/easyfatt/xml/documenti/, profile: order_line, target_type: Event, target_property: summary, score: 0.78}
+  # Stock and warehouse
+  - {header: "Quantity On Hand", language: en, source: file:product_template.xls, profile: stock, target_type: StockPosition, target_property: on_hand, score: 0.95}
+  - {header: qty_available, language: en, source: file:product_template.xls, profile: stock, target_type: StockPosition, target_property: on_hand, score: 0.94}
+  - {header: "Quantità giacenza fisica", language: it, source: file:addons/stock/i18n/it.po, profile: stock, target_type: StockPosition, target_property: on_hand, score: 0.93}
+  - {header: "Available Quantity", language: en, source: file:addons/stock/i18n/it.po, profile: stock, target_type: StockPosition, target_property: available, score: 0.84}
+  - {header: "Quantità disponibile", language: it, source: file:addons/stock/i18n/it.po, profile: stock, target_type: StockPosition, target_property: available, score: 0.84}
+  - {header: "Forecasted Quantity", language: en, source: file:product_template.xls, profile: stock, target_type: StockPosition, target_property: available, score: 0.72}
+  - {header: virtual_available, language: en, source: file:product_template.xls, profile: stock, target_type: StockPosition, target_property: available, score: 0.70}
+  - {header: "Quantità prevista", language: it, source: file:addons/stock/i18n/it.po, profile: stock, target_type: StockPosition, target_property: available, score: 0.72}
+  - {header: default_code, language: en, source: file:product_template.xls, profile: stock, target_type: StockPosition, target_property: product_source_key, score: 0.90}
+  - {header: "Codice prodotto", language: it, source: doc:https://www.danea.it/software/easyfatt/xml/documenti/, profile: stock, target_type: StockPosition, target_property: product_source_key, score: 0.88}
+  - {header: Warehouse, language: en, source: doc:https://www.danea.it/software/easyfatt/xml/documenti/, profile: stock, target_type: Warehouse, target_property: name, score: 0.90}
+  - {header: "Denominazione del magazzino usato", language: it, source: doc:https://www.danea.it/software/easyfatt/xml/documenti/, profile: stock, target_type: Warehouse, target_property: name, score: 0.88}
+  # Shipment columns on a file that is only transport data
+  - {header: TrackingNumber, language: en, source: doc:https://www.danea.it/software/easyfatt/xml/documenti/, profile: shipment, target_type: Shipment, target_property: source_key, score: 0.92}
+  - {header: "Numero di tracciatura spedizione", language: it, source: doc:https://www.danea.it/software/easyfatt/xml/documenti/, profile: shipment, target_type: Shipment, target_property: source_key, score: 0.92}
+  - {header: TransportDateTime, language: en, source: doc:https://www.danea.it/software/easyfatt/xml/documenti/, profile: shipment, target_type: Shipment, target_property: shipped_at, score: 0.90}
+  - {header: "Data e ora del trasporto", language: it, source: doc:https://www.danea.it/software/easyfatt/xml/documenti/, profile: shipment, target_type: Shipment, target_property: shipped_at, score: 0.90}
+  - {header: TransportReason, language: en, source: doc:https://www.danea.it/software/easyfatt/xml/documenti/, profile: shipment, target_type: Shipment, target_property: event_type, score: 0.78}
+  - {header: "Causale trasporto", language: it, source: doc:https://www.danea.it/software/easyfatt/xml/documenti/, profile: shipment, target_type: Shipment, target_property: event_type, score: 0.80}
+  - {header: FootNotes, language: en, source: doc:https://www.danea.it/software/easyfatt/xml/documenti/, profile: shipment, target_type: Shipment, target_property: summary, score: 0.74}
+  - {header: "Note a fine pagina", language: it, source: doc:https://www.danea.it/software/easyfatt/xml/documenti/, profile: shipment, target_type: Shipment, target_property: summary, score: 0.74}
+# Parti di un nome composto. Person.given_name e Person.family_name non sono nell'ontologia:
+# queste colonne restano sotto soglia e non scrivono Person.full_name.
+name_parts:
+  - {header: "First Name", language: en, source: doc:https://knowledge.hubspot.com/properties/hubspots-default-contact-properties, profile: customer, part: given_name}
+  - {header: firstname, language: en, source: doc:https://knowledge.hubspot.com/properties/hubspots-default-contact-properties, profile: customer, part: given_name}
+  - {header: "Last Name", language: en, source: doc:https://knowledge.hubspot.com/properties/hubspots-default-contact-properties, profile: customer, part: family_name}
+  - {header: lastname, language: en, source: doc:https://knowledge.hubspot.com/properties/hubspots-default-contact-properties, profile: customer, part: family_name}
+uncovered:
+  - {target_type: Document, target_property: title, reason: "Nessuna colonna nelle fonti ammesse. Resta il ripiego unknown_header."}
+  - {target_type: Asset, target_property: name, reason: "Il nome è Product.name. Asset.name non ha una colonna distinta."}
+  - {target_type: Transaction, target_property: amount, reason: "L'importo esportato è Order.amount (amount di HubSpot, TotalWithoutTax di Danea)."}
+  - {target_type: Order, target_property: margin, reason: "Proprietà calcolata, assente negli export ammessi."}
+  - {target_type: Order, target_property: shortage_qty, reason: "Proprietà calcolata, assente negli export ammessi."}
+  - {target_type: Order, target_property: commessa, reason: "Estensione cliente, assente in Odoo, HubSpot e Danea."}
+  - {target_type: OrderLine, target_property: amount, reason: "Ereditata da Transaction. Negli export ammessi il prezzo di riga è OrderLine.unit_price, non un importo di riga."}
+  - {target_type: OrderLine, target_property: shortage, reason: "Proprietà calcolata, assente negli export ammessi."}
+  - {target_type: OrderLine, target_property: source_key, reason: "Il tracciato Danea e i campi Odoo/HubSpot non hanno un id di riga distinto da codice e numero."}
+  - {target_type: StockPosition, target_property: name, reason: "La giacenza non ha un nome negli export ammessi."}
+  - {target_type: StockPosition, target_property: reserved, reason: "Nessuna colonna riservato in res.partner, product.template o product.supplierinfo."}
+  - {target_type: StockPosition, target_property: source_key, reason: "La chiave di giacenza è composta da prodotto e magazzino, non è una colonna delle fonti."}
+  - {target_type: StockPosition, target_property: warehouse_source_key, reason: "Warehouse di Danea è il nome del magazzino (Warehouse.name). Il profilo italiano usa già magazzino."}
+  - {target_type: Warehouse, target_property: source_key, reason: "Warehouse di Danea è il nome, non un codice separato."}
+  - {target_type: Shipment, target_property: status, reason: "Il tracciato Danea non ha uno stato spedizione distinto dalla causale."}
