@@ -3,7 +3,10 @@
 Outcomes come from human decisions, from a hand-written fixture, or from
 synthetic fixtures used only to exercise the code. Synthetic cases are stored
 and are excluded from the 30-case minimum and from threshold selection.
-A mapping confirmation is its own decision: confidence_method human, who, when.
+A human mapping decision is a label: confidence_method human, who, when.
+The latest decision per mapping counts. A confirm and a reject both count.
+A reject is an error. A correction is a wrong prediction. The score is the
+one stored on the decision. Evaluation does not recompute it.
 Mapping folds are split by source. A source is never in both threshold
 selection and evaluation. The agent is not a source of labels. Evaluation
 reads the labelled cases, not the decisions log. The running agent is the
@@ -23,7 +26,7 @@ from psycopg.types.json import Json
 
 from services.agent.order_agent import AGENT_VERSION
 from services.errors import AppError
-from services.mapping.engine import HEADER_SIMILARITY_RULE, THRESHOLD, assigned_mapping
+from services.mapping.engine import HEADER_SIMILARITY_RULE, THRESHOLD
 
 AGENT_IS_RULES = "agente = regole, nessun confronto possibile"
 _LABEL_ORIGINS = frozenset({"hand_written", "synthetic"})
@@ -200,9 +203,7 @@ def _latest_mapping_decisions(conn: psycopg.Connection) -> list[dict[str, Any]]:
 def _human_mapping_cases(conn: psycopg.Connection) -> list[dict[str, Any]]:
     rows = [
         row for row in _latest_mapping_decisions(conn)
-        if row["decision"] == "confirm"
-        and row["confidence_method"] == "human"
-        and row["score"] is not None
+        if row["confidence_method"] == "human" and row["score"] is not None
     ]
     ordered = sorted(rows, key=lambda row: (row["source_name"] or "", row["source_field"] or "", row["decision_id"]))
     return [
@@ -237,16 +238,6 @@ def _mapping_label(item: dict[str, Any]) -> dict[str, Any]:
         label["score"] = float(item["score"])
         label["confidence_rule"] = item.get("confidence_rule")
         label["correct"] = _snapshot_correct(item)
-    else:
-        profile = str(item.get("profile") or "unknown")
-        column = str(item.get("source_field") or "")
-        target_type, target_property, confidence, rule = assigned_mapping(profile, column)
-        label["score"] = float(confidence)
-        label["confidence_rule"] = rule
-        label["correct"] = (
-            target_type == item.get("target_type")
-            and target_property == item.get("target_property")
-        )
     return label
 
 
@@ -289,12 +280,16 @@ def _insert_case(
     )
 
 
-def _rule_prediction(label: dict[str, Any]) -> tuple[bool, float]:
-    """Use the frozen score. Do not call the live mapping rule."""
+def _stored_score(label: dict[str, Any]) -> float:
     score = label.get("score")
     if score is None:
         raise AppError(422, "Caso di mapping senza punteggio fotografato")
-    return bool(label.get("correct")), float(score)
+    return float(score)
+
+
+def _rule_prediction(label: dict[str, Any]) -> tuple[bool, float]:
+    """Use the frozen score. Do not call the live mapping rule."""
+    return bool(label.get("correct")), _stored_score(label)
 
 
 def _best_threshold(cases: list[dict[str, Any]]) -> float:
@@ -456,7 +451,7 @@ def _above_below(cases: list[dict[str, Any]], threshold: float) -> tuple[int, in
     above = 0
     below = 0
     for label in cases:
-        score = float(label["score"])
+        score = _stored_score(label)
         if score >= threshold:
             above += 1
         else:

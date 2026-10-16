@@ -191,12 +191,13 @@ _FRESH = [
     {"version": "0006", "name": "hash_version_v2", "baselined": False},
     {"version": "0007", "name": "mapping_decisions_key_audit", "baselined": False},
     {"version": "0008", "name": "mapping_decision_snapshot", "baselined": False},
+    {"version": "0009", "name": "mapping_decision_snapshot_checks", "baselined": False},
 ]
 
 
 def test_migration_files_do_not_drop_or_truncate():
     files = migration_files()
-    assert [item.version for item in files] == ["0001", "0002", "0003", "0004", "0005", "0006", "0007", "0008"]
+    assert [item.version for item in files] == ["0001", "0002", "0003", "0004", "0005", "0006", "0007", "0008", "0009"]
     assert [item.name for item in files] == [
         "initial",
         "provenance_audit_quality",
@@ -206,6 +207,7 @@ def test_migration_files_do_not_drop_or_truncate():
         "hash_version_v2",
         "mapping_decisions_key_audit",
         "mapping_decision_snapshot",
+        "mapping_decision_snapshot_checks",
     ]
     for item in files:
         text = item.path.read_text(encoding="utf-8")
@@ -391,6 +393,7 @@ def test_legacy_database_is_baselined_without_touching_data_or_audit():
         {"version": "0006", "name": "hash_version_v2", "baselined": False},
         {"version": "0007", "name": "mapping_decisions_key_audit", "baselined": False},
         {"version": "0008", "name": "mapping_decision_snapshot", "baselined": False},
+        {"version": "0009", "name": "mapping_decision_snapshot_checks", "baselined": False},
     ]
     assert again == []
     assert third == []
@@ -409,6 +412,7 @@ def test_legacy_database_is_baselined_without_touching_data_or_audit():
         ("0006", "hash_version_v2", False),
         ("0007", "mapping_decisions_key_audit", False),
         ("0008", "mapping_decision_snapshot", False),
+        ("0009", "mapping_decision_snapshot_checks", False),
     ]
 
 
@@ -645,6 +649,7 @@ def test_upgraded_schema_is_baselined_without_touching_audit():
         {"version": "0006", "name": "hash_version_v2", "baselined": False},
         {"version": "0007", "name": "mapping_decisions_key_audit", "baselined": False},
         {"version": "0008", "name": "mapping_decision_snapshot", "baselined": False},
+        {"version": "0009", "name": "mapping_decision_snapshot_checks", "baselined": False},
     ]
     assert again == []
     assert fact == [("0.42", "system_of_record", "unknown", None)]
@@ -658,6 +663,7 @@ def test_upgraded_schema_is_baselined_without_touching_audit():
         ("0006", "hash_version_v2", False),
         ("0007", "mapping_decisions_key_audit", False),
         ("0008", "mapping_decision_snapshot", False),
+        ("0009", "mapping_decision_snapshot_checks", False),
     ]
 
 

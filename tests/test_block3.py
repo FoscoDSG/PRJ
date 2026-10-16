@@ -230,6 +230,7 @@ def test_testset_fallback_until_minimum_and_separated_measurement(monkeypatch: p
                 "target_type": "Order",
                 "target_property": "source_key",
                 "source_name": f"fonte-{index}",
+                "score": 0.98,
             }
             for index in range(4)
         ]
@@ -259,6 +260,7 @@ def test_testset_fallback_until_minimum_and_separated_measurement(monkeypatch: p
                 "target_type": "Order",
                 "target_property": "source_key",
                 "source_name": f"fonte-{index % 5}",
+                "score": 0.98,
             }
             for index in range(MIN_MEASURED_CASES)
         ]
@@ -298,7 +300,8 @@ def test_testset_fallback_until_minimum_and_separated_measurement(monkeypatch: p
         def boom(*_args, **_kwargs):
             raise AssertionError("la valutazione non ricalcola la regola")
 
-        monkeypatch.setattr("services.testset.assigned_mapping", boom)
+        monkeypatch.setattr("services.testset.assigned_mapping", boom, raising=False)
+        monkeypatch.setattr("services.mapping.engine.assigned_mapping", boom)
         measured = evaluate_testset(conn)
         stored = conn.execute(
             """
@@ -425,8 +428,13 @@ def test_human_mapping_confirmation_is_a_decision(client: TestClient):
         item for item in mappings
         if item["source_name"] == "ordini" and item["source_field"] == "ord_head"
     )
-    corrected = client.post(
+    blocked = client.post(
         f"/api/mappings/{order_mapping['id']}/confirm",
+        params={"target_property_corrected": "status"},
+    )
+    assert blocked.status_code == 422, blocked.text
+    corrected = client.post(
+        f"/api/mappings/{order_mapping['id']}/reject",
         params={"target_property_corrected": "status"},
     )
     assert corrected.status_code == 200, corrected.text
@@ -478,22 +486,231 @@ def test_human_mapping_confirmation_is_a_decision(client: TestClient):
     assert float(human[0]["score"]) == pytest.approx(float(proposed["confidence"]))
     assert human[0]["confidence_rule"]
     assert human[1]["decision"] == "reject"
+    assert latest_order["decision"] == "reject"
     assert latest_order["confidence_method"] == "human"
     assert latest_order["target_property_corrected"] == "status"
     assert latest_order["target_property"] != "status"
-    assert len(stored_rows) == 1
+    assert len(stored_rows) == 2
     assert all(row["decision_id"] is None for row in stored_rows)
     assert all(row["mapping_decision_id"] is not None for row in stored_rows)
     labels = [row["label"] for row in stored_rows]
     assert all(label["confidence_method"] == "human" for label in labels)
     assert all(label["who"] == "mapper" and label["when"] for label in labels)
     assert all("score" in label and label["confidence_rule"] for label in labels)
-    assert proposed["source_name"] not in {label["source_name"] for label in labels}
+    rejected_label = next(
+        label for label in labels
+        if label["source_name"] == proposed["source_name"]
+        and label["source_field"] == proposed["source_field"]
+    )
+    assert rejected_label["decision"] == "reject"
+    assert rejected_label["correct"] is False
     order_label = next(label for label in labels if label["source_field"] == "ord_head")
+    assert order_label["decision"] == "reject"
     assert order_label["correct"] is False
     assert order_label["target_property_corrected"] == "status"
     assert report["groups"]["mapping"]["bulk_rule"] == bulk_before - 1
     assert report["groups"]["mapping"]["missing_source"] == 0
+
+
+def test_new_rows_require_the_snapshot_and_a_reject_is_an_error():
+    script = (ROOT / "db" / "migrations" / "0009_mapping_decision_snapshot_checks.sql").read_text(
+        encoding="utf-8"
+    )
+    assert "NOT VALID" in script
+    assert "VALIDATE CONSTRAINT" not in script
+    with connect() as conn:
+        checks = conn.execute(
+            """
+            SELECT conname, convalidated
+            FROM pg_constraint
+            WHERE conrelid = 'app.mapping_decisions'::regclass
+              AND conname IN (
+                'mapping_decisions_snapshot_present_check',
+                'mapping_decisions_correction_on_reject_check'
+              )
+            ORDER BY conname
+            """
+        ).fetchall()
+        assert [row["conname"] for row in checks] == [
+            "mapping_decisions_correction_on_reject_check",
+            "mapping_decisions_snapshot_present_check",
+        ]
+        assert all(row["convalidated"] is False for row in checks)
+        mapping_id = conn.execute(
+            """
+            INSERT INTO app.field_mappings (
+              id, source_name, source_field, target_type, target_property,
+              confidence, status, profile
+            )
+            VALUES (
+              gen_random_uuid(), 'alfa', 'ord_head', 'Order', 'source_key',
+              0.91, 'proposed', 'order'
+            )
+            RETURNING id
+            """
+        ).fetchone()["id"]
+        conn.commit()
+
+        def insert(target=mapping_id, **overrides):
+            payload = {
+                "decision": "confirm",
+                "confidence_method": "human",
+                "source_name": "alfa",
+                "source_field": "ord_head",
+                "target_property": "source_key",
+                "target_property_corrected": None,
+                "score": 0.91,
+                "confidence_rule": "mapping.header_similarity@v1",
+                "decided_at": "2020-01-01T00:00:00Z",
+            }
+            payload.update(overrides)
+            conn.execute(
+                """
+                INSERT INTO app.mapping_decisions (
+                  id, mapping_id, decision, confidence_method, actor, actor_role,
+                  decided_at, source_name, source_field, target_property,
+                  target_property_corrected, score, confidence_rule
+                )
+                VALUES (
+                  gen_random_uuid(), %s, %s, %s, 'mapper', 'mapper',
+                  %s, %s, %s, %s, %s, %s, %s
+                )
+                """,
+                (
+                    target,
+                    payload["decision"],
+                    payload["confidence_method"],
+                    payload["decided_at"],
+                    payload["source_name"],
+                    payload["source_field"],
+                    payload["target_property"],
+                    payload["target_property_corrected"],
+                    payload["score"],
+                    payload["confidence_rule"],
+                ),
+            )
+
+        for field in ("source_name", "source_field", "target_property", "score", "confidence_rule"):
+            with pytest.raises(psycopg.errors.CheckViolation, match="snapshot_present"):
+                insert(**{field: None})
+            conn.rollback()
+        with pytest.raises(psycopg.errors.CheckViolation, match="correction_on_reject"):
+            insert(decision="confirm", target_property_corrected="status")
+        conn.rollback()
+        insert()
+        insert(
+            decision="reject",
+            target_property_corrected="status",
+            source_name="alfa",
+            decided_at="2020-01-02T00:00:00Z",
+        )
+        kept_id = conn.execute(
+            """
+            INSERT INTO app.field_mappings (
+              id, source_name, source_field, target_type, target_property,
+              confidence, status, profile
+            )
+            VALUES (
+              gen_random_uuid(), 'gamma', 'importo', 'Order', 'amount',
+              0.80, 'proposed', 'order'
+            )
+            RETURNING id
+            """
+        ).fetchone()["id"]
+        insert(
+            target=kept_id,
+            source_name="gamma",
+            source_field="importo",
+            target_property="amount",
+            score=0.80,
+            decided_at="2020-01-03T00:00:00Z",
+        )
+        other_id = conn.execute(
+            """
+            INSERT INTO app.field_mappings (
+              id, source_name, source_field, target_type, target_property,
+              confidence, status, profile
+            )
+            VALUES (
+              gen_random_uuid(), 'beta', 'stato', 'Order', 'status',
+              0.40, 'proposed', 'order'
+            )
+            RETURNING id
+            """
+        ).fetchone()["id"]
+        conn.execute(
+            """
+            INSERT INTO app.mapping_decisions (
+              id, mapping_id, decision, confidence_method, actor, actor_role,
+              source_name, source_field, target_property, score, confidence_rule
+            )
+            VALUES (
+              gen_random_uuid(), %s, 'confirm', 'bulk_rule', 'mapper', 'mapper',
+              'beta', 'stato', 'status', 0.40, 'mapping.header_similarity@v1'
+            )
+            """,
+            (other_id,),
+        )
+        built = build_testset(conn)
+        stored = conn.execute(
+            """
+            SELECT label
+            FROM app.labelled_cases
+            WHERE testset_version = %s AND case_kind = 'mapping' AND label_origin = 'human_decision'
+            """,
+            (built["version"],),
+        ).fetchall()
+        conn.rollback()
+    labels = [row["label"] for row in stored]
+    reject = next(label for label in labels if label["decision"] == "reject")
+    assert reject["correct"] is False
+    assert reject["target_property_corrected"] == "status"
+    assert reject["score"] == pytest.approx(0.91)
+    assert any(label["decision"] == "confirm" and label["correct"] is True for label in labels)
+    assert all(label["confidence_method"] == "human" for label in labels)
+    assert len(labels) == 2
+
+
+def test_a_missing_score_is_not_recomputed(monkeypatch: pytest.MonkeyPatch):
+    from services.errors import AppError
+    from services.mapping.engine import assigned_mapping
+
+    calls = []
+
+    def spy(*args, **kwargs):
+        calls.append(args)
+        return assigned_mapping(*args, **kwargs)
+
+    monkeypatch.setattr("services.mapping.engine.assigned_mapping", spy)
+    monkeypatch.setattr("services.testset.assigned_mapping", spy, raising=False)
+
+    def one():
+        return [
+            {
+                "case_kind": "mapping",
+                "profile": "order",
+                "source_field": "ord_head",
+                "target_type": "Order",
+                "target_property": "source_key",
+                "source_name": "alfa",
+            }
+        ]
+
+    monkeypatch.setattr("services.testset.load_hand_labels", one)
+    with connect() as conn:
+        version = build_testset(conn)["version"]
+        stored = conn.execute(
+            """
+            SELECT label FROM app.labelled_cases
+            WHERE testset_version = %s AND case_kind = 'mapping'
+            """,
+            (version,),
+        ).fetchone()["label"]
+        with pytest.raises(AppError, match="punteggio fotografato"):
+            evaluate_testset(conn)
+        conn.rollback()
+    assert "score" not in stored
+    assert calls == []
 
 
 def test_empty_source_is_counted_apart(monkeypatch: pytest.MonkeyPatch):
@@ -506,6 +723,7 @@ def test_empty_source_is_counted_apart(monkeypatch: pytest.MonkeyPatch):
                 "source_field": "ord_head",
                 "target_type": "Order",
                 "target_property": "source_key",
+                "score": 0.98,
             }
             if source is not None:
                 item["source_name"] = source

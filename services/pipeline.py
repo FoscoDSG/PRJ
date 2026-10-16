@@ -252,9 +252,11 @@ def confirm_mapping(
     target_property_corrected: str | None = None,
 ) -> dict:
     _require_mapper(role)
+    if target_property_corrected is not None and str(target_property_corrected).strip() != "":
+        raise AppError(422, "La proprietà corretta si registra solo su un rifiuto")
     row = _mapping_row(conn, mapping_id)
     model.require_prop(row["target_type"], row["target_property"])
-    corrected = _corrected_property(model, row["target_type"], target_property_corrected)
+    corrected = None
     conn.execute(
         "UPDATE app.field_mappings SET status = 'confirmed' WHERE id = %s",
         (mapping_id,),
