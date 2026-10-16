@@ -80,6 +80,7 @@ def holdout_report() -> dict[str, Any]:
         "minimum_cases": MIN_MEASURED_CASES,
         "above": above,
         "below": below,
+        "shape_recognition_note": "riconoscimento dalla forma non misurato: nessuna riga reale",
         "before_token": {
             "above": FIRST_MEASURE_ABOVE,
             "below": FIRST_MEASURE_BELOW,

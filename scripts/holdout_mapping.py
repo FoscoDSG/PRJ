@@ -22,6 +22,10 @@ def main() -> None:
         f"{after['above']} sopra, {after['below']} sotto"
     )
     print(after["note"])
+    print(
+        f"dato sulle sole intestazioni: {report['above']} sopra, {report['below']} sotto"
+    )
+    print(report["shape_recognition_note"])
     for row in report["columns"]:
         side = "sopra" if row["above_threshold"] else "sotto"
         print(
