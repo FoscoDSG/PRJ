@@ -22,20 +22,37 @@ def evidence_key() -> str:
     return value
 
 
-def install_evidence_key(conn: psycopg.Connection) -> None:
-    """Store the server key. The caller must be the owner, not ``ieol_app``."""
+def install_evidence_key(conn: psycopg.Connection, *, rotate: bool = False) -> None:
+    """Store the server key. The caller must be the owner, not ``ieol_app``.
+
+    Inserts the row when it is missing. Refuses to replace a different
+    secret unless ``rotate`` is true. The table stays one row.
+    """
     key = os.environ.get("IEOL_EVIDENCE_HMAC_KEY", "").strip()
     if key == "":
         return
     row = conn.execute("SELECT to_regclass('app.evidence_hmac_key') AS rel").fetchone()
     if row is None or row["rel"] is None:
         return
+    stored = conn.execute(
+        "SELECT secret FROM app.evidence_hmac_key WHERE id = 1"
+    ).fetchone()
+    if stored is None:
+        conn.execute(
+            "INSERT INTO app.evidence_hmac_key (id, secret) VALUES (1, %s)",
+            (key,),
+        )
+        return
+    if stored["secret"] == key:
+        return
+    if not rotate:
+        raise RuntimeError(
+            "IEOL_EVIDENCE_HMAC_KEY è diversa dalla chiave già in app.evidence_hmac_key. "
+            "ieol migrate non la sostituisce: le evidenze già firmate non verrebbero più riconosciute. "
+            "Per sovrascrivere l'unica riga: ieol migrate --rotate-evidence-key."
+        )
     conn.execute(
-        """
-        INSERT INTO app.evidence_hmac_key (id, secret)
-        VALUES (1, %s)
-        ON CONFLICT (id) DO UPDATE SET secret = EXCLUDED.secret
-        """,
+        "UPDATE app.evidence_hmac_key SET secret = %s WHERE id = 1",
         (key,),
     )
 

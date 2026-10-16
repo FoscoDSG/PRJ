@@ -527,6 +527,69 @@ def test_hash_version_old_rows_stay_sha256_and_new_rows_use_hmac(client: TestCli
     assert historical == "sha256"
 
 
+def test_hash_version_v2_is_allowed_and_is_not_the_default(client: TestClient):
+    script = (ROOT / "db" / "migrations" / "0006_hash_version_v2.sql").read_text(encoding="utf-8")
+    assert "hmac-sha256-v2" in script
+    assert "SET DEFAULT" not in script
+    assert "UPDATE " not in script
+    engine = (ROOT / "services" / "workflow" / "engine.py").read_text(encoding="utf-8")
+    assert '"hmac-sha256-v1"' in engine
+    assert "hmac-sha256-v2" not in engine
+    login(client, "mapper")
+    load_demo()
+    with connect() as conn:
+        default = conn.execute(
+            """
+            SELECT column_default
+            FROM information_schema.columns
+            WHERE table_schema = 'app' AND table_name = 'decisions_log' AND column_name = 'hash_version'
+            """
+        ).fetchone()["column_default"]
+        check = conn.execute(
+            """
+            SELECT pg_get_constraintdef(oid) AS definition
+            FROM pg_constraint
+            WHERE conname = 'decisions_log_hash_version_check'
+            """
+        ).fetchone()["definition"]
+        inserted = conn.execute(
+            """
+            INSERT INTO app.decisions_log (
+              id, recommendation_id, batch_id, row_index, decision, evidence_hash,
+              recommendation, confidence, actor, actor_role, agent_version, rules_version,
+              confidence_threshold, amount_threshold_eur, hash_version
+            )
+            SELECT gen_random_uuid(), r.id, lr.batch_id, lr.row_index, 'reject', r.evidence_hash,
+                   'futuro', 0.2, 'rotazione', 'approver', 'x', 'y', 0.75, 1, 'hmac-sha256-v2'
+            FROM app.recommendations r
+            JOIN app.landing_rows lr ON lr.data ->> 'ord_head' = '1024'
+            LIMIT 1
+            RETURNING hash_version
+            """
+        ).fetchone()["hash_version"]
+        with pytest.raises(psycopg.errors.CheckViolation):
+            conn.execute(
+                """
+                INSERT INTO app.decisions_log (
+                  id, recommendation_id, batch_id, row_index, decision, evidence_hash,
+                  recommendation, confidence, actor, actor_role, agent_version, rules_version,
+                  confidence_threshold, amount_threshold_eur, hash_version
+                )
+                SELECT gen_random_uuid(), r.id, lr.batch_id, lr.row_index, 'reject', r.evidence_hash,
+                       'futuro', 0.2, 'rifiutata', 'approver', 'x', 'y', 0.75, 1, 'hmac-sha256-v3'
+                FROM app.recommendations r
+                JOIN app.landing_rows lr ON lr.data ->> 'ord_head' = '1024'
+                LIMIT 1
+                """
+            )
+        conn.rollback()
+    assert "hmac-sha256-v1" in default
+    assert "hmac-sha256-v2" not in default
+    assert "hmac-sha256-v2" in check
+    assert "hmac-sha256-v3" not in check
+    assert inserted == "hmac-sha256-v2"
+
+
 def test_bad_date_and_entity_id_are_422(client: TestClient):
     login(client, "admin")
     bad_date = client.get("/api/audit/readable", params={"date_from": "non-una-data"})
@@ -552,9 +615,33 @@ def test_detail_keys_use_the_italian_labels():
             "problem": "ritardo",
         }
     )
-    assert text == "Decisione: Approvazione; Stato: open; Quantità: 3; Motivo: controllo; Problema: ritardo"
+    assert text == "Decisione: Approvazione; Stato: Aperto; Quantità: 3; Motivo: controllo; Problema: ritardo"
     assert "decision:" not in text
     assert "quantity:" not in text
+
+
+def test_status_values_use_the_italian_labels():
+    from services.audit_read import _detail
+
+    expected = {
+        "open": "Aperto",
+        "acknowledged": "Visto",
+        "detected": "Rilevato",
+        "proposed": "Proposto",
+        "confirmed": "Confermato",
+        "approved": "Approvato",
+        "modified": "Modificato",
+        "rejected": "Rifiutato",
+        "released": "Rilasciato",
+        "dry_run_ok": "Simulazione riuscita",
+        "executed": "Eseguito",
+        "failed": "Fallito",
+        "expired": "Scaduto",
+        "queued": "In coda",
+        "compensated": "Compensato",
+    }
+    for code, label in expected.items():
+        assert _detail({"status": code}) == f"Stato: {label}"
 
 
 def test_unmask_field_and_measured_threshold_phrase():
