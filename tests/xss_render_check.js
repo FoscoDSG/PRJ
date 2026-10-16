@@ -12,6 +12,7 @@ const {
   customerDetail,
   inboxCard,
   auditCard,
+  readableCard,
 } = require("../apps/web/escape.js");
 
 const input = JSON.parse(fs.readFileSync(0, "utf8"));
@@ -69,7 +70,21 @@ const html = [
     dry_run: { note: value },
     actions: [{ type: "createPurchaseOrder", params: { quantity: value } }],
   }),
+  inboxCard({
+    id: value,
+    status: value,
+    requires_cfo: false,
+    risk: value,
+    order_key: value,
+    problem: value,
+    expected_impact: value,
+    confidence: value,
+    blocked_reason: value,
+    dry_run: { note: value },
+    actions: [{ type: "createPurchaseOrder", params: { quantity: value } }],
+  }, "approver"),
   auditCard({ action: value, actor: value, payload: { note: value } }),
+  readableCard({ action: value, who: value, when: value, what: value, order: value, detail: value }),
   pill(value),
 ].join("\n");
 
@@ -89,9 +104,13 @@ const allowedTags = new Set([
 const structural = new Set([
   "pill", "card", "meta", "ghost", "formula", "edges",
   "profile-label", "profile-label-source", "profile-label-text",
+  "card-title", "section-heading", "mapping-confidence", "fact-list",
+  "fact-confidence", "confidence-badge", "decision-bar", "blocked-reason",
+  "audit-when", "audit-what", "audit-order", "audit-detail",
 ]);
 const tagRe = /<\/?([a-zA-Z][a-zA-Z0-9]*)\b([^>]*)>/g;
 const attrRe = /([^\s=/]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+)))?/g;
+const seenClasses = new Set();
 let cursor = 0;
 let tag;
 while ((tag = tagRe.exec(html))) {
@@ -123,6 +142,7 @@ while ((tag = tagRe.exec(html))) {
     const classValue = attr[2] ?? attr[3] ?? attr[4] ?? "";
     for (const token of classValue.split(/\s+/)) {
       if (!token) continue;
+      seenClasses.add(token);
       if (!structural.has(token) && !PILL_CLASSES.has(token)) {
         console.error(`class not allowed: ${token}`);
         process.exit(2);
@@ -133,6 +153,18 @@ while ((tag = tagRe.exec(html))) {
 if (/[<>]/.test(html.slice(cursor))) {
   console.error("unescaped bracket in text");
   process.exit(2);
+}
+
+const requiredClasses = [
+  "card-title", "section-heading", "mapping-confidence", "fact-list",
+  "fact-confidence", "confidence-badge", "decision-bar", "blocked-reason",
+  "audit-when", "audit-what", "audit-order", "audit-detail",
+];
+for (const token of requiredClasses) {
+  if (!seenClasses.has(token)) {
+    console.error(`expected class missing from render: ${token}`);
+    process.exit(2);
+  }
 }
 
 const hostile = pill(value);
