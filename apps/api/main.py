@@ -317,18 +317,41 @@ def mappings(user: dict = Depends(require_user)) -> dict:
 
 
 @app.post("/api/mappings/{mapping_id}/confirm")
-def confirm(mapping_id: str, user: dict = Depends(require_user)) -> dict:
+def confirm(
+    mapping_id: str,
+    target_property_corrected: str | None = None,
+    user: dict = Depends(require_user),
+) -> dict:
     model = ontology()
     with app_connect() as conn:
-        result = confirm_mapping(conn, mapping_id, user["username"], user["role"], model)
+        result = confirm_mapping(
+            conn,
+            mapping_id,
+            user["username"],
+            user["role"],
+            model,
+            target_property_corrected=target_property_corrected,
+        )
         conn.commit()
     return _ok(result)
 
 
 @app.post("/api/mappings/{mapping_id}/reject")
-def reject_map(mapping_id: str, user: dict = Depends(require_user)) -> dict:
+def reject_map(
+    mapping_id: str,
+    target_property_corrected: str | None = None,
+    user: dict = Depends(require_user),
+) -> dict:
+    model = ontology()
     with app_connect() as conn:
-        result = reject_mapping(conn, mapping_id, user["role"])
+        result = reject_mapping(
+            conn,
+            mapping_id,
+            user["role"],
+            actor=user["username"],
+            model=model,
+            target_property_corrected=target_property_corrected,
+        )
         conn.commit()
     return _ok(result)
 
@@ -337,7 +360,7 @@ def reject_map(mapping_id: str, user: dict = Depends(require_user)) -> dict:
 def confirm_high(user: dict = Depends(require_user)) -> dict:
     model = ontology()
     with app_connect() as conn:
-        count = confirm_confident(conn, user["role"], model)
+        count = confirm_confident(conn, user["role"], model, actor=user["username"])
         conn.commit()
     return {"confirmed": count}
 

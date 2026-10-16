@@ -190,12 +190,13 @@ _FRESH = [
     {"version": "0005", "name": "pii_testset_audit", "baselined": False},
     {"version": "0006", "name": "hash_version_v2", "baselined": False},
     {"version": "0007", "name": "mapping_decisions_key_audit", "baselined": False},
+    {"version": "0008", "name": "mapping_decision_snapshot", "baselined": False},
 ]
 
 
 def test_migration_files_do_not_drop_or_truncate():
     files = migration_files()
-    assert [item.version for item in files] == ["0001", "0002", "0003", "0004", "0005", "0006", "0007"]
+    assert [item.version for item in files] == ["0001", "0002", "0003", "0004", "0005", "0006", "0007", "0008"]
     assert [item.name for item in files] == [
         "initial",
         "provenance_audit_quality",
@@ -204,6 +205,7 @@ def test_migration_files_do_not_drop_or_truncate():
         "pii_testset_audit",
         "hash_version_v2",
         "mapping_decisions_key_audit",
+        "mapping_decision_snapshot",
     ]
     for item in files:
         text = item.path.read_text(encoding="utf-8")
@@ -239,6 +241,16 @@ def test_migration_files_do_not_drop_or_truncate():
     assert migration_violation(drop_origin, "0007_mapping_decisions_key_audit.sql") is None
     assert migration_violation(drop_origin, "0005_pii_testset_audit.sql") is not None
     assert migration_violation(drop_origin, "0008_later.sql") is not None
+    drop_decision = (
+        "ALTER TABLE app.mapping_decisions DROP CONSTRAINT IF EXISTS mapping_decisions_decision_check;\n"
+    )
+    drop_method = (
+        "ALTER TABLE app.mapping_decisions DROP CONSTRAINT IF EXISTS mapping_decisions_confidence_method_check;\n"
+    )
+    assert migration_violation(drop_decision, "0008_mapping_decision_snapshot.sql") is None
+    assert migration_violation(drop_method, "0008_mapping_decision_snapshot.sql") is None
+    assert migration_violation(drop_decision, "0007_mapping_decisions_key_audit.sql") is not None
+    assert migration_violation(drop_method, "0009_later.sql") is not None
     drop_hash = (
         "ALTER TABLE app.decisions_log DROP CONSTRAINT IF EXISTS decisions_log_hash_version_check;\n"
     )
@@ -378,6 +390,7 @@ def test_legacy_database_is_baselined_without_touching_data_or_audit():
         {"version": "0005", "name": "pii_testset_audit", "baselined": False},
         {"version": "0006", "name": "hash_version_v2", "baselined": False},
         {"version": "0007", "name": "mapping_decisions_key_audit", "baselined": False},
+        {"version": "0008", "name": "mapping_decision_snapshot", "baselined": False},
     ]
     assert again == []
     assert third == []
@@ -395,6 +408,7 @@ def test_legacy_database_is_baselined_without_touching_data_or_audit():
         ("0005", "pii_testset_audit", False),
         ("0006", "hash_version_v2", False),
         ("0007", "mapping_decisions_key_audit", False),
+        ("0008", "mapping_decision_snapshot", False),
     ]
 
 
@@ -630,6 +644,7 @@ def test_upgraded_schema_is_baselined_without_touching_audit():
         {"version": "0005", "name": "pii_testset_audit", "baselined": False},
         {"version": "0006", "name": "hash_version_v2", "baselined": False},
         {"version": "0007", "name": "mapping_decisions_key_audit", "baselined": False},
+        {"version": "0008", "name": "mapping_decision_snapshot", "baselined": False},
     ]
     assert again == []
     assert fact == [("0.42", "system_of_record", "unknown", None)]
@@ -642,6 +657,7 @@ def test_upgraded_schema_is_baselined_without_touching_audit():
         ("0005", "pii_testset_audit", False),
         ("0006", "hash_version_v2", False),
         ("0007", "mapping_decisions_key_audit", False),
+        ("0008", "mapping_decision_snapshot", False),
     ]
 
 

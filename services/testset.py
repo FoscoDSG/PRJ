@@ -31,6 +31,7 @@ _LABEL_ORIGINS = frozenset({"hand_written", "synthetic"})
 ROOT = Path(__file__).resolve().parents[1]
 HAND_LABELS = ROOT / "evals" / "hand_labels.json"
 MIN_MEASURED_CASES = 30
+MIN_MEASURED_SOURCES = 3
 _SOURCE_FOLDS = 5
 TESTSET_LOCK_KEY = 0x49454F4C54534554
 _Z = 1.96
@@ -115,17 +116,29 @@ def evaluate_testset(conn: psycopg.Connection) -> dict[str, Any]:
         """,
         (current,),
     ).fetchall()
-    mapping_cases = [
+    candidates = [
         row["label"]
         for row in rows
         if row["case_kind"] == "mapping" and row["label_origin"] != "synthetic"
     ]
+    mapping_cases, missing_source = _without_missing_source(candidates)
     mapping_report, threshold_row = _mapping_report(mapping_cases)
+    above, below = _above_below(mapping_cases, float(threshold_row["threshold"]))
+    bulk_rule = _bulk_rule_count(conn)
+    mapping_report["human_above"] = above
+    mapping_report["human_below"] = below
+    mapping_report["bulk_rule"] = bulk_rule
+    mapping_report["missing_source"] = missing_source
+    threshold_row["metrics"]["human_above"] = above
+    threshold_row["metrics"]["human_below"] = below
+    threshold_row["metrics"]["bulk_rule"] = bulk_rule
+    threshold_row["metrics"]["missing_source"] = missing_source
     _store_eval(conn, current, "mapping", mapping_report, HEADER_SIMILARITY_RULE)
     _store_threshold(conn, current, threshold_row, mapping_report)
     return {
         "testset_version": current,
         "minimum": MIN_MEASURED_CASES,
+        "minimum_sources": MIN_MEASURED_SOURCES,
         "threshold": threshold_row,
         "confronto": AGENT_IS_RULES,
         "groups": {"mapping": mapping_report},
@@ -171,21 +184,26 @@ def _human_recommendation_cases(conn: psycopg.Connection) -> list[dict[str, Any]
     return cases
 
 
+def _latest_mapping_decisions(conn: psycopg.Connection) -> list[dict[str, Any]]:
+    return list(conn.execute(
+        """
+        SELECT DISTINCT ON (mapping_id)
+               id::text AS decision_id, mapping_id::text AS mapping_id, decision,
+               confidence_method, actor, decided_at, source_name, source_field,
+               target_property, target_property_corrected, score, confidence_rule
+        FROM app.mapping_decisions
+        ORDER BY mapping_id, decided_at DESC, id DESC
+        """
+    ).fetchall())
+
+
 def _human_mapping_cases(conn: psycopg.Connection) -> list[dict[str, Any]]:
-    rows = conn.execute(
-        """
-        SELECT DISTINCT ON (md.mapping_id)
-               md.id::text AS decision_id, md.actor, md.decided_at, md.confidence_method,
-               fm.source_name, fm.source_field, fm.target_type, fm.target_property, fm.profile
-        FROM app.mapping_decisions md
-        JOIN app.field_mappings fm ON fm.id = md.mapping_id
-        WHERE md.decision = 'confirm'
-          AND md.confidence_method = 'human'
-          AND fm.status = 'confirmed'
-          AND fm.valid_to IS NULL
-        ORDER BY md.mapping_id, md.decided_at DESC, md.id DESC
-        """
-    ).fetchall()
+    rows = [
+        row for row in _latest_mapping_decisions(conn)
+        if row["decision"] == "confirm"
+        and row["confidence_method"] == "human"
+        and row["score"] is not None
+    ]
     ordered = sorted(rows, key=lambda row: (row["source_name"] or "", row["source_field"] or "", row["decision_id"]))
     return [
         {
@@ -211,7 +229,37 @@ def _mapping_label(item: dict[str, Any]) -> dict[str, Any]:
     decided_at = item.get("decided_at")
     if decided_at is not None:
         label["when"] = decided_at.isoformat()
+    if item.get("decision"):
+        label["decision"] = item["decision"]
+    if item.get("target_property_corrected"):
+        label["target_property_corrected"] = item["target_property_corrected"]
+    if item.get("score") is not None:
+        label["score"] = float(item["score"])
+        label["confidence_rule"] = item.get("confidence_rule")
+        label["correct"] = _snapshot_correct(item)
+    else:
+        profile = str(item.get("profile") or "unknown")
+        column = str(item.get("source_field") or "")
+        target_type, target_property, confidence, rule = assigned_mapping(profile, column)
+        label["score"] = float(confidence)
+        label["confidence_rule"] = rule
+        label["correct"] = (
+            target_type == item.get("target_type")
+            and target_property == item.get("target_property")
+        )
     return label
+
+
+def _snapshot_correct(item: dict[str, Any]) -> bool:
+    if item.get("decision") == "reject":
+        return False
+    corrected = item.get("target_property_corrected")
+    proposed = item.get("target_property")
+    if corrected not in (None, "") and corrected != proposed:
+        return False
+    if "correct" in item and item.get("decision") is None:
+        return bool(item["correct"])
+    return True
 
 
 def _recommendation_label(item: dict[str, Any]) -> dict[str, Any]:
@@ -242,11 +290,11 @@ def _insert_case(
 
 
 def _rule_prediction(label: dict[str, Any]) -> tuple[bool, float]:
-    profile = str(label.get("profile") or "unknown")
-    column = str(label.get("source_field") or "")
-    target_type, target_property, confidence, _rule = assigned_mapping(profile, column)
-    correct = target_type == label.get("target_type") and target_property == label.get("target_property")
-    return correct, float(confidence)
+    """Use the frozen score. Do not call the live mapping rule."""
+    score = label.get("score")
+    if score is None:
+        raise AppError(422, "Caso di mapping senza punteggio fotografato")
+    return bool(label.get("correct")), float(score)
 
 
 def _best_threshold(cases: list[dict[str, Any]]) -> float:
@@ -317,7 +365,7 @@ def _mapping_report(cases: list[dict[str, Any]]) -> tuple[dict[str, Any], dict[s
     if count < 2:
         report = _empty_metrics("too_small_for_split", separated=False)
         threshold = _fallback_threshold(count, "too_small_for_split", [])
-        return report, threshold
+        return _annotate_counts(report, threshold, cases)
     method, folds = _source_folds(cases)
     if not folds:
         report = _empty_metrics(method, separated=False)
@@ -328,7 +376,7 @@ def _mapping_report(cases: list[dict[str, Any]]) -> tuple[dict[str, Any], dict[s
             [],
             why="una sola fonte: la soglia non si separa dalla valutazione",
         )
-        return report, threshold
+        return _annotate_counts(report, threshold, cases)
     y_true: list[bool] = []
     y_pred: list[bool] = []
     chosen: list[float] = []
@@ -351,7 +399,8 @@ def _mapping_report(cases: list[dict[str, Any]]) -> tuple[dict[str, Any], dict[s
         fold_reports.append(_fold_report(fold))
     report = _classification(y_true, y_pred, method, separated=True)
     report["folds"] = fold_reports
-    if count >= MIN_MEASURED_CASES:
+    source_count = len({_case_source(label) for label in cases})
+    if count >= MIN_MEASURED_CASES and source_count >= MIN_MEASURED_SOURCES:
         threshold_row = {
             "threshold": statistics_median(chosen),
             "method": method,
@@ -366,9 +415,68 @@ def _mapping_report(cases: list[dict[str, Any]]) -> tuple[dict[str, Any], dict[s
             },
         }
     else:
-        threshold_row = _fallback_threshold(count, method, chosen)
+        why = None
+        if count >= MIN_MEASURED_CASES and source_count < MIN_MEASURED_SOURCES:
+            why = (
+                f"meno di {MIN_MEASURED_SOURCES} fonti distinte: "
+                "fallback 0,75, non misurato"
+            )
+        threshold_row = _fallback_threshold(count, method, chosen, why=why)
         threshold_row["metrics"]["folds"] = fold_reports
+    return _annotate_counts(report, threshold_row, cases)
+
+
+def _annotate_counts(
+    report: dict[str, Any],
+    threshold_row: dict[str, Any],
+    cases: list[dict[str, Any]],
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    above, below = _above_below(cases, float(threshold_row["threshold"]))
+    report["human_above"] = above
+    report["human_below"] = below
+    report.setdefault("bulk_rule", 0)
+    report.setdefault("missing_source", 0)
+    threshold_row["metrics"]["human_above"] = above
+    threshold_row["metrics"]["human_below"] = below
     return report, threshold_row
+
+
+def _without_missing_source(cases: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], int]:
+    usable = []
+    missing = 0
+    for label in cases:
+        if _case_source(label) == "":
+            missing += 1
+        else:
+            usable.append(label)
+    return usable, missing
+
+
+def _above_below(cases: list[dict[str, Any]], threshold: float) -> tuple[int, int]:
+    above = 0
+    below = 0
+    for label in cases:
+        score = float(label["score"])
+        if score >= threshold:
+            above += 1
+        else:
+            below += 1
+    return above, below
+
+
+def _bulk_rule_count(conn: psycopg.Connection) -> int:
+    row = conn.execute(
+        """
+        SELECT count(*) AS n
+        FROM (
+          SELECT DISTINCT ON (mapping_id) confidence_method, decision
+          FROM app.mapping_decisions
+          ORDER BY mapping_id, decided_at DESC, id DESC
+        ) latest
+        WHERE confidence_method = 'bulk_rule' AND decision = 'confirm'
+        """
+    ).fetchone()
+    return int(row["n"])
 
 
 def _fallback_threshold(

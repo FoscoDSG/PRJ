@@ -294,6 +294,11 @@ def test_testset_fallback_until_minimum_and_separated_measurement(monkeypatch: p
     monkeypatch.setattr("services.testset.load_hand_labels", enough)
     with connect() as conn:
         build_testset(conn)
+
+        def boom(*_args, **_kwargs):
+            raise AssertionError("la valutazione non ricalcola la regola")
+
+        monkeypatch.setattr("services.testset.assigned_mapping", boom)
         measured = evaluate_testset(conn)
         stored = conn.execute(
             """
@@ -317,6 +322,8 @@ def test_testset_fallback_until_minimum_and_separated_measurement(monkeypatch: p
     assert float(stored["threshold"]) == pytest.approx(0.98)
     assert measured["groups"]["mapping"]["separated"] is True
     assert measured["groups"]["mapping"]["n"] == MIN_MEASURED_CASES
+    assert measured["groups"]["mapping"]["human_above"] == MIN_MEASURED_CASES
+    assert measured["groups"]["mapping"]["human_below"] == 0
     assert measured["confronto"] == "agente = regole, nessun confronto possibile"
     assert set(measured["groups"]) == {"mapping"}
 
@@ -324,13 +331,18 @@ def test_testset_fallback_until_minimum_and_separated_measurement(monkeypatch: p
 def test_a_source_is_never_in_selection_and_evaluation():
     from services.testset import _mapping_report
 
-    def mapping(source: str) -> dict:
+    def mapping(source: str, score: float = 0.98) -> dict:
         return {
             "profile": "order",
             "source_field": "ord_head",
             "target_type": "Order",
             "target_property": "source_key",
             "source_name": source,
+            "score": score,
+            "confidence_rule": "mapping.header_similarity@v1",
+            "correct": True,
+            "decision": "confirm",
+            "confidence_method": "human",
         }
 
     two = [mapping(source) for source in ("alpha", "beta") for _ in range(10)]
@@ -367,49 +379,147 @@ def test_a_source_is_never_in_selection_and_evaluation():
     assert single_threshold["measured"] is False
     assert float(single_threshold["threshold"]) == 0.75
 
+    two_sources = [mapping("alpha" if index < 15 else "beta") for index in range(MIN_MEASURED_CASES)]
+    _two_report, two_threshold = _mapping_report(two_sources)
+    assert two_threshold["measured"] is False
+    assert float(two_threshold["threshold"]) == 0.75
+
+    three = [mapping(f"fonte-{index % 3}") for index in range(MIN_MEASURED_CASES)]
+    three_report, three_threshold = _mapping_report(three)
+    assert three_threshold["measured"] is True
+    assert three_report["method"] == "leave_one_source_out"
+    assert three_report["human_above"] == MIN_MEASURED_CASES
+    assert three_report["human_below"] == 0
+
+    mixed = [mapping("alpha", score=0.90), mapping("beta", score=0.40)] * 5
+    mixed_report, mixed_threshold = _mapping_report(mixed)
+    assert mixed_threshold["measured"] is False
+    assert float(mixed_threshold["threshold"]) == 0.75
+    assert mixed_report["human_above"] == 5
+    assert mixed_report["human_below"] == 5
+
 
 def test_human_mapping_confirmation_is_a_decision(client: TestClient):
     login(client, "mapper")
     load_demo()
     with connect() as conn:
-        before = conn.execute("SELECT count(*) AS n FROM app.mapping_decisions").fetchone()["n"]
-    assert before == 0
+        bulk_before = conn.execute(
+            """
+            SELECT count(*) AS n FROM app.mapping_decisions
+            WHERE confidence_method = 'bulk_rule'
+            """
+        ).fetchone()["n"]
+        human_before = conn.execute(
+            """
+            SELECT count(*) AS n FROM app.mapping_decisions
+            WHERE confidence_method = 'human'
+            """
+        ).fetchone()["n"]
+    assert bulk_before > 0
+    assert human_before == 0
     mappings = client.get("/api/mappings").json()["mappings"]
     proposed = next(item for item in mappings if item["status"] == "proposed")
     confirmed = client.post(f"/api/mappings/{proposed['id']}/confirm")
     assert confirmed.status_code == 200, confirmed.text
+    order_mapping = next(
+        item for item in mappings
+        if item["source_name"] == "ordini" and item["source_field"] == "ord_head"
+    )
+    corrected = client.post(
+        f"/api/mappings/{order_mapping['id']}/confirm",
+        params={"target_property_corrected": "status"},
+    )
+    assert corrected.status_code == 200, corrected.text
+    rejected = client.post(f"/api/mappings/{proposed['id']}/reject")
+    assert rejected.status_code == 200, rejected.text
     with connect() as conn:
-        row = conn.execute(
+        human = conn.execute(
             """
-            SELECT decision, confidence_method, actor, actor_role, decided_at
+            SELECT decision, confidence_method, actor, actor_role, decided_at,
+                   source_name, source_field, target_property, target_property_corrected,
+                   score, confidence_rule
             FROM app.mapping_decisions
+            WHERE mapping_id = %s
+            ORDER BY decided_at, id
+            """,
+            (proposed["id"],),
+        ).fetchall()
+        latest_order = conn.execute(
             """
+            SELECT decision, confidence_method, target_property, target_property_corrected, score
+            FROM app.mapping_decisions
+            WHERE mapping_id = %s
+            ORDER BY decided_at DESC, id DESC
+            LIMIT 1
+            """,
+            (order_mapping["id"],),
         ).fetchone()
         with pytest.raises(psycopg.errors.RaiseException, match="append-only"):
             conn.execute("UPDATE app.mapping_decisions SET actor = 'altro'")
         conn.rollback()
         built = build_testset(conn)
-        stored = conn.execute(
+        stored_rows = conn.execute(
             """
             SELECT label_origin, decision_id, mapping_decision_id, label
             FROM app.labelled_cases
             WHERE testset_version = %s AND case_kind = 'mapping' AND label_origin = 'human_decision'
             """,
             (built["version"],),
-        ).fetchone()
+        ).fetchall()
+        report = evaluate_testset(conn)
         conn.rollback()
-    assert row["decision"] == "confirm"
-    assert row["confidence_method"] == "human"
-    assert row["actor"] == "mapper"
-    assert row["actor_role"] == "mapper"
-    assert row["decided_at"] is not None
-    assert stored["decision_id"] is None
-    assert stored["mapping_decision_id"] is not None
-    assert stored["label"]["confidence_method"] == "human"
-    assert stored["label"]["who"] == "mapper"
-    assert stored["label"]["when"]
-    assert stored["label"]["source_name"] == proposed["source_name"]
-    assert stored["label_origin"] == "human_decision"
+    assert [row["decision"] for row in human] == ["confirm", "reject"]
+    assert all(row["confidence_method"] == "human" for row in human)
+    assert human[0]["actor"] == "mapper"
+    assert human[0]["decided_at"] is not None
+    assert human[0]["source_name"] == proposed["source_name"]
+    assert human[0]["source_field"] == proposed["source_field"]
+    assert human[0]["target_property"] == proposed["target_property"]
+    assert float(human[0]["score"]) == pytest.approx(float(proposed["confidence"]))
+    assert human[0]["confidence_rule"]
+    assert human[1]["decision"] == "reject"
+    assert latest_order["confidence_method"] == "human"
+    assert latest_order["target_property_corrected"] == "status"
+    assert latest_order["target_property"] != "status"
+    assert len(stored_rows) == 1
+    assert all(row["decision_id"] is None for row in stored_rows)
+    assert all(row["mapping_decision_id"] is not None for row in stored_rows)
+    labels = [row["label"] for row in stored_rows]
+    assert all(label["confidence_method"] == "human" for label in labels)
+    assert all(label["who"] == "mapper" and label["when"] for label in labels)
+    assert all("score" in label and label["confidence_rule"] for label in labels)
+    assert proposed["source_name"] not in {label["source_name"] for label in labels}
+    order_label = next(label for label in labels if label["source_field"] == "ord_head")
+    assert order_label["correct"] is False
+    assert order_label["target_property_corrected"] == "status"
+    assert report["groups"]["mapping"]["bulk_rule"] == bulk_before - 1
+    assert report["groups"]["mapping"]["missing_source"] == 0
+
+
+def test_empty_source_is_counted_apart(monkeypatch: pytest.MonkeyPatch):
+    def labels():
+        rows = []
+        for source in ("alpha", "beta", None, "  "):
+            item = {
+                "case_kind": "mapping",
+                "profile": "order",
+                "source_field": "ord_head",
+                "target_type": "Order",
+                "target_property": "source_key",
+            }
+            if source is not None:
+                item["source_name"] = source
+            rows.append(item)
+        return rows
+
+    monkeypatch.setattr("services.testset.load_hand_labels", labels)
+    with connect() as conn:
+        build_testset(conn)
+        report = evaluate_testset(conn)
+        conn.rollback()
+    assert report["groups"]["mapping"]["missing_source"] == 2
+    assert report["groups"]["mapping"]["n"] == 2
+    assert report["groups"]["mapping"]["bulk_rule"] == 0
 
 
 def test_unknown_sources_and_agent_recommendations_are_not_labels(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
