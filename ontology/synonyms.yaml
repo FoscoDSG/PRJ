@@ -2,8 +2,11 @@
 # I numeri sono punteggi di regola, non probabilità e non una calibrazione.
 # Fonti usate per scrivere le voci: Odoo 17 (res_partner.xlsx, product_template.xls,
 # product_purchase.xls e le etichette italiane nei file it.po), HubSpot
-# (pagine delle proprietà) e Danea Easyfatt (pagina del tracciato XML).
-# Ogni voce ha source file:<nome> oppure doc:<url>. Shopify e FatturaPA non compaiono.
+# (pagine delle proprietà), Danea Easyfatt (pagina del tracciato XML) e
+# schema.org (Product.sku, Offer.price).
+# Ogni voce ha source file:<nome> oppure doc:<url>.
+# Shopify, FatturaPA e WooCommerce non compaiono. WooCommerce è stato rivisto
+# dopo la prova: non è un test indipendente.
 version: "1"
 rule: mapping.synonym@v1
 score_kind: "punteggio di regola, non probabilità"
@@ -25,6 +28,8 @@ sources:
     note: "Proprietà predefinite delle trattative HubSpot."
   - id: danea_easyfatt_ordini
     note: "Tag del tracciato Easyfatt-Xml documenti (ordini) e il nome italiano indicato da Danea accanto al tag."
+  - id: schema_org_product_offer
+    note: "schema.org Product.sku e Offer.price. Non è una fonte WooCommerce."
 entries:
   # Customer
   - {header: "Company Name", language: en, source: doc:https://knowledge.hubspot.com/properties/hubspot-crm-default-company-properties, profile: customer, target_type: Customer, target_property: company_name, score: 0.93}
@@ -65,6 +70,10 @@ entries:
   - {header: barcode, language: en, source: file:product_template.xls, profile: product, target_type: Product, target_property: source_key, score: 0.88}
   - {header: "Codice prodotto", language: it, source: doc:https://www.danea.it/software/easyfatt/xml/documenti/, profile: product, target_type: Product, target_property: source_key, score: 0.93}
   - {header: "Riferimento interno", language: it, source: file:addons/product/i18n/it.po, profile: product, target_type: Product, target_property: source_key, score: 0.93}
+  # schema.org Product.sku e Offer.price. La source non è WooCommerce.
+  - {header: sku, language: en, source: doc:https://schema.org/sku, profile: product, target_type: Product, target_property: source_key, score: 0.94}
+  - {header: "Regular price", language: en, source: doc:https://schema.org/price, profile: product, target_type: OrderLine, target_property: unit_price, score: 0.90}
+  - {header: price, language: en, source: doc:https://schema.org/price, profile: product, target_type: OrderLine, target_property: unit_price, score: 0.90}
   - {header: standard_price, language: en, source: file:product_template.xls, profile: product, target_type: Product, target_property: cost, score: 0.94}
   - {header: Cost, language: en, source: file:product_template.xls, profile: product, target_type: Product, target_property: cost, score: 0.92}
   - {header: Costo, language: it, source: file:addons/product/i18n/it.po, profile: product, target_type: Product, target_property: cost, score: 0.92}
@@ -98,6 +107,8 @@ entries:
   - {header: Quantity, language: en, source: file:product_purchase.xls, profile: order_line, target_type: OrderLine, target_property: quantity, score: 0.86}
   - {header: "Quantità prodotti", language: it, source: doc:https://www.danea.it/software/easyfatt/xml/documenti/, profile: order_line, target_type: OrderLine, target_property: quantity, score: 0.93}
   - {header: Price, language: en, source: doc:https://www.danea.it/software/easyfatt/xml/documenti/, profile: order_line, target_type: OrderLine, target_property: unit_price, score: 0.90}
+  - {header: price, language: en, source: doc:https://schema.org/price, profile: order_line, target_type: OrderLine, target_property: unit_price, score: 0.90}
+  - {header: "Regular price", language: en, source: doc:https://schema.org/price, profile: order_line, target_type: OrderLine, target_property: unit_price, score: 0.90}
   - {header: "Sales Price", language: en, source: file:product_template.xls, profile: order_line, target_type: OrderLine, target_property: unit_price, score: 0.84}
   - {header: "Prezzo di vendita", language: it, source: file:addons/product/i18n/it.po, profile: order_line, target_type: OrderLine, target_property: unit_price, score: 0.84}
   - {header: Code, language: en, source: doc:https://www.danea.it/software/easyfatt/xml/documenti/, profile: order_line, target_type: OrderLine, target_property: product_source_key, score: 0.90}

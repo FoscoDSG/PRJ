@@ -169,7 +169,7 @@ def test_prezzo_unitario_is_normalized_and_stays_unknown():
     )
 
 
-def test_synonym_sources_are_only_odoo_hubspot_and_danea():
+def test_synonym_sources_are_odoo_hubspot_danea_and_schema_org():
     book = synonym_book()
     origins = {entry.source for entry in book.entries} | {part.source for part in book.name_parts}
     assert origins <= ALLOWED_SOURCES
@@ -178,6 +178,56 @@ def test_synonym_sources_are_only_odoo_hubspot_and_danea():
         folded = source.casefold()
         assert "shopify" not in folded
         assert "fatturapa" not in folded
+        assert "woocommerce" not in folded
+
+
+def test_sku_regular_price_and_price_cite_schema_org_not_woocommerce():
+    book = synonym_book()
+    schema = [
+        entry
+        for entry in book.entries
+        if entry.source.startswith("doc:https://schema.org/")
+    ]
+    assert {(entry.normalized, entry.source) for entry in schema} >= {
+        ("sku", "doc:https://schema.org/sku"),
+        ("regular price", "doc:https://schema.org/price"),
+        ("price", "doc:https://schema.org/price"),
+    }
+    sku = next(entry for entry in schema if entry.normalized == "sku")
+    assert sku.target_type == "Product"
+    assert sku.target_property == "source_key"
+    assert sku.profile == "product"
+    prices = [entry for entry in schema if entry.normalized in {"regular price", "price"}]
+    assert prices
+    assert {(entry.target_type, entry.target_property) for entry in prices} == {
+        ("OrderLine", "unit_price")
+    }
+    for entry in book.entries:
+        folded = f"{entry.header} {entry.source}".casefold()
+        assert "woocommerce" not in folded
+    assert assigned_mapping("product", "SKU") == (
+        "Product",
+        "source_key",
+        0.94,
+        SYNONYM_HEADER_RULE,
+    )
+    assert assigned_mapping("product", "Regular price") == (
+        "OrderLine",
+        "unit_price",
+        0.90,
+        SYNONYM_HEADER_RULE,
+    )
+    assert assigned_mapping("product", "price") == (
+        "OrderLine",
+        "unit_price",
+        0.90,
+        SYNONYM_HEADER_RULE,
+    )
+    assert assigned_mapping("order_line", "Regular price")[:3] == (
+        "OrderLine",
+        "unit_price",
+        0.90,
+    )
 
 
 def test_normalized_holdout_header_is_not_a_synonym_key():

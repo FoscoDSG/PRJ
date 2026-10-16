@@ -3,6 +3,8 @@
 Roles come from headers the synonym and token rules already know, and from
 the shape of the cell values. Scores are hand-set rule scores, not
 probabilities. Shopify and FatturaPA column names are not inputs to these rules.
+Integers and one-decimal numbers count as amounts only on a price or amount
+header. A repeating key needs at least five distinct values.
 """
 
 from __future__ import annotations
@@ -50,9 +52,12 @@ _AMOUNT = re.compile(
     r"|[€$£]?-?\d+[.,]\d{2}"
     r")$"
 )
+# Integers and one decimal place (18, 45.0, 45,0). Not two-decimal amounts.
+_LOOSE_AMOUNT = re.compile(r"^[€$£]?-?\d+(?:[.,]\d)?$")
 _PHONE = re.compile(r"^\+?\d[\d\s\-()]{7,}\d$")
 _VALUE_SHARE = 0.80
 _KEY_MIN_CARDINALITY = 0.10
+_KEY_MIN_DISTINCT = 5
 
 
 @dataclass(frozen=True)
@@ -157,11 +162,25 @@ def _value_roles(values: list[object]) -> set[str]:
     return roles
 
 
+def _loose_amount(values: list[object]) -> bool:
+    """True when the cells are integers or one-decimal numbers.
+
+    The caller decides whether the header is already a price or an amount.
+    A quantity column must not reach this check.
+    """
+    sample = [str(value).strip() for value in values if value not in (None, "")]
+    if len(sample) < 2:
+        return False
+    hits = sum(bool(_LOOSE_AMOUNT.match(value.replace(" ", ""))) for value in sample)
+    return _enough(hits, len(sample))
+
+
 def _repeating_key(columns: list[str], rows: list[dict], blocked: set[str]) -> bool:
     """Identifier repeated on consecutive rows, not a date or an amount.
 
-    Cardinality is the share of distinct values over the rows: at least 10%
-    and below 100%, so a constant column and a unique column are not keys.
+    The column needs at least 5 distinct values. Cardinality is then the
+    share of distinct values over the rows: at least 10% and below 100%, so
+    a constant column and a unique column are not keys.
     """
     total = len(rows)
     if total < 2:
@@ -180,6 +199,8 @@ def _repeating_key(columns: list[str], rows: list[dict], blocked: set[str]) -> b
         if len(present) < 2:
             continue
         distinct = len(set(present))
+        if distinct < _KEY_MIN_DISTINCT:
+            continue
         share = distinct / total
         if share < _KEY_MIN_CARDINALITY or share >= 1:
             continue
@@ -199,12 +220,21 @@ def _present_roles(columns: list[str], rows: list[dict]) -> set[str]:
         header_roles = _header_roles(column)
         values = [row.get(column) for row in rows]
         value_roles = _value_roles(values)
-        if {"date", "amount"} & (header_roles | value_roles):
+        # 18 and 45.0 count as amounts only when the header is already a price
+        # or an amount. An integer quantity column stays a quantity.
+        loose_amount = (
+            "quantity" not in header_roles
+            and bool({"price", "amount"} & header_roles)
+            and _loose_amount(values)
+        )
+        if {"date", "amount"} & (header_roles | value_roles) or loose_amount:
             blocked.add(column)
         if "price" in header_roles or "quantity" in header_roles:
             value_roles.discard("amount")
         roles |= header_roles
         roles |= value_roles
+        if loose_amount:
+            roles.add("amount")
     if _repeating_key(columns, rows, blocked):
         roles.add("repeating_key")
     return roles
