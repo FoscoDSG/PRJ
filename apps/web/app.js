@@ -24,6 +24,7 @@ const {
   escapeHtml: esc,
   driftCard,
   mappingRow,
+  profileLabelText,
   orderCard,
   orderDetail,
   customerDetail,
@@ -145,6 +146,27 @@ document.querySelector("#materialize").addEventListener("click", async () => {
   }
 });
 
+function renderProfileLabels(mappings) {
+  const container = document.querySelector("#profile-labels");
+  container.replaceChildren();
+  const seen = new Map();
+  for (const item of mappings || []) {
+    if (!seen.has(item.source_name)) seen.set(item.source_name, item);
+  }
+  for (const item of seen.values()) {
+    const row = document.createElement("p");
+    row.className = "profile-label";
+    const source = document.createElement("span");
+    source.className = "profile-label-source";
+    source.textContent = String(item.source_name ?? "");
+    const text = document.createElement("span");
+    text.className = "profile-label-text";
+    text.textContent = profileLabelText(item);
+    row.append(source, document.createTextNode(" "), text);
+    container.append(row);
+  }
+}
+
 async function loadMappings() {
   const data = await api("/api/mappings");
   const drift = document.querySelector("#drift");
@@ -193,6 +215,7 @@ async function loadMappings() {
       loadMappings();
     });
   });
+  renderProfileLabels(data.mappings);
   const body = document.querySelector("#mappings");
   body.innerHTML = data.mappings.map(mappingRow).join("");
   body.querySelectorAll("button[data-confirm]").forEach((button) => {

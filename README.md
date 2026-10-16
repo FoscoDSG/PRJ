@@ -157,7 +157,7 @@ Una colonna si assegna in quest'ordine. La chiave italiana del profilo, scritta 
 
 `First Name` e `Last Name` sono parti di un nome composto. L'ontologia non ha `Person.given_name` né `Person.family_name`, quindi restano sotto 0,75 e non scrivono `Person.full_name`: una colonna non sostituisce l'altra.
 
-Il tipo di tabella si riconosce anche da intestazioni inglesi e dalle varianti di Odoo, HubSpot e Danea (per esempio `Amount` con `Deal Name`, `Internal Reference` con `Cost`, `Quantity On Hand`, `Delivery Lead Time`).
+Il tipo di tabella si riconosce anche da intestazioni inglesi e dalle varianti di Odoo, HubSpot e Danea (per esempio `Amount` con `Deal Name`, `Internal Reference` con `Cost`, `Quantity On Hand`, `Delivery Lead Time`). Se quei nomi non ci sono, `mapping.table_shape@v1` guarda la forma: ruoli già noti a sinonimi e token, più il tipo dei valori (date, importi, email, partita IVA, telefono) e una colonna identificativa ripetuta sulle righe. Il numero è un punteggio di regola, non una probabilità. Sotto 0,75 il file resta sconosciuto e non viene indovinato. Nell'interfaccia il tipo compare solo come etichetta fissa, per esempio `Probabile export ordini`, oppure `Tipo non riconosciuto`. Non c'è una percentuale.
 
 ### Fonti
 
