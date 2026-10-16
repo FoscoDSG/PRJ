@@ -11,15 +11,14 @@ import unicodedata
 
 _CAMEL_BOUNDARY = re.compile(r"([a-z0-9])([A-Z])")
 _ACRONYM_BOUNDARY = re.compile(r"([A-Z]+)([A-Z][a-z])")
-_SEPARATORS = re.compile(r"[_\-/\.\s]+")
 
 
 def normalize_header(value: str) -> str:
-    """Lowercase, strip accents, split camelCase, unify separators to one space."""
+    """Lowercase, strip accents, split camelCase, then turn every other mark into a space."""
     text = unicodedata.normalize("NFKD", str(value))
     text = "".join(character for character in text if not unicodedata.combining(character))
     text = _CAMEL_BOUNDARY.sub(r"\1 \2", text)
     text = _ACRONYM_BOUNDARY.sub(r"\1 \2", text)
     text = text.lower()
-    text = _SEPARATORS.sub(" ", text)
+    text = "".join(character if character.isalnum() else " " for character in text)
     return " ".join(text.split())

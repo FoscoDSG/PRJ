@@ -30,7 +30,9 @@ def test_normalize_header_strips_accents_and_splits_camel_case():
     assert normalize_header("Indirizzo e-mail") == "indirizzo e mail"
     assert normalize_header("quantità") == "quantita"
     assert normalize_header("Città") == "citta"
-    assert normalize_header("dell'imposta") == "dell'imposta"
+    assert normalize_header("dell'imposta") == "dell imposta"
+    assert normalize_header("Weight (lbs)") == "weight lbs"
+    assert normalize_header("In stock?") == "in stock"
     assert normalize_header("  Prezzo / Unitario. ") == "prezzo unitario"
 
 
@@ -123,6 +125,38 @@ def test_synonym_score_is_a_rule_score_for_the_documented_header():
     )
 
 
+def test_name_parts_stay_below_threshold_and_do_not_overwrite():
+    model = load_merged()
+    assert model.prop("Person", "given_name") is None
+    assert model.prop("Person", "family_name") is None
+    book = synonym_book()
+    parts = {(item.header, item.part) for item in book.name_parts}
+    assert ("First Name", "given_name") in parts
+    assert ("Last Name", "family_name") in parts
+    assert ("firstname", "given_name") in parts
+    assert ("lastname", "family_name") in parts
+    assert {item.part for item in book.name_parts if item.header in {"First Name", "firstname"}} == {"given_name"}
+    assert {item.part for item in book.name_parts if item.header in {"Last Name", "lastname"}} == {"family_name"}
+    stored: dict[str, str] = {}
+    row = {
+        "First Name": "Ada",
+        "Last Name": "Lovelace",
+        "firstname": "Grace",
+        "lastname": "Hopper",
+    }
+    for column, raw in row.items():
+        target_type, prop, score, rule = assigned_mapping("customer", column)
+        assert (target_type, prop) != ("Person", "full_name")
+        assert score < THRESHOLD
+        assert rule == UNKNOWN_HEADER_RULE
+        if score < THRESHOLD:
+            continue
+        assert prop not in stored
+        stored[prop] = raw
+    assert stored == {}
+    assert "full_name" not in stored
+
+
 def test_prezzo_unitario_is_normalized_and_stays_unknown():
     assert normalize_header("PrezzoUnitario") == "prezzo unitario"
     assert "prezzo unitario" not in synonym_headers()
@@ -136,10 +170,13 @@ def test_prezzo_unitario_is_normalized_and_stays_unknown():
 
 def test_synonym_sources_are_only_odoo_hubspot_and_danea():
     book = synonym_book()
-    assert {entry.source for entry in book.entries} <= ALLOWED_SOURCES
-    joined = " ".join(entry.source for entry in book.entries)
-    assert "shopify" not in joined
-    assert "fatturapa" not in joined
+    origins = {entry.source for entry in book.entries} | {part.source for part in book.name_parts}
+    assert origins <= ALLOWED_SOURCES
+    for source in origins:
+        assert source.startswith("file:") or source.startswith("doc:")
+        folded = source.casefold()
+        assert "shopify" not in folded
+        assert "fatturapa" not in folded
 
 
 def test_normalized_holdout_header_is_not_a_synonym_key():
