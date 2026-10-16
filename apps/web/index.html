@@ -30,7 +30,7 @@
   </section>
 
   <div id="app" hidden>
-    <nav>
+    <nav aria-label="Sezioni">
       <button type="button" data-view="mapping" class="active">Mapping</button>
       <button type="button" data-view="orders">Ordini</button>
       <button type="button" data-view="inbox">Inbox</button>
@@ -81,7 +81,7 @@
     <section id="view-audit" class="panel" hidden>
       <h2>Audit</h2>
       <p class="lede">Sola lettura. Chi, quando (ora di Roma), cosa e quale ordine.</p>
-      <div class="row">
+      <div class="row filters">
         <label>Ordine <input id="audit-order" /></label>
         <label>Utente <input id="audit-user" /></label>
         <label>Lotto <input id="audit-batch" /></label>
@@ -90,7 +90,7 @@
         <button type="button" id="audit-apply">Filtra</button>
       </div>
       <div id="audit" class="stack"></div>
-      <div class="row">
+      <div class="row pager">
         <button type="button" id="audit-prev" class="ghost">Precedenti</button>
         <span id="audit-page"></span>
         <button type="button" id="audit-next" class="ghost">Successivi</button>
