@@ -25,6 +25,8 @@ ALLOWED_SOURCES = frozenset({
     "doc:https://knowledge.hubspot.com/properties/hubspots-default-deal-properties",
     "doc:https://knowledge.hubspot.com/it/records/search-your-crm",
     "doc:https://www.danea.it/software/easyfatt/xml/documenti/",
+    "doc:https://schema.org/sku",
+    "doc:https://schema.org/price",
 })
 _NAME_PARTS = frozenset({"given_name", "family_name"})
 
@@ -89,7 +91,7 @@ def _load() -> SynonymBook:
         folded = source.casefold()
         if not (source.startswith("file:") or source.startswith("doc:")):
             raise ValueError(f"Origine senza file: o doc:: {header}")
-        if "shopify" in folded or "fatturapa" in folded or "fattura-pa" in folded:
+        if any(name in folded for name in ("shopify", "fatturapa", "fattura-pa", "woocommerce")):
             raise ValueError(f"Origine non ammessa: {source}")
         if source not in ALLOWED_SOURCES:
             raise ValueError(f"Fonte sinonimo non ammessa: {source}")

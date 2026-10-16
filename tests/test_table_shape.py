@@ -9,7 +9,7 @@ from fastapi.testclient import TestClient
 from apps.api.main import app
 from services.mapping.engine import THRESHOLD, assigned_mapping, detect_profile
 from services.mapping.labels import PROFILE_LABELS, UNKNOWN_PROFILE_LABEL, profile_label
-from services.mapping.shape import TABLE_SHAPE_RULE, recognize_table, shape_rules
+from services.mapping.shape import TABLE_SHAPE_RULE, _present_roles, recognize_table, shape_rules
 from services.testset import MIN_MEASURED_CASES, MIN_MEASURED_SOURCES
 from tests.test_flow import login
 
@@ -64,7 +64,10 @@ def test_repeating_identifier_with_quantity_and_price_is_order_lines():
     rows = [
         {"orderNumber": "100", "orderQuantity": "1", "price": "10.00"},
         {"orderNumber": "100", "orderQuantity": "2", "price": "5.00"},
-        {"orderNumber": "100", "orderQuantity": "4", "price": "1.50"},
+        {"orderNumber": "101", "orderQuantity": "4", "price": "1.50"},
+        {"orderNumber": "102", "orderQuantity": "1", "price": "2.00"},
+        {"orderNumber": "103", "orderQuantity": "3", "price": "4.00"},
+        {"orderNumber": "104", "orderQuantity": "2", "price": "6.00"},
     ]
     found = recognize_table(columns, rows)
     assert found.accepted is True
@@ -279,6 +282,94 @@ def test_two_emails_in_a_thousand_rows_do_not_type_the_column():
     found = recognize_table(["Appunto", "Recapito"], rows)
     assert found.profile != "customer"
     assert found.accepted is False
+
+
+def test_integer_and_one_decimal_amounts_require_a_price_header():
+    priced = recognize_table(
+        ["price", "orderDate"],
+        [
+            {"price": "18", "orderDate": "2024-01-02"},
+            {"price": "45.0", "orderDate": "2024-01-03"},
+        ],
+    )
+    assert priced.accepted is True
+    assert priced.profile == "order"
+    assert priced.score == 0.82
+    plain = recognize_table(
+        ["Nota", "Giorno indicato"],
+        [
+            {"Nota": "18", "Giorno indicato": "02/03/24"},
+            {"Nota": "45.0", "Giorno indicato": "15/03/2024"},
+        ],
+    )
+    assert plain.profile != "order"
+    assert plain.accepted is False
+
+
+def test_woocommerce_regular_price_file_stays_unrecognized():
+    """Regular price is WooCommerce's own header, not schema.org price."""
+    columns = ["SKU", "Name", "Regular price"]
+    rows = [
+        {"SKU": "WC-1", "Name": "Tazza", "Regular price": "18"},
+        {"SKU": "WC-2", "Name": "Piatto", "Regular price": "45.0"},
+    ]
+    found = recognize_table(columns, rows)
+    assert found.accepted is False
+    assert found.profile == "unknown"
+    assert found.score < THRESHOLD
+    assert profile_label(found.profile) == UNKNOWN_PROFILE_LABEL
+    assert detect_profile(columns, rows) == "unknown"
+    assert "price" not in _present_roles(columns, rows)
+
+
+def test_integer_quantity_column_does_not_become_a_price():
+    columns = ["orderQuantity", "orderDate"]
+    rows = [
+        {"orderQuantity": "18", "orderDate": "2024-01-02"},
+        {"orderQuantity": "45", "orderDate": "2024-01-03"},
+        {"orderQuantity": "7", "orderDate": "2024-01-04"},
+    ]
+    roles = _present_roles(columns, rows)
+    assert "price" not in roles
+    assert "amount" not in roles
+    found = recognize_table(columns, rows)
+    assert found.profile != "order_line"
+    assert found.profile != "order"
+    assert found.accepted is False
+
+
+def test_three_row_odoo_customers_have_no_repeating_key():
+    """A short res.partner extract: company and country repeat, three rows do not."""
+    columns = ["complete_name", "email_formatted", "vat", "commercial_company_name", "country_id"]
+    rows = [
+        {
+            "complete_name": "Azure Interior",
+            "email_formatted": "azure@example.com",
+            "vat": "IT12345678901",
+            "commercial_company_name": "Azure Interior",
+            "country_id": "Italy",
+        },
+        {
+            "complete_name": "Brandon Freeman",
+            "email_formatted": "brandon@example.com",
+            "vat": "IT10987654321",
+            "commercial_company_name": "Azure Interior",
+            "country_id": "Italy",
+        },
+        {
+            "complete_name": "Colleen Diaz",
+            "email_formatted": "colleen@example.com",
+            "vat": "IT10293847561",
+            "commercial_company_name": "Azure Interior",
+            "country_id": "France",
+        },
+    ]
+    roles = _present_roles(columns, rows)
+    assert "repeating_key" not in roles
+    found = recognize_table(columns, rows)
+    assert found.accepted is True
+    assert found.profile == "customer"
+    assert found.profile != "order_line"
 
 
 def test_italian_amount_and_date_formats():

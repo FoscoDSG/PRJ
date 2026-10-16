@@ -3,6 +3,9 @@
 # Le combinazioni vengono solo da Odoo (partner, prodotto, giacenza, supplierinfo),
 # HubSpot (contatti e trattative), Danea (testata e righe) e schema.org
 # (Order, Offer, Invoice, Person, Organization).
+# In services/mapping/shape.py: un intero o un decimale a una cifra (18, 45.0)
+# è un importo solo se l'intestazione è già un prezzo o un importo.
+# Una chiave ripetuta ha almeno 5 valori distinti.
 version: "1"
 rule: mapping.table_shape@v1
 score_kind: "punteggio di regola, non probabilità"
