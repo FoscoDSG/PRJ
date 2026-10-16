@@ -410,7 +410,7 @@ const { orderDetail, customerDetail, recommendationConfidence, showFixtureButton
 function linesOf(html, property) {
   const item = html.split("<li>").find((part) => part.includes(`<code>${property}</code>`));
   if (!item) return [];
-  return [...item.matchAll(/<p>([^<]*)<\/p>/g)].map((match) => match[1]);
+  return [...item.matchAll(/<p\b[^>]*>([^<]*)<\/p>/g)].map((match) => match[1]);
 }
 const unknown = orderDetail({
   business_key: "1024",

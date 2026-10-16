@@ -166,9 +166,9 @@
 
   function factList(facts) {
     const items = (facts || []).map((fact) => {
-      return `<li><code>${escapeHtml(fact.property)}</code>: ${escapeHtml(factValue(fact.value))}<p>${escapeHtml(provenanceLabel(fact.source_class))}</p><p>${escapeHtml(confidenceLabel(fact))}</p></li>`;
+      return `<li><code>${escapeHtml(fact.property)}</code>: ${escapeHtml(factValue(fact.value))}<p>${escapeHtml(provenanceLabel(fact.source_class))}</p><p class="fact-confidence">${escapeHtml(confidenceLabel(fact))}</p></li>`;
     });
-    return `<ul class="edges">${items.join("") || "<li>Nessun fatto</li>"}</ul>`;
+    return `<ul class="edges fact-list">${items.join("") || "<li>Nessun fatto</li>"}</ul>`;
   }
 
   function mappingRow(item) {
@@ -179,7 +179,7 @@
         <td>${escapeHtml(item.source_name)}</td>
         <td><code>${escapeHtml(item.source_field)}</code></td>
         <td>${escapeHtml(item.target_type)}.${escapeHtml(item.target_property)}</td>
-        <td>${escapeHtml(mappingConfidence(item))}</td>
+        <td class="mapping-confidence">${escapeHtml(mappingConfidence(item))}</td>
         <td>${pill(item.status)}</td>
         <td>${actions}</td>
       </tr>`;
@@ -187,7 +187,7 @@
 
   function orderCard(order) {
     return `<article class="card">
-      <h3>Ordine ${escapeHtml(order.business_key)}</h3>
+      <h3 class="card-title">Ordine ${escapeHtml(order.business_key)}</h3>
       <div class="meta">${pill(order.status || "n/d")}<span class="pill">shortage ${escapeHtml(order.shortage_qty ?? 0)}</span></div>
       <p>${escapeHtml(order.customer_name || "Cliente non collegato")} · importo ${escapeHtml(order.amount)} · margine ${escapeHtml(order.margin ?? "n/d")}</p>
       <button type="button" data-order="${escapeHtml(order.id)}">Apri scheda</button>
@@ -241,7 +241,7 @@
   }
 
   function readableCard(item) {
-    return `<article class="card"><div class="meta">${pill(item.action)}<span class="pill">${escapeHtml(item.who || "")}</span></div><p>${escapeHtml(item.when || "")}</p><p>${escapeHtml(item.what || item.action || "")}</p><p>Ordine ${escapeHtml(item.order || "n/d")}</p><p>${escapeHtml(item.detail || "")}</p></article>`;
+    return `<article class="card"><div class="meta">${pill(item.action)}<span class="pill">${escapeHtml(item.who || "")}</span></div><p class="audit-when">${escapeHtml(item.when || "")}</p><p class="audit-what">${escapeHtml(item.what || item.action || "")}</p><p class="audit-order">Ordine ${escapeHtml(item.order || "n/d")}</p><p class="audit-detail">${escapeHtml(item.detail || "")}</p></article>`;
   }
 
   function inboxCard(item, role) {
@@ -259,12 +259,12 @@
       ? '<button type="button" data-act="execute">Esegui</button>'
       : "";
     const approveButton = blocked
-      ? `<button type="button" data-act="approve" disabled>Approva</button> <span>${escapeHtml(blocked)}</span>`
+      ? `<button type="button" data-act="approve" disabled>Approva</button> <span class="blocked-reason">${escapeHtml(blocked)}</span>`
       : `<button type="button" data-act="approve">Approva</button>`;
     const buttons = canDecide
       ? `<label>Quantità acquisto <input data-qty value="${escapeHtml(qty)}" /></label>
       <label>Motivo del rifiuto <input data-reason required minlength="5" maxlength="500" /></label>
-      <div>
+      <div class="decision-bar">
         ${approveButton}
         <button type="button" class="ghost" data-act="modify">Modifica</button>
         <button type="button" class="ghost" data-act="reject">Rifiuta</button>
@@ -273,13 +273,13 @@
       : "<p>Sola lettura: l'operatore non approva.</p>";
     return `<article class="card" data-id="${escapeHtml(item.id)}" data-hash="${escapeHtml(item.evidence_hash)}">
       <div class="meta">${pill(item.status)}${cfo}<span class="pill">${escapeHtml(item.risk)}</span></div>
-      <h3>Ordine ${escapeHtml(item.order_key)}</h3>
-      <h3>Anteprima di approvazione</h3>
+      <h3 class="card-title">Ordine ${escapeHtml(item.order_key)}</h3>
+      <h3 class="section-heading">Anteprima di approvazione</h3>
       <p>${escapeHtml(item.problem)}</p>
-      <p>${escapeHtml(confidenceLabel(item))}</p>
+      <p class="confidence-badge">${escapeHtml(confidenceLabel(item))}</p>
       <p class="formula">${escapeHtml(preview.formula || "")}</p>
-      <ul>${evidence}</ul>
-      <h3>Cosa verrà approvato</h3>
+      <ul class="fact-list">${evidence}</ul>
+      <h3 class="section-heading">Cosa verrà approvato</h3>
       <pre>${escapeHtml(JSON.stringify(payloads, null, 2))}</pre>
       ${buttons}
     </article>`;
