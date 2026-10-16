@@ -9,10 +9,14 @@ import psycopg
 from psycopg.types.json import Json
 
 from services.audit import record
+from services.mapping.headers import normalize_header
+from services.mapping.synonyms import SYNONYM_RULE, lookup_synonym
 from services.text import digest
 
 THRESHOLD = 0.75
 HEADER_SIMILARITY_RULE = "mapping.header_similarity@v1"
+NORMALIZED_HEADER_RULE = "mapping.normalized_header@v1"
+SYNONYM_HEADER_RULE = SYNONYM_RULE
 UNKNOWN_HEADER_RULE = "mapping.unknown_header@v1"
 
 # profile -> normalized column -> (target type, property, confidence)
@@ -57,25 +61,49 @@ PROFILES: dict[str, dict[str, tuple[str, str, float]]] = {
     },
 }
 
+# Signals are normalized header keys. Italian names stay; English and
+# variant names come from Odoo 17, HubSpot and Danea, not from the hold-out.
 SIGNALS: dict[str, set[str]] = {
-    "supplier": {"ritardo_giorni", "forn"},
-    "stock": {"giacenza"},
-    "order_line": {"qty", "quantita"},
-    "order": {"importo", "ord_head"},
-    "customer": {"ragione_sociale", "piva"},
-    "product": {"descrizione", "costo"},
+    "supplier": {
+        "ritardo giorni", "forn", "delivery lead time", "delay", "vendor product code",
+    },
+    "stock": {"giacenza", "quantity on hand", "qty available"},
+    "order_line": {"qty", "quantita", "quantita prodotti", "quantity"},
+    "order": {
+        "importo", "ord head", "amount", "deal name", "dealname",
+        "total without tax", "numero documento",
+    },
+    "customer": {
+        "ragione sociale", "piva", "partita iva", "vat", "tax id",
+        "customer vat code", "is a company",
+    },
+    "product": {
+        "descrizione", "costo", "default code", "internal reference",
+        "standard price", "cost",
+    },
+    "shipment": {"tracking number", "numero di tracciatura spedizione", "transport date time"},
 }
+
+_ORDER_AMOUNT = {"importo", "amount", "total without tax"}
+_SUPPLIER_REQUIRED = {"ritardo giorni", "forn", "delivery lead time", "delay", "vendor product code"}
+
+
+def _present_headers(columns: list[str]) -> set[str]:
+    return {normalize_header(column) for column in columns if column and str(column).strip()}
 
 
 def detect_profile(columns: list[str]) -> str:
-    present = set(columns)
-    for name in ("supplier", "stock", "order_line", "order", "customer", "product"):
-        if SIGNALS[name] & present:
-            if name == "order" and "importo" not in present:
-                continue
-            if name == "supplier" and "ritardo_giorni" not in present and "forn" not in present:
-                continue
-            return name
+    present = _present_headers(columns)
+    for name in ("supplier", "stock", "order_line", "order", "customer", "product", "shipment"):
+        if not (SIGNALS[name] & present):
+            continue
+        if name == "stock" and "giacenza" not in present and (SIGNALS["product"] & present):
+            continue
+        if name == "order" and not (_ORDER_AMOUNT & present):
+            continue
+        if name == "supplier" and not (_SUPPLIER_REQUIRED & present):
+            continue
+        return name
     return "unknown"
 
 
@@ -197,13 +225,79 @@ def propose_mappings(
     return {"profile": profile, "mappings": created, "drift": drift, "column_hash": column_hash}
 
 
+def _profile_by_normalized_key(profile: str, normalized: str) -> tuple[str, str, float] | None:
+    found = []
+    for key, value in PROFILES.get(profile, {}).items():
+        if normalize_header(key) == normalized:
+            found.append(value)
+    if not found:
+        return None
+    targets = {(item[0], item[1]) for item in found}
+    if len(targets) != 1:
+        return None
+    return max(found, key=lambda item: item[2])
+
+
+def _unique_across_profiles(normalized: str) -> tuple[str, str, float, str] | None:
+    """When the table type is unknown, use a normalized key only if one target wins."""
+    found: list[tuple[str, str, float]] = []
+    for profile in PROFILES:
+        match = _profile_by_normalized_key(profile, normalized)
+        if match is not None:
+            found.append(match)
+    targets = {(item[0], item[1]) for item in found}
+    if len(targets) != 1:
+        return None
+    target_type, target_property, confidence = max(found, key=lambda item: item[2])
+    return target_type, target_property, confidence, NORMALIZED_HEADER_RULE
+
+
 def assigned_mapping(profile: str, column: str) -> tuple[str, str, float, str]:
-    """Target and rule id for one source column. The rule id includes its version."""
+    """Target and rule id for one source column. The rule id includes its version.
+
+    Scores are rule scores, not probabilities. An exact Italian key keeps
+    mapping.header_similarity@v1. A normalized form of that key uses
+    mapping.normalized_header@v1. A synonym from the versioned dictionary
+    uses mapping.synonym@v1.
+    """
     known = PROFILES.get(profile, {})
     if column in known:
         target_type, target_property, confidence = known[column]
         return target_type, target_property, confidence, HEADER_SIMILARITY_RULE
+    normalized = normalize_header(column)
+    if not normalized:
+        return "Document", "title", 0.42, UNKNOWN_HEADER_RULE
+    if profile in PROFILES:
+        match = _profile_by_normalized_key(profile, normalized)
+        if match is not None:
+            target_type, target_property, confidence = match
+            return target_type, target_property, confidence, NORMALIZED_HEADER_RULE
+    elif profile in ("", "unknown"):
+        unique = _unique_across_profiles(normalized)
+        if unique is not None:
+            return unique
+    synonym = lookup_synonym(profile, normalized)
+    if synonym is not None:
+        return synonym.target_type, synonym.target_property, synonym.score, SYNONYM_HEADER_RULE
+    if profile in ("", "unknown"):
+        synonym = _unique_synonym(normalized)
+        if synonym is not None:
+            return synonym.target_type, synonym.target_property, synonym.score, SYNONYM_HEADER_RULE
     return "Document", "title", 0.42, UNKNOWN_HEADER_RULE
+
+
+def _unique_synonym(normalized: str):
+    from services.mapping.synonyms import synonym_book
+
+    hits = [entry for entry in synonym_book().entries if entry.normalized == normalized]
+    if not hits:
+        return None
+    best = max(entry.score for entry in hits)
+    chosen = [entry for entry in hits if entry.score == best]
+    targets = {(entry.target_type, entry.target_property) for entry in chosen}
+    if len(targets) != 1:
+        return None
+    return chosen[0]
 
 
 def rule_id_for(profile: str, column: str) -> str:

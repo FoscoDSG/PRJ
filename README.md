@@ -151,6 +151,18 @@ ieol reset-password approver
 
 Il comando legge `IEOL_SEED_<RUOLO>_PASSWORD` (`admin`, `mapper`, `operator`, `approver`), rifiuta una password uguale al nome del ruolo e riscrive l'hash con argon2id. Gira come owner di `DATABASE_URL`, non come `ieol_app`. Non stampa la password. Se la variabile o l'utente mancano, si ferma senza scrivere.
 
+## Mapping delle colonne
+
+Una colonna si assegna in quest'ordine. La chiave italiana del profilo, scritta com'è (`email`, `ord_head`, `cod_art`), usa `mapping.header_similarity@v1`. La stessa chiave con maiuscole, accenti, spazi, trattini o camelCase usa `mapping.normalized_header@v1` e tiene lo stesso bersaglio e lo stesso punteggio. Un sinonimo di `ontology/synonyms.yaml` usa `mapping.synonym@v1`. Il numero è un punteggio di regola, non una probabilità. Se non c'è un bersaglio unico la colonna resta `Document.title` a 0,42 con `mapping.unknown_header@v1`.
+
+Il tipo di tabella si riconosce anche da intestazioni inglesi e dalle varianti di Odoo, HubSpot e Danea (per esempio `Amount` con `Deal Name`, `Internal Reference` con `Cost`, `Quantity On Hand`, `Delivery Lead Time`).
+
+### Fonti
+
+I sinonimi sono costruiti solo da Odoo 17 (`res_partner.xlsx`, `product_template.xls`, `product_purchase.xls` per product.supplierinfo), HubSpot (contatti, aziende, trattative) e Danea Easyfatt (tracciato XML degli ordini). Shopify (export ordini) e FatturaPA 1.2.2 sono tenute fuori dal dizionario. Quelle intestazioni stanno in `evals/holdout_headers.yaml` e servono solo alla misura PROVVISORIA.
+
+La misura hold-out usa 2 fonti. Il minimo per una soglia misurata resta 30 casi umani e 3 fonti distinte. Con 2 fonti la soglia resta non misurata e vale il ripiego 0,75 (`calibrated=false`). Lo script `python scripts/holdout_mapping.py` stampa la distribuzione e non scrive su `app.mapping_decisions` né su `mapping_thresholds`.
+
 ## Migrazioni
 
 I file in `db/migrations/` sono numerati e si applicano in ordine. Il runner registra le versioni in `public.schema_migrations`. È un esecutore SQL piccolo, senza Alembic: lo schema è già SQL e non serve un secondo modello da generare.
