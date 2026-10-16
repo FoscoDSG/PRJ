@@ -24,6 +24,7 @@ ACTION_LABELS = {
     "pii_unmask": "Smascheramento dati personali",
     "pii_read": "Lettura dati personali",
     "pii_mask": "Mascheramento dati personali",
+    "evidence_key_rotate": "Rotazione chiave evidenze",
     "approve": "Approvazione",
     "reject": "Rifiuto",
     "modify": "Modifica",

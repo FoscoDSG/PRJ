@@ -194,7 +194,17 @@ def confirm_mapping(conn: psycopg.Connection, mapping_id: str, actor: str, role:
         "UPDATE app.field_mappings SET status = 'confirmed' WHERE id = %s",
         (mapping_id,),
     )
-    return {"id": mapping_id, "status": "confirmed"}
+    decision_id = str(uuid.uuid4())
+    conn.execute(
+        """
+        INSERT INTO app.mapping_decisions (
+          id, mapping_id, decision, confidence_method, actor, actor_role
+        )
+        VALUES (%s, %s, 'confirm', 'human', %s, %s)
+        """,
+        (decision_id, mapping_id, actor, role),
+    )
+    return {"id": mapping_id, "status": "confirmed", "decision_id": decision_id}
 
 
 def reject_mapping(conn: psycopg.Connection, mapping_id: str, role: str) -> dict:

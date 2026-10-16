@@ -3,9 +3,11 @@
 Outcomes come from human decisions, from a hand-written fixture, or from
 synthetic fixtures used only to exercise the code. Synthetic cases are stored
 and are excluded from the 30-case minimum and from threshold selection.
-The agent is not a source of labels. Evaluation reads the labelled cases,
-not the decisions log. The running agent is the rules baseline, so the report
-does not compare the two.
+A mapping confirmation is its own decision: confidence_method human, who, when.
+Mapping folds are split by source. A source is never in both threshold
+selection and evaluation. The agent is not a source of labels. Evaluation
+reads the labelled cases, not the decisions log. The running agent is the
+rules baseline, so the report does not compare the two.
 """
 
 from __future__ import annotations
@@ -29,6 +31,7 @@ _LABEL_ORIGINS = frozenset({"hand_written", "synthetic"})
 ROOT = Path(__file__).resolve().parents[1]
 HAND_LABELS = ROOT / "evals" / "hand_labels.json"
 MIN_MEASURED_CASES = 30
+_SOURCE_FOLDS = 5
 TESTSET_LOCK_KEY = 0x49454F4C54534554
 _Z = 1.96
 
@@ -71,13 +74,25 @@ def build_testset(conn: psycopg.Connection) -> dict[str, Any]:
         (version, recommendation_count + mapping_count, recommendation_count, mapping_count),
     )
     for item in recommendations:
-        _insert_case(conn, version, "recommendation", "human_decision", item["decision_id"], item["label"])
+        _insert_case(
+            conn, version, "recommendation", "human_decision",
+            item["decision_id"], None, item["label"],
+        )
     for item in mappings:
-        _insert_case(conn, version, "mapping", "human_decision", item["decision_id"], item["label"])
+        _insert_case(
+            conn, version, "mapping", "human_decision",
+            None, item["decision_id"], item["label"],
+        )
     for item in hand_recommendations:
-        _insert_case(conn, version, "recommendation", _fixture_origin(item), None, _recommendation_label(item))
+        _insert_case(
+            conn, version, "recommendation", _fixture_origin(item),
+            None, None, _recommendation_label(item),
+        )
     for item in hand_mappings:
-        _insert_case(conn, version, "mapping", _fixture_origin(item), None, _mapping_label(item))
+        _insert_case(
+            conn, version, "mapping", _fixture_origin(item),
+            None, None, _mapping_label(item),
+        )
     return {
         "version": int(version),
         "case_count": recommendation_count + mapping_count,
@@ -159,44 +174,44 @@ def _human_recommendation_cases(conn: psycopg.Connection) -> list[dict[str, Any]
 def _human_mapping_cases(conn: psycopg.Connection) -> list[dict[str, Any]]:
     rows = conn.execute(
         """
-        SELECT DISTINCT d.id::text AS decision_id, fm.source_name, fm.source_field,
-               fm.target_type, fm.target_property, fm.profile
-        FROM app.decisions_log d
-        JOIN app.decisions_log_sources s ON s.decision_id = d.id
-        JOIN app.landing_rows lr ON lr.batch_id = s.batch_id AND lr.row_index = s.row_index
-        JOIN app.landing_batches lb ON lb.id = lr.batch_id
-        JOIN app.field_mappings fm
-          ON fm.source_name = lb.source_name
-         AND fm.status = 'confirmed'
-         AND fm.valid_to IS NULL
-         AND jsonb_exists(lr.data, fm.source_field)
-        WHERE d.action_label IS NOT NULL
-          AND d.context_snapshot IS NOT NULL
-          AND NOT EXISTS (
-            SELECT 1 FROM app.decisions_log_sources unknown_source
-            WHERE unknown_source.decision_id = d.id
-              AND unknown_source.confidence_method = 'unknown'
-          )
-        ORDER BY d.id::text, fm.source_name, fm.source_field
+        SELECT DISTINCT ON (md.mapping_id)
+               md.id::text AS decision_id, md.actor, md.decided_at, md.confidence_method,
+               fm.source_name, fm.source_field, fm.target_type, fm.target_property, fm.profile
+        FROM app.mapping_decisions md
+        JOIN app.field_mappings fm ON fm.id = md.mapping_id
+        WHERE md.decision = 'confirm'
+          AND md.confidence_method = 'human'
+          AND fm.status = 'confirmed'
+          AND fm.valid_to IS NULL
+        ORDER BY md.mapping_id, md.decided_at DESC, md.id DESC
         """
     ).fetchall()
+    ordered = sorted(rows, key=lambda row: (row["source_name"] or "", row["source_field"] or "", row["decision_id"]))
     return [
         {
             "decision_id": row["decision_id"],
             "label": _mapping_label(row),
         }
-        for row in rows
+        for row in ordered
     ]
 
 
 def _mapping_label(item: dict[str, Any]) -> dict[str, Any]:
-    return {
+    label = {
         "profile": item.get("profile"),
         "source_field": item.get("source_field"),
         "target_type": item.get("target_type"),
         "target_property": item.get("target_property"),
         "source_name": item.get("source_name"),
     }
+    if item.get("confidence_method"):
+        label["confidence_method"] = item["confidence_method"]
+    if item.get("actor"):
+        label["who"] = item["actor"]
+    decided_at = item.get("decided_at")
+    if decided_at is not None:
+        label["when"] = decided_at.isoformat()
+    return label
 
 
 def _recommendation_label(item: dict[str, Any]) -> dict[str, Any]:
@@ -212,14 +227,17 @@ def _insert_case(
     kind: str,
     origin: str,
     decision_id: str | None,
+    mapping_decision_id: str | None,
     label: dict[str, Any],
 ) -> None:
     conn.execute(
         """
-        INSERT INTO app.labelled_cases (id, testset_version, case_kind, label_origin, decision_id, label)
-        VALUES (%s, %s, %s, %s, %s, %s)
+        INSERT INTO app.labelled_cases (
+          id, testset_version, case_kind, label_origin, decision_id, mapping_decision_id, label
+        )
+        VALUES (%s, %s, %s, %s, %s, %s, %s)
         """,
-        (str(uuid.uuid4()), version, kind, origin, decision_id, Json(label)),
+        (str(uuid.uuid4()), version, kind, origin, decision_id, mapping_decision_id, Json(label)),
     )
 
 
@@ -246,63 +264,125 @@ def _best_threshold(cases: list[dict[str, Any]]) -> float:
     return best_t
 
 
+def _case_source(label: dict[str, Any]) -> str:
+    name = label.get("source_name")
+    if name is None or str(name).strip() == "":
+        return ""
+    return str(name)
+
+
+def _source_folds(cases: list[dict[str, Any]]) -> tuple[str, list[dict[str, Any]]]:
+    """Group by source. Fewer than five sources: leave one source out."""
+    grouped: dict[str, list[int]] = {}
+    for index, label in enumerate(cases):
+        grouped.setdefault(_case_source(label), []).append(index)
+    sources = sorted(grouped)
+    if len(sources) < 2:
+        return "single_source", []
+    if len(sources) < _SOURCE_FOLDS:
+        held_groups = [[source] for source in sources]
+        method = "leave_one_source_out"
+    else:
+        buckets: list[list[str]] = [[] for _ in range(_SOURCE_FOLDS)]
+        for index, source in enumerate(sources):
+            buckets[index % _SOURCE_FOLDS].append(source)
+        held_groups = [bucket for bucket in buckets if bucket]
+        method = "source_kfold5"
+    folds = []
+    for held in held_groups:
+        held_set = set(held)
+        train_sources = [source for source in sources if source not in held_set]
+        folds.append({
+            "train": [index for source in train_sources for index in grouped[source]],
+            "test": [index for source in held for index in grouped[source]],
+            "train_sources": train_sources,
+            "test_sources": list(held),
+        })
+    return method, folds
+
+
+def _fold_report(fold: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "sources": len(fold["test_sources"]),
+        "cases": len(fold["test"]),
+        "selection_sources": len(fold["train_sources"]),
+        "selection_cases": len(fold["train"]),
+        "test_sources": list(fold["test_sources"]),
+        "selection_source_names": list(fold["train_sources"]),
+    }
+
+
 def _mapping_report(cases: list[dict[str, Any]]) -> tuple[dict[str, Any], dict[str, Any]]:
     count = len(cases)
     if count < 2:
         report = _empty_metrics("too_small_for_split", separated=False)
         threshold = _fallback_threshold(count, "too_small_for_split", [])
         return report, threshold
-    if count < MIN_MEASURED_CASES:
-        folds = [[index] for index in range(count)]
-        method = "leave_one_out"
-        measured = False
-        saved_method = "fallback"
-    else:
-        folds = _kfolds(count, 5)
-        method = "kfold5_f1_v1"
-        measured = True
-        saved_method = "kfold5_f1_v1"
+    method, folds = _source_folds(cases)
+    if not folds:
+        report = _empty_metrics(method, separated=False)
+        report["n"] = count
+        threshold = _fallback_threshold(
+            count,
+            method,
+            [],
+            why="una sola fonte: la soglia non si separa dalla valutazione",
+        )
+        return report, threshold
     y_true: list[bool] = []
     y_pred: list[bool] = []
     chosen: list[float] = []
+    fold_reports: list[dict[str, Any]] = []
     for fold in folds:
-        held = set(fold)
-        train = [cases[index] for index in range(count) if index not in held]
-        test = [cases[index] for index in fold]
+        train_sources = set(fold["train_sources"])
+        test_sources = set(fold["test_sources"])
+        if train_sources & test_sources:
+            raise RuntimeError("una fonte sta nella scelta della soglia e nella valutazione")
+        train = [cases[index] for index in fold["train"]]
+        test = [cases[index] for index in fold["test"]]
+        if not train or not test:
+            raise RuntimeError("fold senza casi di training o di valutazione")
         threshold = _best_threshold(train)
         chosen.append(threshold)
         for label in test:
             correct, confidence = _rule_prediction(label)
             y_true.append(correct)
             y_pred.append(confidence >= threshold)
+        fold_reports.append(_fold_report(fold))
     report = _classification(y_true, y_pred, method, separated=True)
-    if measured:
-        saved = statistics_median(chosen)
+    report["folds"] = fold_reports
+    if count >= MIN_MEASURED_CASES:
         threshold_row = {
-            "threshold": saved,
-            "method": saved_method,
+            "threshold": statistics_median(chosen),
+            "method": method,
             "measured": True,
             "rules_version": HEADER_SIMILARITY_RULE,
             "support": count,
             "metrics": {
                 "minimum": MIN_MEASURED_CASES,
                 "fold_thresholds": chosen,
-                "why": "mediana delle soglie scelte sui fold di training",
+                "folds": fold_reports,
+                "why": "mediana delle soglie scelte sui fold di training, per fonte",
             },
         }
     else:
         threshold_row = _fallback_threshold(count, method, chosen)
+        threshold_row["metrics"]["folds"] = fold_reports
     return report, threshold_row
 
 
-def _kfolds(count: int, k: int) -> list[list[int]]:
-    folds: list[list[int]] = [[] for _ in range(k)]
-    for index in range(count):
-        folds[index % k].append(index)
-    return [fold for fold in folds if fold]
-
-
-def _fallback_threshold(count: int, selection: str, fold_thresholds: list[float]) -> dict[str, Any]:
+def _fallback_threshold(
+    count: int,
+    selection: str,
+    fold_thresholds: list[float],
+    *,
+    why: str | None = None,
+) -> dict[str, Any]:
+    if why is None:
+        why = (
+            f"sotto il minimo di {MIN_MEASURED_CASES} casi di mapping: "
+            "fallback 0,75, non misurato"
+        )
     return {
         "threshold": float(THRESHOLD),
         "method": "fallback",
@@ -313,10 +393,8 @@ def _fallback_threshold(count: int, selection: str, fold_thresholds: list[float]
             "minimum": MIN_MEASURED_CASES,
             "selection": selection,
             "fold_thresholds": fold_thresholds,
-            "why": (
-                f"sotto il minimo di {MIN_MEASURED_CASES} casi di mapping: "
-                "fallback 0,75, non misurato"
-            ),
+            "folds": [],
+            "why": why,
         },
     }
 
@@ -347,6 +425,7 @@ def _classification(y_true: list[bool], y_pred: list[bool], method: str, *, sepa
         "precision_high": precision_high,
         "recall_low": recall_low,
         "recall_high": recall_high,
+        "folds": [],
     }
 
 
@@ -365,6 +444,7 @@ def _empty_metrics(method: str, *, separated: bool) -> dict[str, Any]:
         "precision_high": None,
         "recall_low": None,
         "recall_high": None,
+        "folds": [],
     }
 
 
@@ -442,6 +522,7 @@ def _store_eval(
                 "minimum": MIN_MEASURED_CASES,
                 "rules_version": rules_version,
                 "confronto": AGENT_IS_RULES,
+                "folds": report.get("folds") or [],
             }),
         ),
     )

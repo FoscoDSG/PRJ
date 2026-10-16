@@ -229,8 +229,9 @@ def test_testset_fallback_until_minimum_and_separated_measurement(monkeypatch: p
                 "source_field": "ord_head",
                 "target_type": "Order",
                 "target_property": "source_key",
+                "source_name": f"fonte-{index}",
             }
-            for _ in range(4)
+            for index in range(4)
         ]
 
     monkeypatch.setattr("services.testset.load_hand_labels", four_mappings)
@@ -238,9 +239,14 @@ def test_testset_fallback_until_minimum_and_separated_measurement(monkeypatch: p
         build_testset(conn)
         partial = evaluate_testset(conn)
         conn.commit()
-    assert partial["groups"]["mapping"]["method"] == "leave_one_out"
+    assert partial["groups"]["mapping"]["method"] == "leave_one_source_out"
     assert partial["groups"]["mapping"]["separated"] is True
     assert partial["groups"]["mapping"]["n"] == 4
+    assert len(partial["groups"]["mapping"]["folds"]) == 4
+    for fold in partial["groups"]["mapping"]["folds"]:
+        assert fold["sources"] == 1
+        assert fold["cases"] == 1
+        assert set(fold["test_sources"]).isdisjoint(fold["selection_source_names"])
     assert partial["threshold"]["measured"] is False
     assert float(partial["threshold"]["threshold"]) == 0.75
 
@@ -252,8 +258,9 @@ def test_testset_fallback_until_minimum_and_separated_measurement(monkeypatch: p
                 "source_field": "ord_head",
                 "target_type": "Order",
                 "target_property": "source_key",
+                "source_name": f"fonte-{index % 5}",
             }
-            for _ in range(MIN_MEASURED_CASES)
+            for index in range(MIN_MEASURED_CASES)
         ]
         cases.append(
             {
@@ -298,13 +305,111 @@ def test_testset_fallback_until_minimum_and_separated_measurement(monkeypatch: p
         ).fetchone()
         conn.commit()
     assert stored["measured"] is True
-    assert stored["method"] == "kfold5_f1_v1"
+    assert stored["method"] == "source_kfold5"
+    folds = measured["groups"]["mapping"]["folds"]
+    assert folds
+    assert sum(fold["cases"] for fold in folds) == MIN_MEASURED_CASES
+    for fold in folds:
+        assert fold["sources"] >= 1
+        assert fold["cases"] >= 1
+        assert set(fold["test_sources"]).isdisjoint(fold["selection_source_names"])
     assert stored["rules_version"] == HEADER_SIMILARITY_RULE
     assert float(stored["threshold"]) == pytest.approx(0.98)
     assert measured["groups"]["mapping"]["separated"] is True
     assert measured["groups"]["mapping"]["n"] == MIN_MEASURED_CASES
     assert measured["confronto"] == "agente = regole, nessun confronto possibile"
     assert set(measured["groups"]) == {"mapping"}
+
+
+def test_a_source_is_never_in_selection_and_evaluation():
+    from services.testset import _mapping_report
+
+    def mapping(source: str) -> dict:
+        return {
+            "profile": "order",
+            "source_field": "ord_head",
+            "target_type": "Order",
+            "target_property": "source_key",
+            "source_name": source,
+        }
+
+    two = [mapping(source) for source in ("alpha", "beta") for _ in range(10)]
+    report, threshold = _mapping_report(two)
+    assert report["method"] == "leave_one_source_out"
+    assert report["separated"] is True
+    assert len(report["folds"]) == 2
+    for fold in report["folds"]:
+        assert fold["sources"] == 1
+        assert fold["cases"] == 10
+        assert fold["selection_sources"] == 1
+        assert fold["selection_cases"] == 10
+        assert set(fold["test_sources"]).isdisjoint(fold["selection_source_names"])
+    assert threshold["measured"] is False
+
+    many = [mapping(f"fonte-{index % 6}") for index in range(MIN_MEASURED_CASES)]
+    report, threshold = _mapping_report(many)
+    assert report["method"] == "source_kfold5"
+    assert threshold["measured"] is True
+    assert threshold["method"] == "source_kfold5"
+    seen = []
+    for fold in report["folds"]:
+        assert fold["sources"] >= 1
+        assert fold["cases"] >= 1
+        assert set(fold["test_sources"]).isdisjoint(fold["selection_source_names"])
+        seen.extend(fold["test_sources"])
+    assert len(seen) == len(set(seen))
+    assert sum(fold["cases"] for fold in report["folds"]) == MIN_MEASURED_CASES
+
+    single, single_threshold = _mapping_report([mapping("solo")] * MIN_MEASURED_CASES)
+    assert single["method"] == "single_source"
+    assert single["separated"] is False
+    assert single["folds"] == []
+    assert single_threshold["measured"] is False
+    assert float(single_threshold["threshold"]) == 0.75
+
+
+def test_human_mapping_confirmation_is_a_decision(client: TestClient):
+    login(client, "mapper")
+    load_demo()
+    with connect() as conn:
+        before = conn.execute("SELECT count(*) AS n FROM app.mapping_decisions").fetchone()["n"]
+    assert before == 0
+    mappings = client.get("/api/mappings").json()["mappings"]
+    proposed = next(item for item in mappings if item["status"] == "proposed")
+    confirmed = client.post(f"/api/mappings/{proposed['id']}/confirm")
+    assert confirmed.status_code == 200, confirmed.text
+    with connect() as conn:
+        row = conn.execute(
+            """
+            SELECT decision, confidence_method, actor, actor_role, decided_at
+            FROM app.mapping_decisions
+            """
+        ).fetchone()
+        with pytest.raises(psycopg.errors.RaiseException, match="append-only"):
+            conn.execute("UPDATE app.mapping_decisions SET actor = 'altro'")
+        conn.rollback()
+        built = build_testset(conn)
+        stored = conn.execute(
+            """
+            SELECT label_origin, decision_id, mapping_decision_id, label
+            FROM app.labelled_cases
+            WHERE testset_version = %s AND case_kind = 'mapping' AND label_origin = 'human_decision'
+            """,
+            (built["version"],),
+        ).fetchone()
+        conn.rollback()
+    assert row["decision"] == "confirm"
+    assert row["confidence_method"] == "human"
+    assert row["actor"] == "mapper"
+    assert row["actor_role"] == "mapper"
+    assert row["decided_at"] is not None
+    assert stored["decision_id"] is None
+    assert stored["mapping_decision_id"] is not None
+    assert stored["label"]["confidence_method"] == "human"
+    assert stored["label"]["who"] == "mapper"
+    assert stored["label"]["when"]
+    assert stored["label"]["source_name"] == proposed["source_name"]
+    assert stored["label_origin"] == "human_decision"
 
 
 def test_unknown_sources_and_agent_recommendations_are_not_labels(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
