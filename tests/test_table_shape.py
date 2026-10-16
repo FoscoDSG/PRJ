@@ -7,9 +7,21 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 from apps.api.main import app
-from services.mapping.engine import THRESHOLD, assigned_mapping, detect_profile
+from services.mapping.engine import (
+    DISAGREEMENT_SCORE,
+    THRESHOLD,
+    assigned_mapping,
+    classify_table,
+    detect_profile,
+)
 from services.mapping.labels import PROFILE_LABELS, UNKNOWN_PROFILE_LABEL, profile_label
-from services.mapping.shape import TABLE_SHAPE_RULE, _present_roles, recognize_table, shape_rules
+from services.mapping.shape import (
+    TABLE_SHAPE_RULE,
+    _present_roles,
+    catalog_signal,
+    recognize_table,
+    shape_rules,
+)
 from services.testset import MIN_MEASURED_CASES, MIN_MEASURED_SOURCES
 from tests.test_flow import login
 
@@ -383,6 +395,114 @@ def test_italian_amount_and_date_formats():
     assert found.accepted is True
     assert found.profile == "order"
     assert found.score == 0.82
+
+
+def test_order_line_rules_are_blocked_by_a_catalog():
+    _, rules = shape_rules()
+    order_lines = [rule for rule in rules if rule.profile == "order_line"]
+    assert order_lines
+    assert all("catalog" in rule.absent for rule in order_lines)
+    assert DISAGREEMENT_SCORE < THRESHOLD
+    assert THRESHOLD == 0.75
+
+
+def test_unique_sku_catalog_with_stock_qty_is_not_order_lines():
+    """A catalog: unique sku, a price, stock qty, no order key.
+
+    A repeated attribute and integer prices used to score as order lines
+    (repeating key + quantity + price, rule score 0.86). A date that only
+    the cells show used to score 0.88. Neither is an order.
+    """
+    columns = ["sku", "price", "qty", "gruppo"]
+    groups = ["rosso", "rosso", "blu", "blu", "verde", "verde", "nero", "nero", "bianco", "bianco"]
+    rows = [
+        {
+            "sku": f"SKU-{index + 1}",
+            "price": str(10 + index),
+            "qty": "100",
+            "gruppo": group,
+        }
+        for index, group in enumerate(groups)
+    ]
+    roles = _present_roles(columns, rows)
+    assert "catalog" in roles
+    assert "quantity" in roles
+    assert "price" in roles
+    assert "product_code" in roles
+    assert "repeating_key" not in roles
+    assert "order_key" not in roles
+    assert catalog_signal(columns, rows) is True
+    found = recognize_table(columns, rows)
+    assert found.profile != "order_line"
+    assert found.accepted is False
+    assert found.score < THRESHOLD
+    assert found.score != 0.86
+    decision = classify_table(columns, rows)
+    assert decision.profile != "order_line"
+    assert decision.profile == "unknown"
+    assert decision.accepted is False
+    assert decision.score < THRESHOLD
+    assert decision.header_profile == "order_line"
+    assert profile_label(decision.profile) == UNKNOWN_PROFILE_LABEL
+    assert detect_profile(columns, rows) != "order_line"
+    assert detect_profile(columns) == "order_line"
+    dated = [
+        {**row, "nota_tempo": f"2024-01-{index + 1:02d}"}
+        for index, row in enumerate(rows)
+    ]
+    dated_columns = [*columns, "nota_tempo"]
+    dated_found = recognize_table(dated_columns, dated)
+    assert "date" in _present_roles(dated_columns, dated)
+    assert dated_found.profile != "order_line"
+    assert dated_found.score < THRESHOLD
+    assert detect_profile(dated_columns, dated) != "order_line"
+
+
+def test_header_and_shape_disagreement_drops_below_threshold():
+    columns = ["Quantity", "Price", "email_formatted", "vat"]
+    rows = [
+        {
+            "Quantity": "1",
+            "Price": "10.00",
+            "email_formatted": "a@example.com",
+            "vat": "IT12345678901",
+        },
+        {
+            "Quantity": "2",
+            "Price": "3.50",
+            "email_formatted": "b@example.com",
+            "vat": "IT10987654321",
+        },
+    ]
+    assert detect_profile(columns) == "order_line"
+    shape = recognize_table(columns, rows)
+    assert shape.accepted is True
+    assert shape.profile == "customer"
+    assert shape.score >= THRESHOLD
+    decision = classify_table(columns, rows)
+    assert decision.header_profile == "order_line"
+    assert decision.shape_profile == "customer"
+    assert decision.profile == "unknown"
+    assert decision.accepted is False
+    assert decision.score == DISAGREEMENT_SCORE
+    assert decision.score < THRESHOLD
+    assert decision.score < shape.score
+    assert profile_label(decision.profile) == UNKNOWN_PROFILE_LABEL
+    assert detect_profile(columns, rows) == "unknown"
+
+
+def test_magento_names_are_not_shape_or_synonym_inputs():
+    shape = Path("ontology/table_shape.yaml").read_text(encoding="utf-8").casefold()
+    synonyms = Path("ontology/synonyms.yaml").read_text(encoding="utf-8")
+    assert "magento" not in shape
+    assert "magento" in synonyms.casefold()
+    from services.mapping.synonyms import synonym_book
+
+    for entry in synonym_book().entries:
+        folded = f"{entry.header} {entry.normalized} {entry.source}".casefold()
+        assert "magento" not in folded
+        assert "attribute_set" not in entry.normalized
+        assert "store view" not in entry.normalized
 
 
 def test_profile_labels_match_between_python_and_javascript():

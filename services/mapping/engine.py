@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import uuid
+from dataclasses import dataclass
 from typing import Any
 
 import psycopg
@@ -15,6 +16,9 @@ from services.mapping.tokens import TOKEN_RULE, lookup_token, unique_token
 from services.text import digest
 
 THRESHOLD = 0.75
+# Rule score when the header type and the shape type name two different tables.
+# It stays under the threshold. It is not a probability.
+DISAGREEMENT_SCORE = 0.40
 HEADER_SIMILARITY_RULE = "mapping.header_similarity@v1"
 NORMALIZED_HEADER_RULE = "mapping.normalized_header@v1"
 SYNONYM_HEADER_RULE = SYNONYM_RULE
@@ -93,7 +97,24 @@ def _present_headers(columns: list[str]) -> set[str]:
     return {normalize_header(column) for column in columns if column and str(column).strip()}
 
 
-def detect_profile(columns: list[str], rows: list[dict[str, Any]] | None = None) -> str:
+@dataclass(frozen=True)
+class TableDecision:
+    """File type after headers and shape are read together.
+
+    ``score`` is a rule score, not a probability. ``header_profile`` and
+    ``shape_profile`` are the two readings before they are combined.
+    """
+
+    profile: str
+    score: float
+    accepted: bool
+    rule: str
+    score_kind: str
+    header_profile: str
+    shape_profile: str
+
+
+def _profile_from_headers(columns: list[str]) -> str:
     present = _present_headers(columns)
     for name in ("supplier", "stock", "order_line", "order", "customer", "product", "shipment"):
         if not (SIGNALS[name] & present):
@@ -105,13 +126,89 @@ def detect_profile(columns: list[str], rows: list[dict[str, Any]] | None = None)
         if name == "supplier" and not (_SUPPLIER_REQUIRED & present):
             continue
         return name
-    if rows is not None:
-        from services.mapping.shape import recognize_table
-
-        found = recognize_table(columns, rows)
-        if found.accepted:
-            return found.profile
     return "unknown"
+
+
+def _under_threshold(score: float) -> float:
+    if score >= THRESHOLD:
+        return DISAGREEMENT_SCORE
+    return score
+
+
+def classify_table(columns: list[str], rows: list[dict[str, Any]] | None = None) -> TableDecision:
+    """Combine the header type and the shape type.
+
+    Order lines are not accepted for a product catalog. When the two readings
+    name different types, the combined score drops below the threshold and the
+    file stays unrecognized.
+    """
+    from services.mapping.shape import TABLE_SHAPE_RULE, catalog_signal, recognize_table
+
+    header = _profile_from_headers(columns)
+    shape = recognize_table(columns, rows)
+    header_type = None if header == "unknown" else header
+    shape_type = shape.profile if shape.accepted else None
+    if header_type and shape_type and header_type != shape_type:
+        return TableDecision(
+            "unknown",
+            DISAGREEMENT_SCORE,
+            False,
+            TABLE_SHAPE_RULE,
+            shape.score_kind,
+            header,
+            shape.profile,
+        )
+    catalog = catalog_signal(columns, rows)
+    if catalog and header_type == "order_line":
+        header_type = None
+    if catalog and shape_type == "order_line":
+        shape_type = None
+    if header_type and shape_type:
+        accepted = shape.score >= THRESHOLD and shape.profile != "unknown"
+        return TableDecision(
+            shape.profile,
+            shape.score,
+            accepted,
+            shape.rule,
+            shape.score_kind,
+            header,
+            shape.profile,
+        )
+    if shape_type:
+        return TableDecision(
+            shape.profile,
+            shape.score,
+            True,
+            shape.rule,
+            shape.score_kind,
+            header,
+            shape.profile,
+        )
+    if header_type:
+        return TableDecision(
+            header_type,
+            shape.score,
+            shape.score >= THRESHOLD,
+            shape.rule,
+            shape.score_kind,
+            header,
+            shape.profile,
+        )
+    return TableDecision(
+        "unknown",
+        _under_threshold(shape.score),
+        False,
+        shape.rule,
+        shape.score_kind,
+        header,
+        shape.profile,
+    )
+
+
+def detect_profile(columns: list[str], rows: list[dict[str, Any]] | None = None) -> str:
+    if rows is None:
+        return _profile_from_headers(columns)
+    return classify_table(columns, rows).profile
 
 
 def _samples(rows: list[dict[str, Any]], column: str) -> list[Any]:
