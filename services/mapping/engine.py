@@ -11,6 +11,7 @@ from psycopg.types.json import Json
 from services.audit import record
 from services.mapping.headers import normalize_header
 from services.mapping.synonyms import SYNONYM_RULE, lookup_synonym
+from services.mapping.tokens import TOKEN_RULE, lookup_token, unique_token
 from services.text import digest
 
 THRESHOLD = 0.75
@@ -258,7 +259,8 @@ def assigned_mapping(profile: str, column: str) -> tuple[str, str, float, str]:
     Scores are rule scores, not probabilities. An exact Italian key keeps
     mapping.header_similarity@v1. A normalized form of that key uses
     mapping.normalized_header@v1. A synonym from the versioned dictionary
-    uses mapping.synonym@v1.
+    uses mapping.synonym@v1. A schema.org word that is still free uses
+    mapping.token@v1, with a score below the synonyms.
     """
     known = PROFILES.get(profile, {})
     if column in known:
@@ -283,6 +285,14 @@ def assigned_mapping(profile: str, column: str) -> tuple[str, str, float, str]:
         synonym = _unique_synonym(normalized)
         if synonym is not None:
             return synonym.target_type, synonym.target_property, synonym.score, SYNONYM_HEADER_RULE
+    if profile in PROFILES:
+        token = lookup_token(profile, normalized)
+        if token is not None:
+            return token.target_type, token.target_property, token.score, TOKEN_RULE
+    elif profile in ("", "unknown"):
+        token = unique_token(normalized)
+        if token is not None:
+            return token.target_type, token.target_property, token.score, TOKEN_RULE
     return "Document", "title", 0.42, UNKNOWN_HEADER_RULE
 
 

@@ -16,6 +16,7 @@ from services.mapping.engine import (
 from services.mapping.headers import normalize_header
 from services.mapping.holdout import holdout_report
 from services.mapping.synonyms import ALLOWED_SOURCES, synonym_book, synonym_headers
+from services.mapping.tokens import TOKEN_RULE, token_book
 from services.testset import MIN_MEASURED_CASES, MIN_MEASURED_SOURCES
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -233,8 +234,17 @@ def test_holdout_measure_stays_unmeasured_with_two_sources():
     assert report["threshold"] == 0.75
     assert report["minimum_sources"] == 3
     assert report["minimum_cases"] == 30
+    assert report["before_token"]["above"] == 2
+    assert report["before_token"]["below"] == 30
+    assert report["token_vocabulary_added_after_first_measure"] is True
+    assert report["after_token"]["above"] == 2
+    assert report["after_token"]["below"] == 30
     assert report["above"] == 2
     assert report["below"] == 30
+    priced = next(row for row in report["columns"] if row["header"] == "Lineitem price")
+    assert priced["rule"] == TOKEN_RULE
+    assert priced["score"] == 0.62
+    assert priced["above_threshold"] is False
     above = {(row["source"], row["header"], row["rule"], row["score"]) for row in report["columns"] if row["above_threshold"]}
     assert above == {
         ("shopify_order_export", "Email", NORMALIZED_HEADER_RULE, 0.90),
@@ -246,6 +256,60 @@ def test_holdout_measure_stays_unmeasured_with_two_sources():
     assert detect_profile(
         [row["header"] for row in report["columns"] if row["source"] == "shopify_order_export"]
     ) == "unknown"
+
+
+def test_token_rule_stays_below_synonyms_and_ignores_shopify_names():
+    book = token_book()
+    synonyms = synonym_book()
+    assert book.rule == TOKEN_RULE
+    assert book.added_after_holdout is True
+    assert book.entries
+    floor = min(entry.score for entry in synonyms.entries)
+    assert all(entry.score < floor for entry in book.entries)
+    assert all(entry.score < THRESHOLD for entry in book.entries)
+    for entry in (*book.entries, *book.unmapped):
+        assert entry.source.startswith("doc:https://schema.org/")
+        folded = f"{entry.term} {entry.source}".casefold()
+        assert "shopify" not in folded
+        assert "fatturapa" not in folded
+        assert "lineitem" not in folded
+        assert "prezzounitario" not in folded
+    terms = {entry.term for entry in book.entries} | {item.term for item in book.unmapped}
+    assert {
+        "orderNumber",
+        "orderDate",
+        "price",
+        "orderQuantity",
+        "priceCurrency",
+        "totalPaymentDue",
+        "taxID",
+        "vatID",
+        "email",
+        "telephone",
+        "postalCode",
+        "addressLocality",
+    } <= terms
+    assert assigned_mapping("order", "orderNumber") == (
+        "Order",
+        "source_key",
+        0.64,
+        TOKEN_RULE,
+    )
+    assert assigned_mapping("order_line", "Price")[:3] == ("OrderLine", "unit_price", 0.90)
+    assert assigned_mapping("order_line", "Price")[3] == SYNONYM_HEADER_RULE
+    assert assigned_mapping("unknown", "price email") == (
+        "Document",
+        "title",
+        0.42,
+        UNKNOWN_HEADER_RULE,
+    )
+    assert assigned_mapping("customer", "telephone")[3] == UNKNOWN_HEADER_RULE
+    assert assigned_mapping("unknown", "Lineitem price") == (
+        "OrderLine",
+        "unit_price",
+        0.62,
+        TOKEN_RULE,
+    )
 
 
 def test_holdout_module_does_not_write_mapping_decisions():

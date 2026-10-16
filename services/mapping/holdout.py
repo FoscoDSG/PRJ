@@ -16,6 +16,10 @@ from services.mapping.engine import THRESHOLD, assigned_mapping, detect_profile
 from services.mapping.headers import normalize_header
 from services.testset import MIN_MEASURED_CASES, MIN_MEASURED_SOURCES
 
+# Recorded before ontology/tokens.yaml existed. Do not recompute it.
+FIRST_MEASURE_ABOVE = 2
+FIRST_MEASURE_BELOW = 30
+
 ROOT = Path(__file__).resolve().parents[2]
 HOLDOUT_PATH = ROOT / "evals" / "holdout_headers.yaml"
 
@@ -76,6 +80,20 @@ def holdout_report() -> dict[str, Any]:
         "minimum_cases": MIN_MEASURED_CASES,
         "above": above,
         "below": below,
+        "before_token": {
+            "above": FIRST_MEASURE_ABOVE,
+            "below": FIRST_MEASURE_BELOW,
+            "note": (
+                "Prima misura, eseguita prima di aggiungere il vocabolario "
+                "mapping.token@v1."
+            ),
+        },
+        "after_token": {
+            "above": above,
+            "below": below,
+            "note": "Seconda misura, dopo mapping.token@v1. Il vocabolario è stato aggiunto dopo la prima.",
+        },
+        "token_vocabulary_added_after_first_measure": True,
         "columns": rows,
         "reason": (
             f"La misura hold-out usa {source_count} fonti, sotto il minimo di "

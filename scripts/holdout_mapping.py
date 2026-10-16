@@ -11,8 +11,17 @@ def main() -> None:
     print(f"calibrated: {str(report['calibrated']).lower()}")
     print(f"soglia: {report['threshold_status']} (ripiego {report['threshold']:.2f})")
     print(report["reason"])
-    print(f"colonne sopra {report['threshold']:.2f}: {report['above']}")
-    print(f"colonne sotto {report['threshold']:.2f}: {report['below']}")
+    before = report["before_token"]
+    after = report["after_token"]
+    print(
+        f"prima misura, prima di mapping.token@v1: "
+        f"{before['above']} sopra, {before['below']} sotto"
+    )
+    print(
+        f"seconda misura, dopo mapping.token@v1: "
+        f"{after['above']} sopra, {after['below']} sotto"
+    )
+    print(after["note"])
     for row in report["columns"]:
         side = "sopra" if row["above_threshold"] else "sotto"
         print(

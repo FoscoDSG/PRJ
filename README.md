@@ -153,7 +153,7 @@ Il comando legge `IEOL_SEED_<RUOLO>_PASSWORD` (`admin`, `mapper`, `operator`, `a
 
 ## Mapping delle colonne
 
-Una colonna si assegna in quest'ordine. La chiave italiana del profilo, scritta com'è (`email`, `ord_head`, `cod_art`), usa `mapping.header_similarity@v1`. Prima del confronto il nome viene normalizzato: minuscolo, accenti tolti, camelCase spezzato, e ogni carattere che non è una lettera o una cifra diventa uno spazio (`Weight (lbs)` → `weight lbs`, `In stock?` → `in stock`, `dell'imposta` → `dell imposta`). La stessa chiave già nel profilo usa allora `mapping.normalized_header@v1` e tiene lo stesso bersaglio e lo stesso punteggio. Un sinonimo di `ontology/synonyms.yaml` usa `mapping.synonym@v1`. Il numero è un punteggio di regola, non una probabilità. Se non c'è un bersaglio unico la colonna resta `Document.title` a 0,42 con `mapping.unknown_header@v1`.
+Una colonna si assegna in quest'ordine. La chiave italiana del profilo, scritta com'è (`email`, `ord_head`, `cod_art`), usa `mapping.header_similarity@v1`. Prima del confronto il nome viene normalizzato: minuscolo, accenti tolti, camelCase spezzato, e ogni carattere che non è una lettera o una cifra diventa uno spazio (`Weight (lbs)` → `weight lbs`, `In stock?` → `in stock`, `dell'imposta` → `dell imposta`). La stessa chiave già nel profilo usa allora `mapping.normalized_header@v1` e tiene lo stesso bersaglio e lo stesso punteggio. Un sinonimo di `ontology/synonyms.yaml` usa `mapping.synonym@v1`. Se resta libera, una parola normalizzata può coincidere con `ontology/tokens.yaml` (`mapping.token@v1`): il vocabolario è schema.org (Order, Offer, Invoice, PostalAddress, Person, Organization) ed è stato aggiunto dopo la prima misura hold-out. Il suo punteggio di regola sta sotto quello dei sinonimi. Il numero non è una probabilità. Se non c'è un bersaglio unico la colonna resta `Document.title` a 0,42 con `mapping.unknown_header@v1`.
 
 `First Name` e `Last Name` sono parti di un nome composto. L'ontologia non ha `Person.given_name` né `Person.family_name`, quindi restano sotto 0,75 e non scrivono `Person.full_name`: una colonna non sostituisce l'altra.
 
@@ -163,7 +163,7 @@ Il tipo di tabella si riconosce anche da intestazioni inglesi e dalle varianti d
 
 I sinonimi sono costruiti solo da Odoo 17 (`res_partner.xlsx`, `product_template.xls`, `product_purchase.xls` e le etichette italiane in `it.po`), HubSpot (pagine delle proprietà di contatti, aziende e trattative) e Danea Easyfatt (pagina del tracciato XML). Ogni voce ha `source` con `file:<nome>` oppure `doc:<url>`. Shopify (export ordini) e FatturaPA 1.2.2 sono tenute fuori dal dizionario. Quelle intestazioni stanno in `evals/holdout_headers.yaml` e servono solo alla misura PROVVISORIA.
 
-La misura hold-out usa 2 fonti. Il minimo per una soglia misurata resta 30 casi umani e 3 fonti distinte. Con 2 fonti la soglia resta non misurata e vale il ripiego 0,75 (`calibrated=false`). Lo script `python scripts/holdout_mapping.py` stampa la distribuzione e non scrive su `app.mapping_decisions` né su `mapping_thresholds`.
+La misura hold-out usa 2 fonti. Il minimo per una soglia misurata resta 30 casi umani e 3 fonti distinte. Con 2 fonti la soglia resta non misurata e vale il ripiego 0,75 (`calibrated=false`). La prima misura, prima del vocabolario token, ha 2 colonne su 32 sopra 0,75. Lo script `python scripts/holdout_mapping.py` ristampa quella cifra e la misura successiva a `mapping.token@v1`. Non scrive su `app.mapping_decisions` né su `mapping_thresholds`.
 
 ## Migrazioni
 
