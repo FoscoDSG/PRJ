@@ -1,6 +1,8 @@
 """Table shape recognition. Scores are rule scores. Ambiguous files stay unknown."""
 
 import io
+import re
+from pathlib import Path
 
 from fastapi.testclient import TestClient
 
@@ -251,3 +253,53 @@ def test_uploaded_file_does_not_become_the_label(client: TestClient):
     assert {item["profile"] for item in notes} == {"unknown"}
     assert {item["profile_label"] for item in notes} == {UNKNOWN_PROFILE_LABEL}
     assert all(item["confidence"] < THRESHOLD for item in notes)
+
+
+def test_country_on_a_customer_registry_is_not_order_lines():
+    columns = ["Nome completo", "Paese", "orderQuantity", "price"]
+    rows = [
+        {
+            "Nome completo": f"Cliente {index}",
+            "Paese": "Italia",
+            "orderQuantity": str(index + 1),
+            "price": f"{index + 1}.00",
+        }
+        for index in range(20)
+    ]
+    found = recognize_table(columns, rows)
+    assert found.profile != "order_line"
+    assert found.accepted is False
+    assert detect_profile(columns, rows) != "order_line"
+
+
+def test_two_emails_in_a_thousand_rows_do_not_type_the_column():
+    rows = [{"Appunto": "nessuna", "Recapito": "+39 021234567"} for _ in range(998)]
+    rows.append({"Appunto": "a@example.com", "Recapito": "+39 021234567"})
+    rows.append({"Appunto": "b@example.com", "Recapito": "+39 061234568"})
+    found = recognize_table(["Appunto", "Recapito"], rows)
+    assert found.profile != "customer"
+    assert found.accepted is False
+
+
+def test_italian_amount_and_date_formats():
+    columns = ["Valore indicato", "Giorno indicato"]
+    rows = [
+        {"Valore indicato": "1.234,56", "Giorno indicato": "02/03/24"},
+        {"Valore indicato": "-1.234,56", "Giorno indicato": "15/03/2024"},
+        {"Valore indicato": "(1.234,56)", "Giorno indicato": "01/04/26"},
+    ]
+    found = recognize_table(columns, rows)
+    assert found.accepted is True
+    assert found.profile == "order"
+    assert found.score == 0.82
+
+
+def test_profile_labels_match_between_python_and_javascript():
+    script = Path("apps/web/escape.js").read_text(encoding="utf-8")
+    block = re.search(r"const PROFILE_LABELS = \{([^}]+)\}", script)
+    assert block is not None
+    parsed = dict(re.findall(r'(\w+):\s*"([^"]*)"', block.group(1)))
+    unknown = re.search(r'const UNKNOWN_PROFILE_LABEL = "([^"]*)"', script)
+    assert unknown is not None
+    assert parsed == PROFILE_LABELS
+    assert unknown.group(1) == UNKNOWN_PROFILE_LABEL

@@ -58,6 +58,7 @@
     return UNKNOWN_PROFILE_LABEL;
   }
 
+  // Usato solo dai test anti-XSS. La pagina assegna il testo con textContent.
   function tableTypeMarkup(item) {
     const source = item && typeof item === "object" ? item.source_name : "";
     return `<p class="profile-label"><span class="profile-label-source">${escapeHtml(source)}</span> <span class="profile-label-text">${escapeHtml(profileLabelText(item))}</span></p>`;

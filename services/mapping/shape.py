@@ -42,9 +42,17 @@ _PROPERTY_ROLES = {
 
 _EMAIL = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 _VAT = re.compile(r"^(?:IT)?\d{11}$", re.IGNORECASE)
-_DATE = re.compile(r"^(?:\d{4}-\d{2}-\d{2}|\d{2}/\d{2}/\d{4})(?:[T\s].*)?$")
-_AMOUNT = re.compile(r"^[€$£]?\d+[.,]\d{2}$")
+_DATE = re.compile(r"^(?:\d{4}-\d{2}-\d{2}|\d{2}/\d{2}/\d{2}(?:\d{2})?)(?:[T\s].*)?$")
+_AMOUNT = re.compile(
+    r"^(?:"
+    r"\(\d{1,3}(?:\.\d{3})+,\d{2}\)"
+    r"|-?\d{1,3}(?:\.\d{3})+,\d{2}"
+    r"|[€$£]?-?\d+[.,]\d{2}"
+    r")$"
+)
 _PHONE = re.compile(r"^\+?\d[\d\s\-()]{7,}\d$")
+_VALUE_SHARE = 0.80
+_KEY_MIN_CARDINALITY = 0.10
 
 
 @dataclass(frozen=True)
@@ -123,53 +131,81 @@ def _header_roles(column: str) -> set[str]:
     return roles
 
 
+def _enough(matches: int, total: int) -> bool:
+    return total >= 2 and matches / total >= _VALUE_SHARE
+
+
 def _value_roles(values: list[object]) -> set[str]:
     sample = [str(value).strip() for value in values if value not in (None, "")]
     if len(sample) < 2:
         return set()
     roles: set[str] = set()
-    if sum(bool(_EMAIL.match(value)) for value in sample) >= 2:
+    if _enough(sum(bool(_EMAIL.match(value)) for value in sample), len(sample)):
         roles.add("email")
     compact = [re.sub(r"\s+", "", value).upper() for value in sample]
-    if sum(bool(_VAT.match(value)) for value in compact) >= 2:
+    if _enough(sum(bool(_VAT.match(value)) for value in compact), len(sample)):
         roles.add("vat")
-    if sum(bool(_DATE.match(value)) for value in sample) >= 2:
+    if _enough(sum(bool(_DATE.match(value)) for value in sample), len(sample)):
         roles.add("date")
-    if sum(bool(_AMOUNT.match(value.replace(" ", ""))) for value in sample) >= 2:
+    if _enough(sum(bool(_AMOUNT.match(value.replace(" ", ""))) for value in sample), len(sample)):
         roles.add("amount")
-    if sum(bool(_PHONE.match(value)) and not _VAT.match(re.sub(r"\s+", "", value)) for value in sample) >= 2:
+    if _enough(
+        sum(bool(_PHONE.match(value)) and not _VAT.match(re.sub(r"\s+", "", value)) for value in sample),
+        len(sample),
+    ):
         roles.add("phone")
     return roles
 
 
-def _repeating_key(columns: list[str], rows: list[dict]) -> bool:
-    if len(rows) < 2:
+def _repeating_key(columns: list[str], rows: list[dict], blocked: set[str]) -> bool:
+    """Identifier repeated on consecutive rows, not a date or an amount.
+
+    Cardinality is the share of distinct values over the rows: at least 10%
+    and below 100%, so a constant column and a unique column are not keys.
+    """
+    total = len(rows)
+    if total < 2:
         return False
     for column in columns:
-        values = [str(row.get(column)).strip() for row in rows if row.get(column) not in (None, "")]
-        if len(values) < 2 or len(set(values)) >= len(values):
+        if column in blocked:
             continue
-        distinct = len(set(values))
-        for other in columns:
-            if other == column:
-                continue
-            others = [str(row.get(other)).strip() for row in rows if row.get(other) not in (None, "")]
-            if len(set(others)) > distinct:
-                return True
+        series: list[str | None] = []
+        for row in rows:
+            value = row.get(column)
+            if value in (None, ""):
+                series.append(None)
+            else:
+                series.append(str(value).strip())
+        present = [value for value in series if value]
+        if len(present) < 2:
+            continue
+        distinct = len(set(present))
+        share = distinct / total
+        if share < _KEY_MIN_CARDINALITY or share >= 1:
+            continue
+        consecutive = any(
+            series[index] is not None and series[index] == series[index - 1]
+            for index in range(1, total)
+        )
+        if consecutive:
+            return True
     return False
 
 
 def _present_roles(columns: list[str], rows: list[dict]) -> set[str]:
     roles: set[str] = set()
+    blocked: set[str] = set()
     for column in columns:
         header_roles = _header_roles(column)
-        roles |= header_roles
         values = [row.get(column) for row in rows]
         value_roles = _value_roles(values)
+        if {"date", "amount"} & (header_roles | value_roles):
+            blocked.add(column)
         if "price" in header_roles or "quantity" in header_roles:
             value_roles.discard("amount")
+        roles |= header_roles
         roles |= value_roles
-    if _repeating_key(columns, rows):
+    if _repeating_key(columns, rows, blocked):
         roles.add("repeating_key")
     return roles
 
