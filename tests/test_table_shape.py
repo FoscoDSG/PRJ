@@ -306,6 +306,22 @@ def test_integer_and_one_decimal_amounts_require_a_price_header():
     assert plain.accepted is False
 
 
+def test_woocommerce_regular_price_file_stays_unrecognized():
+    """Regular price is WooCommerce's own header, not schema.org price."""
+    columns = ["SKU", "Name", "Regular price"]
+    rows = [
+        {"SKU": "WC-1", "Name": "Tazza", "Regular price": "18"},
+        {"SKU": "WC-2", "Name": "Piatto", "Regular price": "45.0"},
+    ]
+    found = recognize_table(columns, rows)
+    assert found.accepted is False
+    assert found.profile == "unknown"
+    assert found.score < THRESHOLD
+    assert profile_label(found.profile) == UNKNOWN_PROFILE_LABEL
+    assert detect_profile(columns, rows) == "unknown"
+    assert "price" not in _present_roles(columns, rows)
+
+
 def test_integer_quantity_column_does_not_become_a_price():
     columns = ["orderQuantity", "orderDate"]
     rows = [

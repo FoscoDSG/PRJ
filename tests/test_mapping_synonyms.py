@@ -181,7 +181,7 @@ def test_synonym_sources_are_odoo_hubspot_danea_and_schema_org():
         assert "woocommerce" not in folded
 
 
-def test_sku_regular_price_and_price_cite_schema_org_not_woocommerce():
+def test_sku_and_price_cite_schema_org_not_woocommerce():
     book = synonym_book()
     schema = [
         entry
@@ -190,14 +190,15 @@ def test_sku_regular_price_and_price_cite_schema_org_not_woocommerce():
     ]
     assert {(entry.normalized, entry.source) for entry in schema} >= {
         ("sku", "doc:https://schema.org/sku"),
-        ("regular price", "doc:https://schema.org/price"),
         ("price", "doc:https://schema.org/price"),
     }
+    assert "regular price" not in {entry.normalized for entry in book.entries}
+    assert "regular price" not in synonym_headers()
     sku = next(entry for entry in schema if entry.normalized == "sku")
     assert sku.target_type == "Product"
     assert sku.target_property == "source_key"
     assert sku.profile == "product"
-    prices = [entry for entry in schema if entry.normalized in {"regular price", "price"}]
+    prices = [entry for entry in schema if entry.normalized == "price"]
     assert prices
     assert {(entry.target_type, entry.target_property) for entry in prices} == {
         ("OrderLine", "unit_price")
@@ -205,16 +206,11 @@ def test_sku_regular_price_and_price_cite_schema_org_not_woocommerce():
     for entry in book.entries:
         folded = f"{entry.header} {entry.source}".casefold()
         assert "woocommerce" not in folded
+        assert "regular price" not in folded
     assert assigned_mapping("product", "SKU") == (
         "Product",
         "source_key",
         0.94,
-        SYNONYM_HEADER_RULE,
-    )
-    assert assigned_mapping("product", "Regular price") == (
-        "OrderLine",
-        "unit_price",
-        0.90,
         SYNONYM_HEADER_RULE,
     )
     assert assigned_mapping("product", "price") == (
@@ -223,11 +219,10 @@ def test_sku_regular_price_and_price_cite_schema_org_not_woocommerce():
         0.90,
         SYNONYM_HEADER_RULE,
     )
-    assert assigned_mapping("order_line", "Regular price")[:3] == (
-        "OrderLine",
-        "unit_price",
-        0.90,
-    )
+    # Regular price è il nome WooCommerce, non Offer.price. Non è un sinonimo.
+    regular = assigned_mapping("product", "Regular price")
+    assert regular[3] != SYNONYM_HEADER_RULE
+    assert regular[2] < THRESHOLD
 
 
 def test_normalized_holdout_header_is_not_a_synonym_key():
