@@ -10,7 +10,7 @@ from typing import Any
 import psycopg
 from psycopg.types.json import Json
 
-from ontology.loader import Ontology, load_merged
+from ontology.loader import Ontology, OntologyError, load_merged
 from services.actions.executor import dry_run, execute
 from services.agent.baseline import BASELINE_CONFIDENCE_RULE
 from services.agent.order_agent import build_context, run_order_agent
@@ -23,6 +23,7 @@ from services.ingest.document_connector import read_order_document
 from services.ingest.excel_connector import read_excel
 from services.ingest.landing import land
 from services.ingest.sql_connector import extract_sql
+from services.mapping.engine import rule_id_for
 from services.mapping.threshold import active_threshold
 from services.rules.engine import requires_cfo
 from services.text import coerce_number
@@ -177,11 +178,11 @@ def ingest_sql(
     return land(conn, source_name=source_name, extracted=extracted, actor=actor, role=role)
 
 
-def confirm_mapping(conn: psycopg.Connection, mapping_id: str, actor: str, role: str, model: Ontology) -> dict:
-    _require_mapper(role)
+def _mapping_row(conn: psycopg.Connection, mapping_id: str) -> dict:
     row = conn.execute(
         """
-        SELECT id::text, target_type, target_property, status
+        SELECT id::text, source_name, source_field, target_type, target_property,
+               confidence, profile, status
         FROM app.field_mappings
         WHERE id = %s AND valid_to IS NULL
         """,
@@ -189,16 +190,101 @@ def confirm_mapping(conn: psycopg.Connection, mapping_id: str, actor: str, role:
     ).fetchone()
     if row is None:
         raise AppError(404, "Mapping assente")
+    return row
+
+
+def _corrected_property(model: Ontology, target_type: str, corrected: str | None) -> str | None:
+    if corrected is None or str(corrected).strip() == "":
+        return None
+    value = str(corrected).strip()
+    try:
+        model.require_prop(target_type, value)
+    except OntologyError as exc:
+        raise AppError(422, str(exc)) from exc
+    return value
+
+
+def _record_mapping_decision(
+    conn: psycopg.Connection,
+    row: dict,
+    *,
+    decision: str,
+    method: str,
+    actor: str,
+    role: str,
+    corrected: str | None,
+) -> str:
+    decision_id = str(uuid.uuid4())
+    conn.execute(
+        """
+        INSERT INTO app.mapping_decisions (
+          id, mapping_id, decision, confidence_method, actor, actor_role,
+          source_name, source_field, target_property, target_property_corrected,
+          score, confidence_rule
+        )
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        """,
+        (
+            decision_id,
+            row["id"],
+            decision,
+            method,
+            actor,
+            role,
+            row["source_name"],
+            row["source_field"],
+            row["target_property"],
+            corrected,
+            row["confidence"],
+            rule_id_for(row["profile"], row["source_field"]),
+        ),
+    )
+    return decision_id
+
+
+def confirm_mapping(
+    conn: psycopg.Connection,
+    mapping_id: str,
+    actor: str,
+    role: str,
+    model: Ontology,
+    *,
+    target_property_corrected: str | None = None,
+) -> dict:
+    _require_mapper(role)
+    if target_property_corrected is not None and str(target_property_corrected).strip() != "":
+        raise AppError(422, "La proprietà corretta si registra solo su un rifiuto")
+    row = _mapping_row(conn, mapping_id)
     model.require_prop(row["target_type"], row["target_property"])
+    corrected = None
     conn.execute(
         "UPDATE app.field_mappings SET status = 'confirmed' WHERE id = %s",
         (mapping_id,),
     )
-    return {"id": mapping_id, "status": "confirmed"}
+    decision_id = _record_mapping_decision(
+        conn,
+        row,
+        decision="confirm",
+        method="human",
+        actor=actor,
+        role=role,
+        corrected=corrected,
+    )
+    return {"id": mapping_id, "status": "confirmed", "decision_id": decision_id}
 
 
-def reject_mapping(conn: psycopg.Connection, mapping_id: str, role: str) -> dict:
+def reject_mapping(
+    conn: psycopg.Connection,
+    mapping_id: str,
+    role: str,
+    *,
+    actor: str,
+    model: Ontology,
+    target_property_corrected: str | None = None,
+) -> dict:
     _require_mapper(role)
+    row = _mapping_row(conn, mapping_id)
+    corrected = _corrected_property(model, row["target_type"], target_property_corrected)
     updated = conn.execute(
         """
         UPDATE app.field_mappings SET status = 'rejected'
@@ -209,15 +295,25 @@ def reject_mapping(conn: psycopg.Connection, mapping_id: str, role: str) -> dict
     ).fetchone()
     if updated is None:
         raise AppError(404, "Mapping assente")
-    return {"id": mapping_id, "status": "rejected"}
+    decision_id = _record_mapping_decision(
+        conn,
+        row,
+        decision="reject",
+        method="human",
+        actor=actor,
+        role=role,
+        corrected=corrected,
+    )
+    return {"id": mapping_id, "status": "rejected", "decision_id": decision_id}
 
 
-def confirm_confident(conn: psycopg.Connection, role: str, model: Ontology) -> int:
+def confirm_confident(conn: psycopg.Connection, role: str, model: Ontology, *, actor: str) -> int:
     _require_mapper(role)
     threshold, _measured, _support = active_threshold(conn)
     rows = conn.execute(
         """
-        SELECT id::text, target_type, target_property
+        SELECT id::text, source_name, source_field, target_type, target_property,
+               confidence, profile, status
         FROM app.field_mappings
         WHERE status = 'proposed' AND valid_to IS NULL AND confidence >= %s
         """,
@@ -229,6 +325,15 @@ def confirm_confident(conn: psycopg.Connection, role: str, model: Ontology) -> i
         conn.execute(
             "UPDATE app.field_mappings SET status = 'confirmed' WHERE id = %s",
             (row["id"],),
+        )
+        _record_mapping_decision(
+            conn,
+            row,
+            decision="confirm",
+            method="bulk_rule",
+            actor=actor,
+            role=role,
+            corrected=None,
         )
         count += 1
     return count
@@ -321,7 +426,7 @@ def load_fixtures(conn: psycopg.Connection, actor: str, role: str, model: Ontolo
         loaded.append({"source": source_name, **result})
     seed_src(conn)
     seed_price_list(conn)
-    confirmed = confirm_confident(conn, role, model)
+    confirmed = confirm_confident(conn, role, model, actor=actor)
     counts = refresh_canonical(conn, model)
     recommendations = run_agents(conn, actor=actor, role=role)
     return {

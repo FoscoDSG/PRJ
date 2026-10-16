@@ -189,12 +189,15 @@ _FRESH = [
     {"version": "0004", "name": "source_vocabulary_decision_sources", "baselined": False},
     {"version": "0005", "name": "pii_testset_audit", "baselined": False},
     {"version": "0006", "name": "hash_version_v2", "baselined": False},
+    {"version": "0007", "name": "mapping_decisions_key_audit", "baselined": False},
+    {"version": "0008", "name": "mapping_decision_snapshot", "baselined": False},
+    {"version": "0009", "name": "mapping_decision_snapshot_checks", "baselined": False},
 ]
 
 
 def test_migration_files_do_not_drop_or_truncate():
     files = migration_files()
-    assert [item.version for item in files] == ["0001", "0002", "0003", "0004", "0005", "0006"]
+    assert [item.version for item in files] == ["0001", "0002", "0003", "0004", "0005", "0006", "0007", "0008", "0009"]
     assert [item.name for item in files] == [
         "initial",
         "provenance_audit_quality",
@@ -202,6 +205,9 @@ def test_migration_files_do_not_drop_or_truncate():
         "source_vocabulary_decision_sources",
         "pii_testset_audit",
         "hash_version_v2",
+        "mapping_decisions_key_audit",
+        "mapping_decision_snapshot",
+        "mapping_decision_snapshot_checks",
     ]
     for item in files:
         text = item.path.read_text(encoding="utf-8")
@@ -228,7 +234,25 @@ def test_migration_files_do_not_drop_or_truncate():
     assert migration_violation(drop_null, "0003_decisions_source_class_checksums.sql") is not None
     allowed_audit = "ALTER TABLE app.audit_log DROP CONSTRAINT IF EXISTS audit_log_action_check\n"
     assert migration_violation(allowed_audit, "0005_pii_testset_audit.sql") is None
+    assert migration_violation(allowed_audit, "0007_mapping_decisions_key_audit.sql") is None
     assert migration_violation(allowed_audit, "0006_later.sql") is not None
+    assert migration_violation(allowed_audit, "0008_later.sql") is not None
+    drop_origin = (
+        "ALTER TABLE app.labelled_cases DROP CONSTRAINT IF EXISTS labelled_cases_origin_check;\n"
+    )
+    assert migration_violation(drop_origin, "0007_mapping_decisions_key_audit.sql") is None
+    assert migration_violation(drop_origin, "0005_pii_testset_audit.sql") is not None
+    assert migration_violation(drop_origin, "0008_later.sql") is not None
+    drop_decision = (
+        "ALTER TABLE app.mapping_decisions DROP CONSTRAINT IF EXISTS mapping_decisions_decision_check;\n"
+    )
+    drop_method = (
+        "ALTER TABLE app.mapping_decisions DROP CONSTRAINT IF EXISTS mapping_decisions_confidence_method_check;\n"
+    )
+    assert migration_violation(drop_decision, "0008_mapping_decision_snapshot.sql") is None
+    assert migration_violation(drop_method, "0008_mapping_decision_snapshot.sql") is None
+    assert migration_violation(drop_decision, "0007_mapping_decisions_key_audit.sql") is not None
+    assert migration_violation(drop_method, "0009_later.sql") is not None
     drop_hash = (
         "ALTER TABLE app.decisions_log DROP CONSTRAINT IF EXISTS decisions_log_hash_version_check;\n"
     )
@@ -367,6 +391,9 @@ def test_legacy_database_is_baselined_without_touching_data_or_audit():
         {"version": "0004", "name": "source_vocabulary_decision_sources", "baselined": False},
         {"version": "0005", "name": "pii_testset_audit", "baselined": False},
         {"version": "0006", "name": "hash_version_v2", "baselined": False},
+        {"version": "0007", "name": "mapping_decisions_key_audit", "baselined": False},
+        {"version": "0008", "name": "mapping_decision_snapshot", "baselined": False},
+        {"version": "0009", "name": "mapping_decision_snapshot_checks", "baselined": False},
     ]
     assert again == []
     assert third == []
@@ -383,6 +410,9 @@ def test_legacy_database_is_baselined_without_touching_data_or_audit():
         ("0004", "source_vocabulary_decision_sources", False),
         ("0005", "pii_testset_audit", False),
         ("0006", "hash_version_v2", False),
+        ("0007", "mapping_decisions_key_audit", False),
+        ("0008", "mapping_decision_snapshot", False),
+        ("0009", "mapping_decision_snapshot_checks", False),
     ]
 
 
@@ -500,14 +530,25 @@ def test_migrate_keeps_the_evidence_key_unless_rotation_is_explicit(
         ).fetchone()
         return None if row is None else row["secret"]
 
+    def rotations(conn) -> list[dict]:
+        return list(conn.execute(
+            """
+            SELECT actor, at, entity_ref, payload::text AS payload
+            FROM app.audit_log
+            WHERE action = 'evidence_key_rotate'
+            """
+        ).fetchall())
+
     with connect() as conn:
         assert stored(conn) == original
         assert migrate(conn) == []
         assert stored(conn) == original
+        assert rotations(conn) == []
         conn.execute("DELETE FROM app.evidence_hmac_key")
         conn.commit()
         assert migrate(conn) == []
         assert stored(conn) == original
+        assert rotations(conn) == []
     monkeypatch.setenv("IEOL_EVIDENCE_HMAC_KEY", other)
     with connect() as conn:
         with pytest.raises(RuntimeError, match="--rotate-evidence-key") as mismatch:
@@ -515,15 +556,25 @@ def test_migrate_keeps_the_evidence_key_unless_rotation_is_explicit(
         assert other not in str(mismatch.value)
         assert original not in str(mismatch.value)
         assert stored(conn) == original
+        assert rotations(conn) == []
         with pytest.raises(SystemExit, match="--rotate-evidence-key") as cli_mismatch:
             main(["migrate"])
         assert other not in str(cli_mismatch.value)
         assert stored(conn) == original
         assert migrate(conn, rotate_evidence_key=True) == []
         assert stored(conn) == other
+        actor = conn.execute("SELECT current_user AS actor").fetchone()["actor"]
+        written = rotations(conn)
+        assert len(written) == 1
+        assert written[0]["actor"] == actor
+        assert written[0]["at"] is not None
+        assert written[0]["entity_ref"] == "app.evidence_hmac_key"
+        assert original not in written[0]["payload"]
+        assert other not in written[0]["payload"]
     main(["migrate", "--rotate-evidence-key"])
     with connect() as conn:
         assert stored(conn) == other
+        assert len(rotations(conn)) == 1
 
 
 def test_upgraded_schema_is_baselined_without_touching_audit():
@@ -596,6 +647,9 @@ def test_upgraded_schema_is_baselined_without_touching_audit():
         {"version": "0004", "name": "source_vocabulary_decision_sources", "baselined": False},
         {"version": "0005", "name": "pii_testset_audit", "baselined": False},
         {"version": "0006", "name": "hash_version_v2", "baselined": False},
+        {"version": "0007", "name": "mapping_decisions_key_audit", "baselined": False},
+        {"version": "0008", "name": "mapping_decision_snapshot", "baselined": False},
+        {"version": "0009", "name": "mapping_decision_snapshot_checks", "baselined": False},
     ]
     assert again == []
     assert fact == [("0.42", "system_of_record", "unknown", None)]
@@ -607,6 +661,9 @@ def test_upgraded_schema_is_baselined_without_touching_audit():
         ("0004", "source_vocabulary_decision_sources", False),
         ("0005", "pii_testset_audit", False),
         ("0006", "hash_version_v2", False),
+        ("0007", "mapping_decisions_key_audit", False),
+        ("0008", "mapping_decision_snapshot", False),
+        ("0009", "mapping_decision_snapshot_checks", False),
     ]
 
 

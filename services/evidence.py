@@ -11,6 +11,8 @@ import os
 
 import psycopg
 
+from services.audit import record
+
 
 def evidence_key() -> str:
     value = os.environ.get("IEOL_EVIDENCE_HMAC_KEY")
@@ -54,6 +56,15 @@ def install_evidence_key(conn: psycopg.Connection, *, rotate: bool = False) -> N
     conn.execute(
         "UPDATE app.evidence_hmac_key SET secret = %s WHERE id = 1",
         (key,),
+    )
+    actor = conn.execute("SELECT current_user AS actor").fetchone()["actor"]
+    record(
+        conn,
+        action="evidence_key_rotate",
+        actor=actor,
+        role="owner",
+        entity_ref="app.evidence_hmac_key",
+        payload={},
     )
 
 
