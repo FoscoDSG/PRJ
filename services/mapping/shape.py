@@ -5,6 +5,10 @@ the shape of the cell values. Scores are hand-set rule scores, not
 probabilities. Shopify and FatturaPA column names are not inputs to these rules.
 Integers and one-decimal numbers count as amounts only on a price or amount
 header. A repeating key needs at least five distinct values.
+Order lines need a quantity on the row and a date or an order reference.
+A product id that is unique on every row, with no order key and no order-date
+header, is a catalog: a repeated attribute is not an order key, and the
+catalog role blocks order lines.
 """
 
 from __future__ import annotations
@@ -34,6 +38,8 @@ _PROPERTY_ROLES = {
     ("Customer", "email"): "email",
     ("Customer", "vat"): "vat",
     ("Product", "source_key"): "product_code",
+    ("Order", "source_key"): "order_key",
+    ("OrderLine", "order_source_key"): "order_key",
     ("OrderLine", "product_source_key"): "product_code",
     ("Supplier", "product_source_key"): "product_code",
     ("StockPosition", "product_source_key"): "product_code",
@@ -175,6 +181,49 @@ def _loose_amount(values: list[object]) -> bool:
     return _enough(hits, len(sample))
 
 
+def _order_evidence(columns: list[str]) -> bool:
+    """An order key or an order-date header, not a date that only the cells show.
+
+    A catalog can carry dates in a column the header rules do not know. That
+    column is not an order reference.
+    """
+    for column in columns:
+        roles = _header_roles(column)
+        if "order_key" in roles or "date" in roles:
+            return True
+    return False
+
+
+def _unique_product_id(columns: list[str], rows: list[dict]) -> bool:
+    """True when a product id is filled on every row and never repeats."""
+    if len(rows) < 2:
+        return False
+    for column in columns:
+        if "product_code" not in _header_roles(column):
+            continue
+        values: list[str] = []
+        for row in rows:
+            value = row.get(column)
+            if value in (None, ""):
+                values = []
+                break
+            values.append(str(value).strip())
+        if len(values) >= 2 and len(set(values)) == len(values):
+            return True
+    return False
+
+
+def catalog_signal(columns: list[str], rows: list[dict] | None = None) -> bool:
+    """Product catalog: unique product id on each row, and no order evidence.
+
+    Stock quantity and a repeated attribute do not make this an order.
+    """
+    found = list(rows or [])
+    if not _unique_product_id(columns, found):
+        return False
+    return not _order_evidence(columns)
+
+
 def _repeating_key(columns: list[str], rows: list[dict], blocked: set[str]) -> bool:
     """Identifier repeated on consecutive rows, not a date or an amount.
 
@@ -235,7 +284,10 @@ def _present_roles(columns: list[str], rows: list[dict]) -> set[str]:
         roles |= value_roles
         if loose_amount:
             roles.add("amount")
-    if _repeating_key(columns, rows, blocked):
+    # A repeated attribute beside a unique product id is not an order key.
+    if catalog_signal(columns, rows):
+        roles.add("catalog")
+    elif _repeating_key(columns, rows, blocked):
         roles.add("repeating_key")
     return roles
 
@@ -255,8 +307,13 @@ def recognize_table(columns: list[str], rows: list[dict] | None = None) -> Table
     from services.mapping.engine import THRESHOLD
 
     score_kind, rules = shape_rules()
-    roles = _present_roles(list(columns), list(rows or []))
+    found_rows = list(rows or [])
+    found_columns = list(columns)
+    roles = _present_roles(found_columns, found_rows)
     matched = [rule for rule in rules if _matches(rule, roles)]
+    # A catalog is never order lines, even if a later rule forgets absent: catalog.
+    if "catalog" in roles:
+        matched = [rule for rule in matched if rule.profile != "order_line"]
     profiles = {rule.profile for rule in matched}
     if len(profiles) != 1:
         return TableShape("unknown", _AMBIGUOUS_SCORE if matched else 0.0, TABLE_SHAPE_RULE, False, score_kind)

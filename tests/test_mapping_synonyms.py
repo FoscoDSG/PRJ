@@ -179,6 +179,7 @@ def test_synonym_sources_are_odoo_hubspot_danea_and_schema_org():
         assert "shopify" not in folded
         assert "fatturapa" not in folded
         assert "woocommerce" not in folded
+        assert "magento" not in folded
 
 
 def test_sku_and_price_cite_schema_org_not_woocommerce():
@@ -206,6 +207,7 @@ def test_sku_and_price_cite_schema_org_not_woocommerce():
     for entry in book.entries:
         folded = f"{entry.header} {entry.source}".casefold()
         assert "woocommerce" not in folded
+        assert "magento" not in folded
         assert "regular price" not in folded
     assert assigned_mapping("product", "SKU") == (
         "Product",

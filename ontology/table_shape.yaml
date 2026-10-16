@@ -6,12 +6,16 @@
 # In services/mapping/shape.py: un intero o un decimale a una cifra (18, 45.0)
 # è un importo solo se l'intestazione è già un prezzo o un importo.
 # Una chiave ripetuta ha almeno 5 valori distinti.
+# Le righe d'ordine chiedono una quantità sulla riga e una data oppure un
+# riferimento d'ordine (la chiave ripetuta). Il ruolo catalog — codice prodotto
+# unico su ogni riga, senza chiave d'ordine e senza data d'ordine nell'intestazione —
+# blocca quelle regole: un attributo che si ripete non è un ordine.
 version: "1"
 rule: mapping.table_shape@v1
 score_kind: "punteggio di regola, non probabilità"
 rules:
-  - {profile: order_line, requires: [quantity, price, date], score: 0.88}
-  - {profile: order_line, requires: [repeating_key, quantity, price], score: 0.86}
+  - {profile: order_line, requires: [quantity, price, date], absent: [catalog], score: 0.88}
+  - {profile: order_line, requires: [repeating_key, quantity, price], absent: [catalog], score: 0.86}
   - {profile: customer, at_least: [email, phone, vat], minimum: 2, score: 0.90}
   - {profile: product, requires: [product_code, price], absent: [date, quantity], score: 0.84}
   - {profile: order, requires: [amount, date], absent: [quantity], score: 0.82}

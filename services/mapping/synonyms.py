@@ -91,7 +91,7 @@ def _load() -> SynonymBook:
         folded = source.casefold()
         if not (source.startswith("file:") or source.startswith("doc:")):
             raise ValueError(f"Origine senza file: o doc:: {header}")
-        if any(name in folded for name in ("shopify", "fatturapa", "fattura-pa", "woocommerce")):
+        if any(name in folded for name in ("shopify", "fatturapa", "fattura-pa", "woocommerce", "magento")):
             raise ValueError(f"Origine non ammessa: {source}")
         if source not in ALLOWED_SOURCES:
             raise ValueError(f"Fonte sinonimo non ammessa: {source}")
