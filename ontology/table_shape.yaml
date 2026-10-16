@@ -1,0 +1,17 @@
+# Forma del file, non i nomi colonna di una fonte tenuta fuori.
+# I numeri sono punteggi di regola, non probabilità.
+# Le combinazioni vengono solo da Odoo (partner, prodotto, giacenza, supplierinfo),
+# HubSpot (contatti e trattative), Danea (testata e righe) e schema.org
+# (Order, Offer, Invoice, Person, Organization).
+version: "1"
+rule: mapping.table_shape@v1
+score_kind: "punteggio di regola, non probabilità"
+rules:
+  - {profile: order_line, requires: [quantity, price, date], score: 0.88}
+  - {profile: order_line, requires: [repeating_key, quantity, price], score: 0.86}
+  - {profile: customer, at_least: [email, phone, vat], minimum: 2, score: 0.90}
+  - {profile: product, requires: [product_code, price], absent: [date, quantity], score: 0.84}
+  - {profile: order, requires: [amount, date], absent: [quantity], score: 0.82}
+  - {profile: stock, requires: [stock_qty, product_code], absent: [price, date], score: 0.80}
+  - {profile: supplier, requires: [delay, product_code], score: 0.80}
+  - {profile: shipment, requires: [tracking], absent: [quantity, price], score: 0.78}

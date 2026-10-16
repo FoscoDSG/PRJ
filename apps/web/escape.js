@@ -33,6 +33,37 @@
     "n/d",
   ]);
 
+  const PROFILE_LABELS = {
+    customer: "Probabile anagrafica clienti",
+    order: "Probabile export ordini",
+    order_line: "Probabile righe d'ordine",
+    product: "Probabile anagrafica prodotti",
+    stock: "Probabile giacenze",
+    supplier: "Probabile anagrafica fornitori",
+    shipment: "Probabile spedizioni",
+  };
+  const UNKNOWN_PROFILE_LABEL = "Tipo non riconosciuto";
+
+  function profileLabelText(item) {
+    const allowed = new Set(Object.values(PROFILE_LABELS));
+    allowed.add(UNKNOWN_PROFILE_LABEL);
+    const fromServer = item && typeof item === "object" ? item.profile_label : "";
+    if (typeof fromServer === "string" && allowed.has(fromServer)) {
+      return fromServer;
+    }
+    const code = item && typeof item === "object" ? item.profile : "";
+    if (Object.prototype.hasOwnProperty.call(PROFILE_LABELS, code)) {
+      return PROFILE_LABELS[code];
+    }
+    return UNKNOWN_PROFILE_LABEL;
+  }
+
+  // Usato solo dai test anti-XSS. La pagina assegna il testo con textContent.
+  function tableTypeMarkup(item) {
+    const source = item && typeof item === "object" ? item.source_name : "";
+    return `<p class="profile-label"><span class="profile-label-source">${escapeHtml(source)}</span> <span class="profile-label-text">${escapeHtml(profileLabelText(item))}</span></p>`;
+  }
+
   function escapeHtml(value) {
     return String(value ?? "")
       .replaceAll("&", "&amp;")
@@ -270,6 +301,8 @@
     factList,
     driftCard,
     mappingRow,
+    profileLabelText,
+    tableTypeMarkup,
     orderCard,
     orderDetail,
     customerDetail,

@@ -6,6 +6,7 @@ from typing import Any
 
 import psycopg
 
+from services.mapping.labels import profile_label
 from services.mapping.threshold import active_threshold
 from services.pii import is_pii_key, is_pii_property, redact
 from services.text import stable
@@ -39,6 +40,7 @@ def list_mappings(conn: psycopg.Connection, role: str, ontology: Any) -> list[di
         item["calibrated"] = False
         item["measured"] = bool(measured)
         item["support"] = support
+        item["profile_label"] = profile_label(item.get("profile"))
         visible.append(item)
     return visible
 

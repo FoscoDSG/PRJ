@@ -5,6 +5,8 @@ const {
   pill,
   driftCard,
   mappingRow,
+  profileLabelText,
+  tableTypeMarkup,
   orderCard,
   orderDetail,
   customerDetail,
@@ -29,6 +31,13 @@ const html = [
     target_property: "company_name",
     confidence: 0.42,
     status: "proposed",
+    profile: value,
+    profile_label: value,
+  }),
+  tableTypeMarkup({
+    source_name: value,
+    profile: value,
+    profile_label: value,
   }),
   driftCard({ id: value, source_name: value, diff: { added: [value] } }),
   orderCard({
@@ -77,7 +86,10 @@ const allowedTags = new Set([
   "span", "button", "article", "strong", "pre", "tr", "td", "code",
   "h3", "div", "p", "ul", "li", "label", "input", "h2",
 ]);
-const structural = new Set(["pill", "card", "meta", "ghost", "formula", "edges"]);
+const structural = new Set([
+  "pill", "card", "meta", "ghost", "formula", "edges",
+  "profile-label", "profile-label-source", "profile-label-text",
+]);
 const tagRe = /<\/?([a-zA-Z][a-zA-Z0-9]*)\b([^>]*)>/g;
 const attrRe = /([^\s=/]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+)))?/g;
 let cursor = 0;
@@ -131,6 +143,31 @@ if (!hostile.startsWith('<span class="pill">') || hostile.includes("<img")) {
 const known = pill("confirmed");
 if (known !== '<span class="pill confirmed">confirmed</span>') {
   console.error("known pill class dropped");
+  process.exit(2);
+}
+
+const poisoned = profileLabelText({ profile: value, profile_label: value, source_name: value });
+if (poisoned !== "Tipo non riconosciuto" || poisoned.includes(value) || poisoned.includes("<")) {
+  console.error("profile label echoed file content");
+  process.exit(2);
+}
+const probable = profileLabelText({ profile: "order", profile_label: value });
+if (probable !== "Probabile export ordini" || /%|\d/.test(probable) || probable.includes(value)) {
+  console.error("profile label was not the fixed phrase");
+  process.exit(2);
+}
+const fromServer = profileLabelText({ profile: "order", profile_label: "Probabile export ordini" });
+if (fromServer !== "Probabile export ordini") {
+  console.error("fixed server label was dropped");
+  process.exit(2);
+}
+const fromColumn = profileLabelText({ profile: "order", profile_label: "Order Date", source_name: value });
+if (fromColumn !== "Probabile export ordini" || fromColumn.includes("Order Date")) {
+  console.error("column name became the profile label");
+  process.exit(2);
+}
+if (!html.includes("Tipo non riconosciuto") || !html.includes(escapeHtml(value))) {
+  console.error("table type markup did not escape");
   process.exit(2);
 }
 

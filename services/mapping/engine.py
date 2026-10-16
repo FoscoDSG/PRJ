@@ -93,7 +93,7 @@ def _present_headers(columns: list[str]) -> set[str]:
     return {normalize_header(column) for column in columns if column and str(column).strip()}
 
 
-def detect_profile(columns: list[str]) -> str:
+def detect_profile(columns: list[str], rows: list[dict[str, Any]] | None = None) -> str:
     present = _present_headers(columns)
     for name in ("supplier", "stock", "order_line", "order", "customer", "product", "shipment"):
         if not (SIGNALS[name] & present):
@@ -105,6 +105,12 @@ def detect_profile(columns: list[str]) -> str:
         if name == "supplier" and not (_SUPPLIER_REQUIRED & present):
             continue
         return name
+    if rows is not None:
+        from services.mapping.shape import recognize_table
+
+        found = recognize_table(columns, rows)
+        if found.accepted:
+            return found.profile
     return "unknown"
 
 
@@ -128,7 +134,7 @@ def propose_mappings(
     actor: str | None = None,
     role: str | None = None,
 ) -> dict[str, Any]:
-    profile = detect_profile(columns)
+    profile = detect_profile(columns, rows)
     column_hash = digest(columns)
     previous = conn.execute(
         """
