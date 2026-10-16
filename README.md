@@ -1,6 +1,8 @@
 # IEOL — guida operativa
 
-La visione di prodotto è in `README (1).md`. Il confine della V1 è in `docs/v1.md`. Qui c'è solo come si avvia, si migra, si prova e si mette in esercizio.
+Visione di prodotto: [docs/VISIONE.md](docs/VISIONE.md).
+
+Il confine della V1 è in `docs/v1.md`. Qui c'è solo come si avvia, si migra, si prova e si mette in esercizio.
 
 ## Requisiti
 
