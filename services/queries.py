@@ -62,25 +62,19 @@ def list_mappings(
 
 
 def list_table_files(conn: psycopg.Connection, company_id: str | None) -> list[dict]:
-    """Files whose proposed type was stored at landing. Legacy batches stay out."""
+    """Files of this company. A user without a company sees none."""
+    if not company_id:
+        return []
     rows = conn.execute(
         """
         SELECT DISTINCT ON (b.source_name)
                b.id::text AS file_id, b.source_name, b.proposed_type
         FROM app.landing_batches b
         WHERE b.proposed_type IS NOT NULL
-          AND EXISTS (
-            SELECT 1 FROM app.field_mappings m
-            WHERE m.source_name = b.source_name
-              AND m.valid_to IS NULL
-              AND (
-                m.company_id IS NULL
-                OR (%s::uuid IS NOT NULL AND m.company_id = %s::uuid)
-              )
-          )
+          AND b.company_id = %s::uuid
         ORDER BY b.source_name, b.loaded_at DESC
         """,
-        (company_id, company_id),
+        (company_id,),
     ).fetchall()
     choices = table_file_choice_codes()
     files = []

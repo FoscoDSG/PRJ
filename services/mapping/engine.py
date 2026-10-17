@@ -232,6 +232,7 @@ def propose_mappings(
     role: str | None = None,
     company_id: str | None = None,
     profile: str | None = None,
+    batch_id: str | None = None,
 ) -> dict[str, Any]:
     # 0010 amends the 0007 rule: a learned suggestion may read mapping_decisions
     # for this company, this source, and this normalized header only.
@@ -327,9 +328,10 @@ def propose_mappings(
             """
             INSERT INTO app.field_mappings (
               id, source_name, source_field, target_type, target_property,
-              confidence, status, samples, profile, company_id, origin, source_decision_id
+              confidence, status, samples, profile, company_id, origin, source_decision_id,
+              batch_id
             )
-            VALUES (%s, %s, %s, %s, %s, %s, 'proposed', %s, %s, %s, %s, %s)
+            VALUES (%s, %s, %s, %s, %s, %s, 'proposed', %s, %s, %s, %s, %s, %s)
             """,
             (
                 mapping_id,
@@ -343,6 +345,7 @@ def propose_mappings(
                 company_id,
                 origin,
                 source_decision_id,
+                batch_id,
             ),
         )
         created.append(

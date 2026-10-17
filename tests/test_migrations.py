@@ -34,8 +34,20 @@ def _rows(conn, query: str, params: tuple | None = None) -> list[tuple]:
     return [tuple(row.values()) for row in cursor.fetchall()]
 
 
+# 0010 replaces these indexes so two companies can share a source name.
+# The tables keep their oids. The rows are not rewritten.
+_REPLACED_INDEXES = frozenset({
+    "app.landing_batches_source_name_watermark_key",
+    "app.ingest_watermarks_pkey",
+})
+
+
 def _same_relations(before: dict[str, str], after: dict[str, str]) -> bool:
     return all(after.get(name) == oid for name, oid in before.items())
+
+
+def _kept_relations(before: dict[str, str]) -> dict[str, str]:
+    return {name: oid for name, oid in before.items() if name not in _REPLACED_INDEXES}
 
 
 def _relation_oids(conn) -> dict[str, str]:
@@ -258,6 +270,15 @@ def test_migration_files_do_not_drop_or_truncate():
     assert migration_violation(drop_decision, "0010_companies_learned_corrections.sql") is None
     assert migration_violation(drop_method, "0010_companies_learned_corrections.sql") is not None
     assert migration_violation(drop_decision, "0011_later.sql") is not None
+    drop_source_key = "ALTER TABLE app.sources DROP CONSTRAINT IF EXISTS sources_pkey;\n"
+    drop_batch_key = (
+        "ALTER TABLE app.landing_batches DROP CONSTRAINT IF EXISTS landing_batches_source_name_watermark_key;\n"
+    )
+    drop_watermark_key = "ALTER TABLE app.ingest_watermarks DROP CONSTRAINT IF EXISTS ingest_watermarks_pkey;\n"
+    assert migration_violation(drop_source_key, "0010_companies_learned_corrections.sql") is None
+    assert migration_violation(drop_batch_key, "0010_companies_learned_corrections.sql") is None
+    assert migration_violation(drop_watermark_key, "0010_companies_learned_corrections.sql") is None
+    assert migration_violation(drop_source_key, "0011_later.sql") is not None
     drop_hash = (
         "ALTER TABLE app.decisions_log DROP CONSTRAINT IF EXISTS decisions_log_hash_version_check;\n"
     )
@@ -377,7 +398,7 @@ def test_legacy_database_is_baselined_without_touching_data_or_audit():
             conn.execute("UPDATE app.audit_log SET actor = 'tamper' WHERE id = %s", (ids["audit_id"],))
             conn.commit()
         conn.rollback()
-        assert _same_relations(before_oids, _relation_oids(conn))
+        assert _same_relations(_kept_relations(before_oids), _relation_oids(conn))
         assert "app.quarantine_documents" in _relation_oids(conn)
         assert _audit(conn) == before_audit
         assert _rows(
@@ -403,7 +424,11 @@ def test_legacy_database_is_baselined_without_touching_data_or_audit():
     ]
     assert again == []
     assert third == []
-    assert _same_relations(before_oids, after_oids)
+    assert _same_relations(_kept_relations(before_oids), after_oids)
+    assert after_oids["app.landing_batches"] == before_oids["app.landing_batches"]
+    assert after_oids["app.ingest_watermarks"] == before_oids["app.ingest_watermarks"]
+    assert "app.landing_batches_company_source_watermark_key" in after_oids
+    assert "app.ingest_watermarks_company_source_key" in after_oids
     assert "app.identity_reviews" in after_oids
     assert after_audit == before_audit
     assert len(before_audit) == 1
@@ -623,8 +648,12 @@ def test_upgraded_schema_is_baselined_without_touching_audit():
         applied = migrate(conn)
         again = migrate(conn)
         after_oids = _relation_oids(conn)
-        assert _same_relations(before_oids, after_oids)
-        assert set(before_oids).issubset(after_oids)
+        assert _same_relations(_kept_relations(before_oids), after_oids)
+        assert set(_kept_relations(before_oids)).issubset(after_oids)
+        assert after_oids["app.landing_batches"] == before_oids["app.landing_batches"]
+        assert after_oids["app.ingest_watermarks"] == before_oids["app.ingest_watermarks"]
+        assert "app.landing_batches_company_source_watermark_key" in after_oids
+        assert "app.ingest_watermarks_company_source_key" in after_oids
         assert "app.decisions_log" in after_oids
         assert "app.sources" in after_oids
         _assert_upgrade_audit(conn, audit_id, before_audit)

@@ -116,7 +116,7 @@ const structural = new Set([
   "fact-confidence", "confidence-badge", "decision-bar", "blocked-reason",
   "audit-when", "audit-what", "audit-order", "audit-detail",
   "origin-line", "suggestion-band", "suggestion-note",
-  "file-type-actions", "file-type-choice",
+  "file-type-actions", "file-type-choice", "mapping-actions",
 ]);
 const tagRe = /<\/?([a-zA-Z][a-zA-Z0-9]*)\b([^>]*)>/g;
 const attrRe = /([^\s=/]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+)))?/g;
@@ -170,6 +170,7 @@ const requiredClasses = [
   "fact-confidence", "confidence-badge", "decision-bar", "blocked-reason",
   "audit-when", "audit-what", "audit-order", "audit-detail",
   "origin-line", "suggestion-band", "suggestion-note", "file-type-actions",
+  "mapping-actions",
 ];
 for (const token of requiredClasses) {
   if (!seenClasses.has(token)) {

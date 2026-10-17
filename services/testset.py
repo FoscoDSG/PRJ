@@ -4,14 +4,17 @@ Outcomes come from human decisions, from a hand-written fixture, or from
 synthetic fixtures used only to exercise the code. Synthetic cases are stored
 and are excluded from the 30-case minimum and from threshold selection.
 A human mapping decision is a label: confidence_method human, who, when.
-The latest confirm or reject per mapping counts. annullata does not replace
+The latest confirm or reject per mapping counts. revoked does not replace
 that label. A confirm and a reject both count. A reject is an error. A
 correction is a wrong prediction. The score is the one stored on the
 decision. Evaluation does not recompute it.
-Recognition keeps only the first sight of a company and a source. Bulk
-confirms stay out. Confirms and rejects of learned suggestions stay out of
-recognition and are counted apart, from the origin column. non_so on a file
-type is an error of that suggestion and is not a learning example.
+Recognition keeps only the first batch of a company and a source. The batch
+is the file, not the insert time of the mapping. Bulk confirms stay out.
+Confirms and rejects of learned suggestions stay out of recognition and are
+counted apart, from the origin column, as the latest decision of that
+mapping. not_sure on a file type is an error of that suggestion and is not
+a learning example. File-type measurement keeps the latest decision on the
+first batch only.
 Mapping folds are split by source. A source is never in both threshold
 selection and evaluation. The agent is not a source of labels. Evaluation
 reads the labelled cases, not the decisions log. The running agent is the
@@ -206,8 +209,8 @@ def _latest_mapping_decisions(conn: psycopg.Connection) -> list[dict[str, Any]]:
                d.id::text AS decision_id, d.mapping_id::text AS mapping_id, d.decision,
                d.confidence_method, d.actor, d.decided_at, d.source_name, d.source_field,
                d.target_property, d.target_property_corrected, d.score, d.confidence_rule,
-               d.origin, m.company_id::text AS mapping_company_id, m.source_name AS mapping_source,
-               m.valid_from
+               d.origin, d.batch_id::text AS batch_id,
+               m.company_id::text AS mapping_company_id, m.source_name AS mapping_source
         FROM app.mapping_decisions d
         JOIN app.field_mappings m ON m.id = d.mapping_id
         WHERE d.decision IN ('confirm', 'reject')
@@ -216,27 +219,44 @@ def _latest_mapping_decisions(conn: psycopg.Connection) -> list[dict[str, Any]]:
     ).fetchall())
 
 
-def _first_sight_index(conn: psycopg.Connection) -> dict[tuple[str | None, str], Any]:
+def _first_batch_ids(conn: psycopg.Connection) -> set[str]:
+    """Earliest landed file for each company and source. Not a decision timestamp."""
     rows = conn.execute(
         """
-        SELECT company_id::text AS company_id, source_name, min(valid_from) AS seen
-        FROM app.field_mappings
+        SELECT DISTINCT ON (company_id, source_name) id::text AS id
+        FROM app.landing_batches
+        ORDER BY company_id, source_name, loaded_at, id
+        """
+    ).fetchall()
+    return {row["id"] for row in rows}
+
+
+def _sources_with_a_batch(conn: psycopg.Connection) -> set[tuple[str | None, str]]:
+    rows = conn.execute(
+        """
+        SELECT company_id::text AS company_id, source_name
+        FROM app.landing_batches
         GROUP BY company_id, source_name
         """
     ).fetchall()
-    return {(row["company_id"], row["source_name"]): row["seen"] for row in rows}
+    return {(row["company_id"], row["source_name"]) for row in rows}
 
 
 def _human_mapping_cases(conn: psycopg.Connection) -> list[dict[str, Any]]:
-    first = _first_sight_index(conn)
+    first_batches = _first_batch_ids(conn)
+    seen_sources = _sources_with_a_batch(conn)
     rows = []
     for row in _latest_mapping_decisions(conn):
         if row["confidence_method"] != "human" or row["score"] is None:
             continue
         if row.get("origin") == "learned":
             continue
-        key = (row.get("mapping_company_id"), row.get("mapping_source"))
-        if row.get("valid_from") != first.get(key):
+        batch_id = row.get("batch_id")
+        if batch_id is None:
+            key = (row.get("mapping_company_id"), row.get("mapping_source"))
+            if key in seen_sources:
+                continue
+        elif batch_id not in first_batches:
             continue
         rows.append(row)
     ordered = sorted(rows, key=lambda row: (row["source_name"] or "", row["source_field"] or "", row["decision_id"]))

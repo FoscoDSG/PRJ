@@ -225,7 +225,8 @@ def _mapping_row(conn: psycopg.Connection, mapping_id: str) -> dict:
         """
         SELECT id::text, source_name, source_field, target_type, target_property,
                confidence, profile, status, company_id::text AS company_id,
-               origin, source_decision_id::text AS source_decision_id
+               origin, source_decision_id::text AS source_decision_id,
+               batch_id::text AS batch_id
         FROM app.field_mappings
         WHERE id = %s AND valid_to IS NULL
         """,
@@ -273,9 +274,9 @@ def _record_mapping_decision(
         INSERT INTO app.mapping_decisions (
           id, mapping_id, decision, confidence_method, actor, actor_role,
           source_name, source_field, target_property, target_property_corrected,
-          score, confidence_rule, company_id, origin, source_decision_id
+          score, confidence_rule, company_id, origin, source_decision_id, batch_id
         )
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         """,
         (
             decision_id,
@@ -293,6 +294,7 @@ def _record_mapping_decision(
             company_id,
             origin,
             source_decision_id,
+            row.get("batch_id"),
         ),
     )
     return decision_id
@@ -386,7 +388,8 @@ def confirm_confident(
         """
         SELECT id::text, source_name, source_field, target_type, target_property,
                confidence, profile, status, company_id::text AS company_id,
-               origin, source_decision_id::text AS source_decision_id
+               origin, source_decision_id::text AS source_decision_id,
+               batch_id::text AS batch_id
         FROM app.field_mappings
         WHERE status = 'proposed'
           AND valid_to IS NULL
@@ -428,7 +431,7 @@ def revoke_correction(
     role: str,
     company_id: str | None,
 ) -> dict:
-    """Append annullata. The revoked row stays. Same company as the actor."""
+    """Append revoked. The revoked row stays. Same company as the actor."""
     _require_mapper(role)
     if not company_id:
         raise AppError(403, "Azienda non assegnata")
@@ -436,7 +439,9 @@ def revoke_correction(
         """
         SELECT id::text, mapping_id::text, decision, source_name, source_field,
                target_property, target_property_corrected, score, confidence_rule,
-               company_id::text AS company_id
+               company_id::text AS company_id, origin,
+               source_decision_id::text AS source_decision_id,
+               batch_id::text AS batch_id
         FROM app.mapping_decisions
         WHERE id = %s::uuid
           AND company_id = %s::uuid
@@ -462,9 +467,9 @@ def revoke_correction(
         INSERT INTO app.mapping_decisions (
           id, mapping_id, decision, confidence_method, actor, actor_role,
           source_name, source_field, target_property, score, confidence_rule,
-          company_id, revoked_decision_id
+          company_id, origin, source_decision_id, batch_id, revoked_decision_id
         )
-        VALUES (%s, %s, 'annullata', 'human', %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        VALUES (%s, %s, 'revoked', 'human', %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         """,
         (
             revoked_id,
@@ -477,6 +482,9 @@ def revoke_correction(
             row["score"],
             row["confidence_rule"],
             company_id,
+            row["origin"],
+            row["source_decision_id"],
+            row["batch_id"],
             decision_id,
         ),
     )
@@ -529,7 +537,7 @@ def revoke_correction(
             "company_id": company_id,
         },
     )
-    return {"id": revoked_id, "revoked_decision_id": decision_id, "decision": "annullata"}
+    return {"id": revoked_id, "revoked_decision_id": decision_id, "decision": "revoked"}
 
 
 def record_table_type_decision(
@@ -546,9 +554,9 @@ def record_table_type_decision(
     _require_mapper(role)
     if not company_id:
         raise AppError(403, "Azienda non assegnata")
-    if decision not in ("corretto", "sbagliato", "non_so"):
+    if decision not in ("correct", "wrong", "not_sure"):
         raise AppError(422, "Decisione sul tipo non valida")
-    if decision == "sbagliato":
+    if decision == "wrong":
         if correct_type not in PROFILE_LABELS:
             raise AppError(422, "Tipo corretto non ammesso")
     elif correct_type not in (None, ""):
@@ -557,24 +565,27 @@ def record_table_type_decision(
         correct_type = None
     batch = conn.execute(
         """
-        SELECT id::text, source_name, proposed_type, proposed_score
+        SELECT id::text, source_name, proposed_type, proposed_score, proposed_rule,
+               company_id::text AS company_id
         FROM app.landing_batches
         WHERE id = %s::uuid
         """,
         (file_id,),
     ).fetchone()
-    if batch is None or not _file_visible(conn, batch["source_name"], company_id):
+    if batch is None or batch["company_id"] != company_id:
         raise AppError(404, "File assente")
-    if batch["proposed_type"] is None or batch["proposed_score"] is None:
+    if decision == "wrong" and correct_type == batch["proposed_type"]:
+        raise AppError(422, "Il tipo corretto è quello già proposto")
+    if batch["proposed_type"] is None or batch["proposed_score"] is None or not batch["proposed_rule"]:
         raise AppError(422, "Tipo di file non fotografato")
     decision_id = str(uuid.uuid4())
     conn.execute(
         """
         INSERT INTO app.table_type_decisions (
-          id, company_id, file_id, proposed_type, score, decision, correct_type,
+          id, company_id, file_id, proposed_type, score, rule_version, decision, correct_type,
           actor, actor_role
         )
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         """,
         (
             decision_id,
@@ -582,6 +593,7 @@ def record_table_type_decision(
             file_id,
             batch["proposed_type"],
             batch["proposed_score"],
+            batch["proposed_rule"],
             decision,
             correct_type,
             actor,
@@ -609,27 +621,10 @@ def record_table_type_decision(
         "file_id": file_id,
         "proposed_type": batch["proposed_type"],
         "score": batch["proposed_score"],
+        "rule_version": batch["proposed_rule"],
         "decision": decision,
         "correct_type": correct_type,
     }
-
-
-def _file_visible(conn: psycopg.Connection, source_name: str, company_id: str | None) -> bool:
-    row = conn.execute(
-        """
-        SELECT 1
-        FROM app.field_mappings
-        WHERE source_name = %s
-          AND valid_to IS NULL
-          AND (
-            company_id IS NULL
-            OR (%s::uuid IS NOT NULL AND company_id = %s::uuid)
-          )
-        LIMIT 1
-        """,
-        (source_name, company_id, company_id),
-    ).fetchone()
-    return row is not None
 
 
 def _require_visible_company(mapping_company: str | None, viewer_company: str | None) -> None:

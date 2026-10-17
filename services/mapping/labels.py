@@ -22,3 +22,13 @@ def profile_label(profile: str | None) -> str:
     if profile is None:
         return UNKNOWN_PROFILE_LABEL
     return PROFILE_LABELS.get(str(profile), UNKNOWN_PROFILE_LABEL)
+
+
+def type_list_label(code: str) -> str:
+    """Dropdown label. The badge keeps the word Probabile; the list does not."""
+    label = PROFILE_LABELS[code]
+    prefix = "Probabile "
+    text = label[len(prefix):] if label.startswith(prefix) else label
+    if text == "":
+        return text
+    return text[0].upper() + text[1:]

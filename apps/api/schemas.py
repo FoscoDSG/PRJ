@@ -19,7 +19,7 @@ class EmptyBody(BaseModel):
 
 class FileTypeDecisionBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    decision: Literal["corretto", "sbagliato", "non_so"]
+    decision: Literal["correct", "wrong", "not_sure"]
     correct_type: str | None = None
 
 

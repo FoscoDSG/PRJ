@@ -62,10 +62,12 @@
   function tableTypeMarkup(item) {
     const source = item && typeof item === "object" ? item.source_name : "";
     const fileId = item && typeof item === "object" ? item.file_id : "";
-    const options = fileTypeChoices()
-      .map((choice) => `<option value="${escapeHtml(choice.code)}">${escapeHtml(choice.label)}</option>`)
-      .join("");
-    return `<p class="profile-label"><span class="profile-label-source">${escapeHtml(source)}</span> <span class="profile-label-text">${escapeHtml(profileLabelText(item))}</span></p><div class="file-type-actions"><button type="button" data-type-ok="${escapeHtml(fileId)}">Corretto</button> <button type="button" class="ghost" data-type-wrong="${escapeHtml(fileId)}">Non è questo tipo</button> <label class="file-type-choice">Tipo corretto <select data-type-choice="${escapeHtml(fileId)}">${options}</select></label></div>`;
+    const choices = item && Array.isArray(item.choices) ? item.choices : [];
+    const options = [
+      `<option value="">Scegli il tipo…</option>`,
+      ...choices.map((choice) => `<option value="${escapeHtml(choice.code)}">${escapeHtml(choice.label)}</option>`),
+    ].join("");
+    return `<p class="profile-label"><span class="profile-label-source">${escapeHtml(source)}</span> <span class="profile-label-text">${escapeHtml(profileLabelText(item))}</span></p><div class="file-type-actions"><button type="button" data-type-ok="${escapeHtml(fileId)}">Corretto</button> <button type="button" class="ghost" data-type-wrong="${escapeHtml(fileId)}">Non è questo tipo</button> <label class="file-type-choice">Tipo corretto <select data-type-choice="${escapeHtml(fileId)}">${options}</select> <button type="button" disabled>Registra tipo</button></label></div>`;
   }
 
   function escapeHtml(value) {
@@ -184,21 +186,10 @@
 
   function suggestionBand(item) {
     if (item && item.band === "forte") {
-      return {
-        band: "Suggerimento forte",
-        note: "Indicazione automatica, da verificare",
-      };
+      const note = item.band_note ? String(item.band_note) : "";
+      return { band: "Suggerimento forte", note };
     }
     return { band: "Da verificare", note: "" };
-  }
-
-  function fileTypeChoices() {
-    const choices = Object.keys(PROFILE_LABELS).map((code) => ({
-      code,
-      label: PROFILE_LABELS[code],
-    }));
-    choices.push({ code: "non_so", label: "Non so" });
-    return choices;
   }
 
   function mappingRow(item) {
@@ -219,7 +210,7 @@
         <td>${escapeHtml(item.target_type)}.${escapeHtml(item.target_property)}</td>
         <td class="mapping-confidence"><p class="origin-line">${escapeHtml(originText(item))}</p><p class="suggestion-band">${escapeHtml(shown.band)}</p>${note}</td>
         <td>${pill(item.status)}</td>
-        <td>${actions}</td>
+        <td class="mapping-actions">${actions}</td>
       </tr>`;
   }
 
@@ -341,7 +332,6 @@
     mappingRow,
     profileLabelText,
     tableTypeMarkup,
-    fileTypeChoices,
     originText,
     orderCard,
     orderDetail,

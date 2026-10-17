@@ -74,7 +74,7 @@ def test_correction_applies_only_for_the_same_company_source_and_header():
             legacy_host,
             decision="reject",
             company_id=None,
-            actor="ada",
+            actor="mapper",
             source_name="legacy",
             source_field="COD_ART",
             corrected="unit_price",
@@ -126,7 +126,7 @@ def test_user_cannot_see_or_revoke_another_companys_decisions(client: TestClient
     denied = client.post(f"/api/mapping-decisions/{missing}/revoke", json={})
     assert denied.status_code == 403
     assert denied.json()["detail"] == "Azienda non assegnata"
-    untyped = client.post(f"/api/files/{missing}/type", json={"decision": "corretto"})
+    untyped = client.post(f"/api/files/{missing}/type", json={"decision": "correct"})
     assert untyped.status_code == 403
     assert untyped.json()["detail"] == "Azienda non assegnata"
     client.post("/api/logout")
@@ -136,15 +136,14 @@ def test_user_cannot_see_or_revoke_another_companys_decisions(client: TestClient
     assert forbidden.json()["detail"] == "Serve il ruolo mapper"
     client.post("/api/logout")
 
+    login(client, "mapper")
+    load_demo()
     with connect() as conn:
         conn.execute(
             "UPDATE app.users SET company_id = %s WHERE username = 'mapper'",
             (company_a,),
         )
         conn.commit()
-
-    login(client, "mapper")
-    load_demo()
     listed = client.get("/api/mappings").json()["mappings"]
     legacy = next(item for item in listed if item["source_name"] == "righe" and item["source_field"] == "cod_art")
     assert legacy["origin"] == "rule"
@@ -203,45 +202,54 @@ def test_user_cannot_see_or_revoke_another_companys_decisions(client: TestClient
         ).fetchone()["company_id"]
     assert stored_company == company_a
 
-    typed = client.post(f"/api/files/{solo_file}/type", json={"decision": "corretto", "company_id": company_b})
+    typed = client.post(f"/api/files/{solo_file}/type", json={"decision": "correct", "company_id": company_b})
     assert typed.status_code == 422
-    typed = client.post(f"/api/files/{solo_file}/type", json={"decision": "corretto"})
+    typed = client.post(f"/api/files/{solo_file}/type", json={"decision": "correct"})
     assert typed.status_code == 200, typed.text
+    assert typed.json()["decision"] == "correct"
     bad = client.post(
         f"/api/files/{solo_file}/type",
-        json={"decision": "sbagliato", "correct_type": "inventato"},
+        json={"decision": "wrong", "correct_type": "inventato"},
     )
     assert bad.status_code == 422
-    unknown = client.post(f"/api/files/{solo_file}/type", json={"decision": "non_so"})
-    assert unknown.status_code == 200, unknown.text
-    assert unknown.json()["decision"] == "non_so"
-    assert unknown.json()["correct_type"] is None
+    same_type = client.post(
+        f"/api/files/{solo_file}/type",
+        json={"decision": "wrong", "correct_type": typed.json()["proposed_type"]},
+    )
+    assert same_type.status_code == 422
+    assert same_type.json()["detail"] == "Il tipo corretto è quello già proposto"
+    unsure = client.post(f"/api/files/{solo_file}/type", json={"decision": "not_sure"})
+    assert unsure.status_code == 200, unsure.text
+    assert unsure.json()["decision"] == "not_sure"
+    assert unsure.json()["correct_type"] is None
     with connect() as conn:
-        batch_score = conn.execute(
-            "SELECT proposed_score FROM app.landing_batches WHERE id = %s",
+        batch_row = conn.execute(
+            "SELECT proposed_score, proposed_rule FROM app.landing_batches WHERE id = %s",
             (solo_file,),
-        ).fetchone()["proposed_score"]
+        ).fetchone()
         stored = conn.execute(
             """
-            SELECT decision, correct_type, score
+            SELECT decision, correct_type, score, rule_version
             FROM app.table_type_decisions
             WHERE id = %s
             """,
-            (unknown.json()["id"],),
+            (unsure.json()["id"],),
         ).fetchone()
-    assert stored["decision"] == "non_so"
+    assert stored["decision"] == "not_sure"
     assert stored["correct_type"] is None
-    assert float(unknown.json()["score"]) == float(batch_score)
-    assert float(stored["score"]) == float(batch_score)
+    assert float(unsure.json()["score"]) == float(batch_row["proposed_score"])
+    assert float(stored["score"]) == float(batch_row["proposed_score"])
+    assert typed.json()["rule_version"] == batch_row["proposed_rule"]
+    assert stored["rule_version"] == batch_row["proposed_rule"]
     wrong = client.post(
         f"/api/files/{solo_file}/type",
-        json={"decision": "sbagliato", "correct_type": "product"},
+        json={"decision": "wrong", "correct_type": "product"},
     )
     assert wrong.status_code == 200, wrong.text
     with connect() as conn:
         with pytest.raises(psycopg.errors.RaiseException, match="append-only"):
             conn.execute(
-                "UPDATE app.table_type_decisions SET decision = 'corretto' WHERE file_id = %s",
+                "UPDATE app.table_type_decisions SET decision = 'correct' WHERE file_id = %s",
                 (solo_file,),
             )
             conn.commit()
@@ -262,6 +270,11 @@ def test_user_cannot_see_or_revoke_another_companys_decisions(client: TestClient
             (confirmed.json()["decision_id"],),
         ).fetchone()["company_id"]
     assert decision_company == company_a
+    not_a_correction = client.post(
+        f"/api/mapping-decisions/{confirmed.json()['decision_id']}/revoke",
+        json={},
+    )
+    assert not_a_correction.status_code == 404
 
     client.post("/api/logout")
     client.post("/api/login", json={"username": "altra", "password": ALTRO_PASSWORD})
@@ -277,14 +290,17 @@ def test_user_cannot_see_or_revoke_another_companys_decisions(client: TestClient
         json={"company_id": company_a},
     )
     assert cannot_smuggle.status_code == 422
-    cannot_type = client.post(f"/api/files/{solo_file}/type", json={"decision": "corretto"})
+    cannot_type = client.post(f"/api/files/{solo_file}/type", json={"decision": "correct"})
     assert cannot_type.status_code == 404
 
     client.post("/api/logout")
     login(client, "mapper")
     revoked = client.post(f"/api/mapping-decisions/{correction_id}/revoke", json={})
     assert revoked.status_code == 200, revoked.text
-    assert revoked.json()["decision"] == "annullata"
+    assert revoked.json()["decision"] == "revoked"
+    again = client.post(f"/api/mapping-decisions/{correction_id}/revoke", json={})
+    assert again.status_code == 409
+    assert again.json()["detail"] == "Correzione già annullata"
     assert revoked.json()["revoked_decision_id"] == correction_id
     with connect() as conn:
         original = conn.execute(
@@ -319,98 +335,152 @@ def test_user_cannot_see_or_revoke_another_companys_decisions(client: TestClient
     assert visible["decision_id"] is None
 
 
-def test_measurement_keeps_first_sight_and_counts_learned_apart():
+def test_measurement_uses_the_first_batch_and_the_latest_decision():
     company_c, company_d = _companies()
     with connect() as conn:
         _user(conn, "misura", company_c)
+        _user(conn, "delta", company_d)
+        early_batch = _batch(conn, company_c, "alfa", "early", loaded_at="2024-01-02T00:00:00Z")
+        late_batch = _batch(conn, company_c, "alfa", "late", loaded_at="2024-06-01T00:00:00Z")
+        other_batch = _batch(conn, company_d, "alfa", "other", loaded_at="2021-01-01T00:00:00Z")
+        beta_batch = _batch(conn, company_c, "beta", "beta", loaded_at="2024-01-01T00:00:00Z")
+        gamma_batch = _batch(conn, company_c, "gamma", "gamma", loaded_at="2024-01-01T00:00:00Z")
+        learned_batch = _batch(conn, company_c, "deltaf", "deltaf", loaded_at="2024-01-01T00:00:00Z")
+        bulk_batch = _batch(conn, company_c, "massa", "massa", loaded_at="2024-01-01T00:00:00Z")
         first = _mapping(
-            conn, company_id=company_c, source="alfa", field="cod_art", valid_from="2020-01-01",
+            conn, company_id=company_c, source="alfa", field="cod_art",
+            valid_from="2024-12-01T00:00:00Z", batch_id=early_batch,
         )
         later = _mapping(
-            conn, company_id=company_c, source="alfa", field="qty", valid_from="2024-06-01",
+            conn, company_id=company_c, source="alfa", field="qty",
+            valid_from="2020-01-01T00:00:00Z", batch_id=late_batch,
         )
         other = _mapping(
-            conn, company_id=company_d, source="alfa", field="cod_art", valid_from="2021-01-01",
+            conn, company_id=company_d, source="alfa", field="cod_art", batch_id=other_batch,
         )
         archive = _mapping(conn, company_id=company_c, source="archivio", field="COD_ART")
         correction = _decision(
-            conn,
-            archive,
-            decision="reject",
-            company_id=company_c,
-            actor="misura",
-            source_name="archivio",
-            source_field="COD_ART",
-            corrected="unit_price",
+            conn, archive, decision="reject", company_id=company_c, actor="misura",
+            source_name="archivio", source_field="COD_ART", corrected="unit_price",
+            decided_at="2024-02-01T00:00:00Z",
         )
         learned_map = _mapping(
-            conn,
-            company_id=company_c,
-            source="beta",
-            field="Cod Art",
-            origin="learned",
-            source_decision_id=correction,
-            target_property="unit_price",
+            conn, company_id=company_c, source="beta", field="Cod Art", origin="learned",
+            source_decision_id=correction, target_property="unit_price", batch_id=beta_batch,
         )
         rejected_map = _mapping(
-            conn,
-            company_id=company_c,
-            source="gamma",
-            field="Cod Art",
-            origin="learned",
-            source_decision_id=correction,
-            target_property="unit_price",
+            conn, company_id=company_c, source="gamma", field="Cod Art", origin="learned",
+            source_decision_id=correction, target_property="unit_price", batch_id=gamma_batch,
         )
-        bulk_map = _mapping(conn, company_id=company_c, source="massa", field="cod_art")
+        revoked_learned_map = _mapping(
+            conn, company_id=company_c, source="deltaf", field="Cod Art", origin="learned",
+            source_decision_id=correction, target_property="unit_price", batch_id=learned_batch,
+        )
+        bulk_map = _mapping(
+            conn, company_id=company_c, source="massa", field="cod_art", batch_id=bulk_batch,
+        )
+        _decision(
+            conn, first, decision="reject", company_id=company_c, actor="misura",
+            source_name="alfa", source_field="cod_art", origin="rule", batch_id=early_batch,
+            decided_at="2024-01-15T00:00:00Z",
+        )
         first_id = _decision(
             conn, first, decision="confirm", company_id=company_c, actor="misura",
-            source_name="alfa", source_field="cod_art", origin="rule",
+            source_name="alfa", source_field="cod_art", origin="rule", batch_id=early_batch,
+            decided_at="2024-03-01T00:00:00Z",
         )
         later_id = _decision(
             conn, later, decision="confirm", company_id=company_c, actor="misura",
-            source_name="alfa", source_field="qty", origin="rule",
+            source_name="alfa", source_field="qty", origin="rule", batch_id=late_batch,
+            decided_at="2024-03-01T00:00:00Z",
         )
         other_id = _decision(
-            conn, other, decision="confirm", company_id=company_d, actor="misura",
-            source_name="alfa", source_field="cod_art", origin="rule",
+            conn, other, decision="confirm", company_id=company_d, actor="delta",
+            source_name="alfa", source_field="cod_art", origin="rule", batch_id=other_batch,
+            decided_at="2024-03-01T00:00:00Z",
+        )
+        _decision(
+            conn, learned_map, decision="reject", company_id=company_c, actor="misura",
+            source_name="beta", source_field="Cod Art", origin="learned",
+            source_decision_id=correction, batch_id=beta_batch, decided_at="2024-03-01T00:00:00Z",
         )
         learned_confirm = _decision(
             conn, learned_map, decision="confirm", company_id=company_c, actor="misura",
-            source_name="beta", source_field="Cod Art", origin="learned", source_decision_id=correction,
+            source_name="beta", source_field="Cod Art", origin="learned",
+            source_decision_id=correction, batch_id=beta_batch, decided_at="2024-04-01T00:00:00Z",
         )
         learned_reject = _decision(
             conn, rejected_map, decision="reject", company_id=company_c, actor="misura",
-            source_name="gamma", source_field="Cod Art", origin="learned", source_decision_id=correction,
+            source_name="gamma", source_field="Cod Art", origin="learned",
+            source_decision_id=correction, batch_id=gamma_batch, decided_at="2024-04-01T00:00:00Z",
+        )
+        learned_to_revoke = _decision(
+            conn, revoked_learned_map, decision="reject", company_id=company_c, actor="misura",
+            source_name="deltaf", source_field="Cod Art", origin="learned",
+            source_decision_id=correction, corrected="unit_price", batch_id=learned_batch,
+            decided_at="2024-03-01T00:00:00Z",
         )
         bulk_id = _decision(
             conn, bulk_map, decision="confirm", company_id=company_c, actor="misura",
             source_name="massa", source_field="cod_art", method="bulk_rule", origin="rule",
+            batch_id=bulk_batch, decided_at="2024-03-01T00:00:00Z",
         )
-        revoked = _decision(
-            conn, archive, decision="annullata", company_id=company_c, actor="misura",
+        revoked_rule = _decision(
+            conn, archive, decision="revoked", company_id=company_c, actor="misura",
             source_name="archivio", source_field="COD_ART", revoked_decision_id=correction,
+            decided_at="2024-05-01T00:00:00Z",
         )
-        file_id = str(uuid.uuid4())
-        conn.execute(
-            """
-            INSERT INTO app.landing_batches (
-              id, source_name, watermark, row_count, proposed_type, proposed_score
-            )
-            VALUES (%s, 'archivio', 'wm', 1, 'order_line', 0.81)
-            """,
-            (file_id,),
+        revoked_learned = _decision(
+            conn, revoked_learned_map, decision="revoked", company_id=company_c, actor="misura",
+            source_name="deltaf", source_field="Cod Art", origin="learned",
+            source_decision_id=correction, revoked_decision_id=learned_to_revoke,
+            batch_id=learned_batch, decided_at="2024-05-01T00:00:00Z",
         )
-        for decision, correct in (("corretto", None), ("sbagliato", "product"), ("non_so", None)):
-            conn.execute(
-                """
-                INSERT INTO app.table_type_decisions (
-                  id, company_id, file_id, proposed_type, score, decision, correct_type, actor, actor_role
-                )
-                VALUES (%s, %s, %s, 'order_line', 0.81, %s, %s, 'misura', 'mapper')
-                """,
-                (str(uuid.uuid4()), company_c, file_id, decision, correct),
-            )
+        type_first = _batch(
+            conn, company_c, "tipi", "t1", loaded_at="2024-01-01T00:00:00Z", proposed_type="order_line",
+        )
+        type_later = _batch(
+            conn, company_c, "tipi", "t2", loaded_at="2024-08-01T00:00:00Z", proposed_type="order_line",
+        )
+        type_wrong = _batch(
+            conn, company_c, "tipi2", "t3", loaded_at="2024-01-01T00:00:00Z", proposed_type="order",
+        )
+        type_other = _batch(
+            conn, company_d, "tipi", "t4", loaded_at="2024-01-01T00:00:00Z", proposed_type="customer",
+        )
+        _file_decision(
+            conn, type_first, company_id=company_c, actor="misura", decision="correct",
+            proposed_type="order_line", decided_at="2024-02-01T00:00:00Z",
+        )
+        _file_decision(
+            conn, type_first, company_id=company_c, actor="misura", decision="wrong",
+            correct_type="product", proposed_type="order_line", decided_at="2024-03-01T00:00:00Z",
+        )
+        _file_decision(
+            conn, type_first, company_id=company_c, actor="misura", decision="not_sure",
+            proposed_type="order_line", decided_at="2024-04-01T00:00:00Z",
+        )
+        _file_decision(
+            conn, type_later, company_id=company_c, actor="misura", decision="wrong",
+            correct_type="product", proposed_type="order_line", decided_at="2024-09-01T00:00:00Z",
+        )
+        _file_decision(
+            conn, type_wrong, company_id=company_c, actor="misura", decision="wrong",
+            correct_type="product", proposed_type="order", decided_at="2024-02-01T00:00:00Z",
+        )
+        _file_decision(
+            conn, type_other, company_id=company_d, actor="delta", decision="correct",
+            proposed_type="customer", decided_at="2024-02-01T00:00:00Z",
+        )
         conn.commit()
+        moments = {
+            row["id"]: row["valid_from"]
+            for row in conn.execute(
+                "SELECT id::text AS id, valid_from FROM app.field_mappings WHERE id IN (%s, %s)",
+                (first, later),
+            ).fetchall()
+        }
+        assert moments[first] > moments[later]
         labels = {item["decision_id"] for item in _human_mapping_cases(conn)}
         assert first_id in labels
         assert other_id in labels
@@ -418,14 +488,18 @@ def test_measurement_keeps_first_sight_and_counts_learned_apart():
         assert later_id not in labels
         assert learned_confirm not in labels
         assert learned_reject not in labels
+        assert learned_to_revoke not in labels
         assert bulk_id not in labels
-        assert revoked not in labels
-        assert learned_metric(conn) == {"confirmed": 1, "rejected": 1, "revoked": 1}
+        assert revoked_rule not in labels
+        assert revoked_learned not in labels
+        expected_learned = {"confirmed": 1, "rejected": 1, "revoked": {"rule": 1, "learned": 1}}
+        assert learned_metric(conn) == expected_learned
         typed = file_type_metric(conn)
-        assert typed["non_so"] == 1
-        assert typed["sbagliato"] == 1
-        assert typed["errors"] == typed["sbagliato"] + typed["non_so"]
-        assert typed["learning_examples"] == typed["sbagliato"]
+        assert typed["correct"] == 1
+        assert typed["wrong"] == 1
+        assert typed["not_sure"] == 1
+        assert typed["errors"] == typed["wrong"] + typed["not_sure"]
+        assert typed["learning_examples"] == typed["wrong"]
         build_testset(conn)
         stored = {
             row["mapping_decision_id"]
@@ -439,8 +513,9 @@ def test_measurement_keeps_first_sight_and_counts_learned_apart():
         }
         assert stored == labels
         report = evaluate_testset(conn)
-        assert report["groups"]["mapping"]["learned"] == {"confirmed": 1, "rejected": 1, "revoked": 1}
-        assert report["groups"]["mapping"]["file_type"]["non_so"] == 1
+        assert report["groups"]["mapping"]["learned"] == expected_learned
+        assert report["groups"]["mapping"]["file_type"]["not_sure"] == 1
+        assert report["groups"]["mapping"]["file_type"]["wrong"] == 1
         assert report["groups"]["mapping"]["file_type"]["errors"] == 2
         assert report["groups"]["mapping"]["file_type"]["learning_examples"] == 1
         conn.commit()
@@ -453,45 +528,115 @@ def test_database_refuses_a_revoke_or_file_type_from_another_company():
         _user(conn, "bea", company_b)
         host = _mapping(conn, company_id=company_a, source="isolata", field="COD_ART")
         correction = _decision(
-            conn,
-            host,
-            decision="reject",
-            company_id=company_a,
-            actor="ada",
-            source_name="isolata",
-            source_field="COD_ART",
-            corrected="unit_price",
+            conn, host, decision="reject", company_id=company_a, actor="ada",
+            source_name="isolata", source_field="COD_ART", corrected="unit_price",
         )
-        file_id = str(uuid.uuid4())
-        conn.execute(
-            """
-            INSERT INTO app.landing_batches (
-              id, source_name, watermark, row_count, proposed_type, proposed_score
-            )
-            VALUES (%s, 'isolata', 'wm', 1, 'order', 0.5)
-            """,
-            (file_id,),
+        file_id = _batch(
+            conn, company_a, "isolata", "wm", loaded_at="2024-01-01T00:00:00Z", proposed_type="order",
+        )
+        other_file = _batch(
+            conn, company_b, "isolata", "wm-b", loaded_at="2024-01-02T00:00:00Z", proposed_type="order",
         )
         conn.commit()
         with pytest.raises(psycopg.errors.RaiseException, match="altra azienda"):
             _decision(
-                conn, host, decision="annullata", company_id=company_b, actor="bea",
+                conn, host, decision="confirm", company_id=company_a, actor="bea",
+                source_name="isolata", source_field="COD_ART",
+            )
+            conn.commit()
+        conn.rollback()
+        with pytest.raises(psycopg.errors.RaiseException, match="altra azienda"):
+            _decision(
+                conn, host, decision="revoked", company_id=company_b, actor="bea",
+                source_name="isolata", source_field="COD_ART", revoked_decision_id=correction,
+            )
+            conn.commit()
+        conn.rollback()
+        revoked = _decision(
+            conn, host, decision="revoked", company_id=company_a, actor="ada",
+            source_name="isolata", source_field="COD_ART", revoked_decision_id=correction,
+        )
+        conn.commit()
+        with pytest.raises(psycopg.errors.RaiseException, match="si revoca solo una conferma o un rifiuto"):
+            _decision(
+                conn, host, decision="revoked", company_id=company_a, actor="ada",
+                source_name="isolata", source_field="COD_ART", revoked_decision_id=revoked,
+            )
+            conn.commit()
+        conn.rollback()
+        with pytest.raises(psycopg.errors.UniqueViolation):
+            _decision(
+                conn, host, decision="revoked", company_id=company_a, actor="ada",
                 source_name="isolata", source_field="COD_ART", revoked_decision_id=correction,
             )
             conn.commit()
         conn.rollback()
         with pytest.raises(psycopg.errors.RaiseException, match="altra azienda"):
-            conn.execute(
-                """
-                INSERT INTO app.table_type_decisions (
-                  id, company_id, file_id, proposed_type, score, decision, actor, actor_role
-                )
-                VALUES (%s, %s, %s, 'order', 0.5, 'corretto', 'bea', 'mapper')
-                """,
-                (str(uuid.uuid4()), company_a, file_id),
+            _file_decision(
+                conn, file_id, company_id=company_a, actor="bea", decision="correct",
+                proposed_type="order", decided_at="2024-02-01T00:00:00Z",
             )
             conn.commit()
         conn.rollback()
+        with pytest.raises(psycopg.errors.RaiseException, match="altra azienda"):
+            _file_decision(
+                conn, other_file, company_id=company_a, actor="ada", decision="correct",
+                proposed_type="order", decided_at="2024-02-01T00:00:00Z",
+            )
+            conn.commit()
+        conn.rollback()
+        with pytest.raises(psycopg.errors.CheckViolation):
+            _file_decision(
+                conn, file_id, company_id=company_a, actor="ada", decision="wrong",
+                correct_type="order", proposed_type="order", decided_at="2024-02-01T00:00:00Z",
+            )
+            conn.commit()
+        conn.rollback()
+
+
+def test_two_companies_share_a_source_name_and_a_null_company_stays_unique():
+    company_a, company_b = _companies()
+    with connect() as conn:
+        conn.execute(
+            "INSERT INTO app.sources (name, source_class, company_id) VALUES ('condivisa', 'external', %s)",
+            (company_a,),
+        )
+        conn.execute(
+            "INSERT INTO app.sources (name, source_class, company_id) VALUES ('condivisa', 'manual', %s)",
+            (company_b,),
+        )
+        conn.execute(
+            "INSERT INTO app.sources (name, source_class) VALUES ('eredita', 'external')"
+        )
+        conn.commit()
+        with pytest.raises(psycopg.errors.UniqueViolation):
+            conn.execute(
+                "INSERT INTO app.sources (name, source_class) VALUES ('eredita', 'manual')"
+            )
+            conn.commit()
+        conn.rollback()
+        with pytest.raises(psycopg.errors.UniqueViolation):
+            conn.execute(
+                """
+                INSERT INTO app.sources (name, source_class, company_id)
+                VALUES ('condivisa', 'operational', %s)
+                """,
+                (company_a,),
+            )
+            conn.commit()
+        conn.rollback()
+
+
+def test_mapper_without_a_company_sees_no_files(client: TestClient):
+    company_a, _company_b = _companies()
+    with connect() as conn:
+        _user(conn, "nuda", None)
+        _batch(conn, company_a, "visibile", "wm", loaded_at="2024-01-01T00:00:00Z", proposed_type="order")
+        conn.commit()
+    logged = client.post("/api/login", json={"username": "nuda", "password": "nuda-secret"})
+    assert logged.status_code == 200, logged.text
+    listed = client.get("/api/mappings").json()
+    assert listed["files"] == []
 
 
 def test_0010_changes_the_live_comment_and_does_not_rewrite_rows():
@@ -518,10 +663,21 @@ def test_review_markup_uses_the_server_phrase_and_hides_revoke_on_a_rule():
     assert "Conferma i suggerimenti forti" in button
     assert "soglia" not in button.casefold()
     script = (ROOT / "apps" / "web" / "app.js").read_text(encoding="utf-8")
+    escape_js = (ROOT / "apps" / "web" / "escape.js").read_text(encoding="utf-8")
+    css = (ROOT / "apps" / "web" / "styles.css").read_text(encoding="utf-8")
+    note = "Indicazione automatica, da verificare"
     assert "decided_at" not in script
     assert "soglia" not in script.casefold()
     assert "sicuro" not in script.casefold()
     assert "garantito" not in script.casefold()
+    assert note not in script
+    assert note not in escape_js
+    assert "Array.isArray(file.choices)" in script
+    assert 'submitFileType(file.file_id, "correct")' in script
+    assert 'submitFileType(file.file_id, "not_sure")' in script
+    assert 'submitFileType(file.file_id, "wrong", code)' in script
+    assert "@media (max-width: 700px)" in css
+    assert "td.mapping-actions { white-space: normal;" in css
     rendered = subprocess.run(
         ["node", "-e", _MARKUP_CHECK],
         cwd=ROOT,
@@ -544,7 +700,7 @@ def _companies() -> tuple[str, str]:
     return company_a, company_b
 
 
-def _user(conn, username: str, company_id: str) -> None:
+def _user(conn, username: str, company_id: str | None) -> None:
     conn.execute(
         """
         INSERT INTO app.users (username, password_hash, role, company_id)
@@ -564,17 +720,24 @@ def _mapping(
     source_decision_id: str | None = None,
     target_property: str = "product_source_key",
     valid_from: str | None = None,
+    batch_id: str | None = None,
 ) -> str:
     mapping_id = str(uuid.uuid4())
     conn.execute(
         """
         INSERT INTO app.field_mappings (
           id, source_name, source_field, target_type, target_property,
-          confidence, status, profile, company_id, origin, source_decision_id, valid_from
+          confidence, status, profile, company_id, origin, source_decision_id, valid_from, batch_id
         )
-        VALUES (%s, %s, %s, 'OrderLine', %s, 0.99, 'proposed', 'order_line', %s, %s, %s, coalesce(%s::timestamptz, now()))
+        VALUES (
+          %s, %s, %s, 'OrderLine', %s, 0.99, 'proposed', 'order_line', %s, %s, %s,
+          coalesce(%s::timestamptz, now()), %s
+        )
         """,
-        (mapping_id, source, field, target_property, company_id, origin, source_decision_id, valid_from),
+        (
+            mapping_id, source, field, target_property, company_id, origin,
+            source_decision_id, valid_from, batch_id,
+        ),
     )
     return mapping_id
 
@@ -593,6 +756,8 @@ def _decision(
     source_decision_id: str | None = None,
     revoked_decision_id: str | None = None,
     method: str = "human",
+    batch_id: str | None = None,
+    decided_at: str | None = None,
 ) -> str:
     decision_id = str(uuid.uuid4())
     conn.execute(
@@ -600,9 +765,14 @@ def _decision(
         INSERT INTO app.mapping_decisions (
           id, mapping_id, decision, confidence_method, actor, actor_role,
           source_name, source_field, target_property, target_property_corrected,
-          score, confidence_rule, company_id, origin, source_decision_id, revoked_decision_id
+          score, confidence_rule, company_id, origin, source_decision_id,
+          revoked_decision_id, batch_id, decided_at
         )
-        VALUES (%s, %s, %s, %s, %s, 'mapper', %s, %s, 'product_source_key', %s, 0.80, 'mapping.header_similarity@v1', %s, %s, %s, %s)
+        VALUES (
+          %s, %s, %s, %s, %s, 'mapper', %s, %s, 'product_source_key', %s,
+          0.80, 'mapping.header_similarity@v1', %s, %s, %s, %s, %s,
+          coalesce(%s::timestamptz, now())
+        )
         """,
         (
             decision_id,
@@ -617,6 +787,59 @@ def _decision(
             origin,
             source_decision_id,
             revoked_decision_id,
+            batch_id,
+            decided_at,
+        ),
+    )
+    return decision_id
+
+
+def _batch(
+    conn,
+    company_id: str | None,
+    source: str,
+    watermark: str,
+    *,
+    loaded_at: str,
+    proposed_type: str = "order_line",
+) -> str:
+    batch_id = str(uuid.uuid4())
+    conn.execute(
+        """
+        INSERT INTO app.landing_batches (
+          id, source_name, watermark, row_count, proposed_type, proposed_score,
+          proposed_rule, company_id, loaded_at
+        )
+        VALUES (%s, %s, %s, 1, %s, 0.81, 'mapping.table_shape@v1', %s, %s)
+        """,
+        (batch_id, source, watermark, proposed_type, company_id, loaded_at),
+    )
+    return batch_id
+
+
+def _file_decision(
+    conn,
+    file_id: str,
+    *,
+    company_id: str,
+    actor: str,
+    decision: str,
+    proposed_type: str,
+    decided_at: str,
+    correct_type: str | None = None,
+) -> str:
+    decision_id = str(uuid.uuid4())
+    conn.execute(
+        """
+        INSERT INTO app.table_type_decisions (
+          id, company_id, file_id, proposed_type, score, rule_version,
+          decision, correct_type, actor, actor_role, decided_at
+        )
+        VALUES (%s, %s, %s, %s, 0.81, 'mapping.table_shape@v1', %s, %s, %s, 'mapper', %s)
+        """,
+        (
+            decision_id, company_id, file_id, proposed_type, decision,
+            correct_type, actor, decided_at,
         ),
     )
     return decision_id
@@ -636,7 +859,7 @@ def _csv(header: str, row: str) -> bytes:
 
 
 _MARKUP_CHECK = r"""
-const { mappingRow } = require("./apps/web/escape.js");
+const { mappingRow, tableTypeMarkup } = require("./apps/web/escape.js");
 const learned = mappingRow({
   id: "1",
   source_name: "righe",
@@ -648,7 +871,7 @@ const learned = mappingRow({
   origin: "learned",
   origin_text: "Da una correzione di ada del 17/10/2026",
   decision_id: "dec-1",
-  band: "forte",
+  band: "verificare",
   band_note: "sicuro",
 });
 if (!learned.includes("Da una correzione di ada del 17/10/2026")) process.exit(1);
@@ -666,13 +889,26 @@ const rule = mappingRow({
   origin: "rule",
   decision_id: null,
   band: "forte",
-  band_note: "garantito",
+  band_note: "Indicazione automatica, da verificare",
 });
 if (!rule.includes("Da regola")) process.exit(5);
 if (rule.includes("Annulla correzione")) process.exit(6);
 if (!rule.includes("Suggerimento forte")) process.exit(7);
 if (!rule.includes("Indicazione automatica, da verificare")) process.exit(8);
-if (rule.includes("garantito") || rule.includes("sicuro")) process.exit(9);
+const hostile = mappingRow({
+  id: "4",
+  source_name: "righe",
+  source_field: "COD_ART",
+  target_type: "OrderLine",
+  target_property: "product_source_key",
+  confidence: 0.99,
+  status: "proposed",
+  origin: "rule",
+  band: "forte",
+  band_note: "<img src=x onerror=alert(1)>",
+});
+if (hostile.includes("<img")) process.exit(9);
+if (!hostile.includes("&lt;img")) process.exit(10);
 const weak = mappingRow({
   id: "3",
   source_name: "x",
@@ -684,7 +920,25 @@ const weak = mappingRow({
   origin: "rule",
   band: "verificare",
 });
-if (!weak.includes("Da verificare")) process.exit(10);
-if (weak.includes("Indicazione automatica")) process.exit(11);
+if (!weak.includes("Da verificare")) process.exit(11);
+if (weak.includes("Indicazione automatica")) process.exit(12);
+const typed = tableTypeMarkup({
+  source_name: "solo",
+  file_id: "file-1",
+  profile: "order_line",
+  profile_label: "Probabile righe d'ordine",
+  choices: [
+    { code: "product", label: "Anagrafica prodotti" },
+    { code: "not_sure", label: "Non so" },
+    { code: "x", label: "<script>alert(1)</script>" },
+  ],
+});
+if (!typed.includes("Scegli il tipo")) process.exit(13);
+if (!typed.includes("disabled")) process.exit(14);
+if (!typed.includes("Anagrafica prodotti") || !typed.includes("Non so")) process.exit(15);
+if (typed.includes("<script>")) process.exit(16);
+if (!typed.includes("&lt;script&gt;")) process.exit(17);
+if (typed.includes("Probabile anagrafica")) process.exit(18);
+if (!typed.includes("Probabile righe d&#39;ordine") && !typed.includes("Probabile righe d'ordine")) process.exit(19);
 console.log("ok");
 """

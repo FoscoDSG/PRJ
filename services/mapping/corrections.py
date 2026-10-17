@@ -20,7 +20,7 @@ from zoneinfo import ZoneInfo
 import psycopg
 
 from services.mapping.headers import normalize_header
-from services.mapping.labels import PROFILE_LABELS, profile_label
+from services.mapping.labels import PROFILE_LABELS, profile_label, type_list_label
 
 ROME = ZoneInfo("Europe/Rome")
 STRONG_NOTE = "Indicazione automatica, da verificare"
@@ -96,7 +96,7 @@ def active_correction(
     revoked = {
         row["revoked_decision_id"]
         for row in scoped
-        if row["decision"] == "annullata" and row["revoked_decision_id"]
+        if row["decision"] == "revoked" and row["revoked_decision_id"]
     }
     rejected = {
         row["source_decision_id"]
@@ -161,53 +161,86 @@ def present_origin(
     }
 
 
-def learned_metric(conn: psycopg.Connection) -> dict[str, int]:
-    """Confirmed, rejected, and revoked learned suggestions. Separate from the rule."""
-    row = conn.execute(
+def learned_metric(conn: psycopg.Connection) -> dict[str, Any]:
+    """Latest decision per mapping. Revocations are split by origin.
+
+    A mapping with several rows counts once. ``revoked.learned`` is a revoked
+    learned suggestion. ``revoked.rule`` is a revoked rule suggestion, including
+    a row whose origin was never stored.
+    """
+    rows = conn.execute(
         """
-        SELECT
-          count(*) FILTER (WHERE origin = 'learned' AND decision = 'confirm') AS confirmed,
-          count(*) FILTER (WHERE origin = 'learned' AND decision = 'reject') AS rejected,
-          count(*) FILTER (WHERE decision = 'annullata') AS revoked
-        FROM app.mapping_decisions
+        SELECT DISTINCT ON (d.mapping_id)
+               d.decision,
+               CASE
+                 WHEN d.decision = 'revoked' THEN COALESCE(d.origin, prev.origin)
+                 ELSE d.origin
+               END AS origin
+        FROM app.mapping_decisions d
+        LEFT JOIN app.mapping_decisions prev ON prev.id = d.revoked_decision_id
+        ORDER BY d.mapping_id, d.decided_at DESC, d.id DESC
         """
-    ).fetchone()
+    ).fetchall()
+    confirmed = rejected = revoked_rule = revoked_learned = 0
+    for row in rows:
+        if row["decision"] == "confirm" and row["origin"] == "learned":
+            confirmed += 1
+        elif row["decision"] == "reject" and row["origin"] == "learned":
+            rejected += 1
+        elif row["decision"] == "revoked":
+            if row["origin"] == "learned":
+                revoked_learned += 1
+            else:
+                revoked_rule += 1
     return {
-        "confirmed": int(row["confirmed"]),
-        "rejected": int(row["rejected"]),
-        "revoked": int(row["revoked"]),
+        "confirmed": confirmed,
+        "rejected": rejected,
+        "revoked": {"rule": revoked_rule, "learned": revoked_learned},
     }
 
 
 def file_type_metric(conn: psycopg.Connection) -> dict[str, int]:
-    """``non_so`` is an error of the suggestion and is not a learning example.
+    """Latest decision on the first batch of a company and a source.
 
-    A ``sbagliato`` with a type from the closed list is a learning example.
-    It is still an error of the suggestion that was shown.
+    ``not_sure`` is an error of the suggestion and is not a learning example.
+    A ``wrong`` with a type from the closed list is a learning example.
+    Later files of the same company and source stay out.
     """
     row = conn.execute(
         """
+        WITH first_batch AS (
+          SELECT DISTINCT ON (company_id, source_name) id
+          FROM app.landing_batches
+          ORDER BY company_id, source_name, loaded_at, id
+        ),
+        latest AS (
+          SELECT DISTINCT ON (d.file_id) d.decision
+          FROM app.table_type_decisions d
+          JOIN first_batch f ON f.id = d.file_id
+          ORDER BY d.file_id, d.decided_at DESC, d.id DESC
+        )
         SELECT
-          count(*) FILTER (WHERE decision = 'corretto') AS corretto,
-          count(*) FILTER (WHERE decision = 'sbagliato') AS sbagliato,
-          count(*) FILTER (WHERE decision = 'non_so') AS non_so
-        FROM app.table_type_decisions
+          count(*) FILTER (WHERE decision = 'correct') AS correct,
+          count(*) FILTER (WHERE decision = 'wrong') AS wrong,
+          count(*) FILTER (WHERE decision = 'not_sure') AS not_sure
+        FROM latest
         """
     ).fetchone()
-    sbagliato = int(row["sbagliato"])
-    non_so = int(row["non_so"])
+    wrong = int(row["wrong"])
+    not_sure = int(row["not_sure"])
     return {
-        "corretto": int(row["corretto"]),
-        "sbagliato": sbagliato,
-        "non_so": non_so,
-        "errors": sbagliato + non_so,
-        "learning_examples": sbagliato,
+        "correct": int(row["correct"]),
+        "wrong": wrong,
+        "not_sure": not_sure,
+        "errors": wrong + not_sure,
+        "learning_examples": wrong,
     }
 
 
 def table_file_choice_codes() -> list[dict[str, str]]:
-    choices = [{"code": code, "label": label} for code, label in PROFILE_LABELS.items()]
-    choices.append({"code": "non_so", "label": "Non so"})
+    """Closed list for the page. Labels do not say Probabile."""
+    choices = [{"code": code, "label": type_list_label(code)} for code in PROFILE_LABELS]
+    choices.append({"code": "not_sure", "label": "Non so"})
     return choices
 
 

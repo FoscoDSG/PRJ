@@ -602,13 +602,19 @@ def _source_class(conn: psycopg.Connection, source: str, origin: str) -> str:
         return "unknown"
     if origin == "inferred":
         return "unknown"
-    row = conn.execute(
-        "SELECT source_class FROM app.sources WHERE name = %s",
+    rows = conn.execute(
+        "SELECT company_id::text AS company_id, source_class FROM app.sources WHERE name = %s",
         (source,),
-    ).fetchone()
-    if row is None:
+    ).fetchall()
+    if not rows:
         return "unknown"
-    return row["source_class"]
+    legacy = [row for row in rows if row["company_id"] is None]
+    if legacy:
+        return legacy[0]["source_class"]
+    classes = {row["source_class"] for row in rows}
+    if len(classes) == 1:
+        return rows[0]["source_class"]
+    return "unknown"
 
 
 def _has_fact(conn: psycopg.Connection, entity_id: str, name: str) -> bool:

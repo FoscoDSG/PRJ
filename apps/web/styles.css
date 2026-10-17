@@ -73,6 +73,14 @@ tbody tr:nth-child(even) { background: #fafbfc; } tbody tr:hover { background: v
 .suggestion-note { display: block; color: var(--muted); font-size: var(--fs-xs); font-weight: 650; }
 .file-type-actions { display: inline-flex; flex-wrap: wrap; gap: var(--s2); align-items: center; margin: 0 0 var(--s3); }
 .file-type-choice { font-size: var(--fs-sm); }
+td.mapping-actions { white-space: nowrap; }
+@media (max-width: 700px) {
+  .table-wrap { overflow-x: visible; max-width: 100%; }
+  table { table-layout: fixed; }
+  th, td { overflow-wrap: anywhere; }
+  td.mapping-actions { white-space: normal; width: 34%; }
+  td.mapping-actions button { white-space: normal; }
+}
 
 /* Card e liste */
 .cards, .stack { display: grid; gap: var(--s3); }

@@ -37,8 +37,11 @@ def register_source(
     if source_class not in SOURCE_CLASSES:
         raise AppError(422, "Classe di provenienza non valida")
     current = conn.execute(
-        "SELECT source_class FROM app.sources WHERE name = %s",
-        (cleaned,),
+        """
+        SELECT source_class FROM app.sources
+        WHERE name = %s AND company_id IS NOT DISTINCT FROM %s::uuid
+        """,
+        (cleaned, company_id),
     ).fetchone()
     if current is None:
         conn.execute(
