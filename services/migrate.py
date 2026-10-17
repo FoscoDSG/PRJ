@@ -80,6 +80,12 @@ _MIGRATION_ALLOWLIST: dict[str, frozenset[str]] = {
         "ALTER TABLE app.mapping_decisions DROP CONSTRAINT IF EXISTS mapping_decisions_decision_check",
         "ALTER TABLE app.mapping_decisions DROP CONSTRAINT IF EXISTS mapping_decisions_confidence_method_check",
     }),
+    "0010_companies_learned_corrections.sql": frozenset({
+        "ALTER TABLE app.mapping_decisions DROP CONSTRAINT IF EXISTS mapping_decisions_decision_check",
+        "ALTER TABLE app.sources DROP CONSTRAINT IF EXISTS sources_pkey",
+        "ALTER TABLE app.landing_batches DROP CONSTRAINT IF EXISTS landing_batches_source_name_watermark_key",
+        "ALTER TABLE app.ingest_watermarks DROP CONSTRAINT IF EXISTS ingest_watermarks_pkey",
+    }),
 }
 
 # Columns created by db/schema.sql. Extra columns still count as the legacy

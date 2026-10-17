@@ -34,11 +34,19 @@ const html = [
     status: "proposed",
     profile: value,
     profile_label: value,
+    origin: "learned",
+    origin_text: value,
+    decision_id: value,
+    actor: value,
+    decided_at: value,
+    band: "forte",
+    band_note: value,
   }),
   tableTypeMarkup({
     source_name: value,
     profile: value,
     profile_label: value,
+    file_id: value,
   }),
   driftCard({ id: value, source_name: value, diff: { added: [value] } }),
   orderCard({
@@ -99,7 +107,7 @@ if (!html.includes(escapeHtml(value))) {
 
 const allowedTags = new Set([
   "span", "button", "article", "strong", "pre", "tr", "td", "code",
-  "h3", "div", "p", "ul", "li", "label", "input", "h2",
+  "h3", "div", "p", "ul", "li", "label", "input", "h2", "select", "option",
 ]);
 const structural = new Set([
   "pill", "card", "meta", "ghost", "formula", "edges",
@@ -107,6 +115,8 @@ const structural = new Set([
   "card-title", "section-heading", "mapping-confidence", "fact-list",
   "fact-confidence", "confidence-badge", "decision-bar", "blocked-reason",
   "audit-when", "audit-what", "audit-order", "audit-detail",
+  "origin-line", "suggestion-band", "suggestion-note",
+  "file-type-actions", "file-type-choice", "mapping-actions",
 ]);
 const tagRe = /<\/?([a-zA-Z][a-zA-Z0-9]*)\b([^>]*)>/g;
 const attrRe = /([^\s=/]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+)))?/g;
@@ -159,6 +169,8 @@ const requiredClasses = [
   "card-title", "section-heading", "mapping-confidence", "fact-list",
   "fact-confidence", "confidence-badge", "decision-bar", "blocked-reason",
   "audit-when", "audit-what", "audit-order", "audit-detail",
+  "origin-line", "suggestion-band", "suggestion-note", "file-type-actions",
+  "file-type-choice", "mapping-actions",
 ];
 for (const token of requiredClasses) {
   if (!seenClasses.has(token)) {

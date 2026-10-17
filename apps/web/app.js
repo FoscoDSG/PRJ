@@ -129,7 +129,7 @@ document.querySelector("#load-fixture").addEventListener("click", async () => {
 document.querySelector("#confirm-high").addEventListener("click", async () => {
   try {
     const result = await api("/api/mappings/confirm-confident", { method: "POST" });
-    showFlash(`Confermati ${result.confirmed} mapping sopra soglia.`);
+    showFlash(`Confermati ${result.confirmed} suggerimenti forti.`);
     loadMappings();
   } catch (err) {
     showFlash(err.message);
@@ -146,12 +146,18 @@ document.querySelector("#materialize").addEventListener("click", async () => {
   }
 });
 
-function renderProfileLabels(mappings) {
+function renderProfileLabels(mappings, files) {
   const container = document.querySelector("#profile-labels");
   container.replaceChildren();
   const seen = new Map();
   for (const item of mappings || []) {
     if (!seen.has(item.source_name)) seen.set(item.source_name, item);
+  }
+  const bySource = new Map();
+  for (const file of files || []) {
+    if (file && file.source_name && !bySource.has(file.source_name)) {
+      bySource.set(file.source_name, file);
+    }
   }
   for (const item of seen.values()) {
     const row = document.createElement("p");
@@ -164,6 +170,70 @@ function renderProfileLabels(mappings) {
     text.textContent = profileLabelText(item);
     row.append(source, document.createTextNode(" "), text);
     container.append(row);
+    const file = bySource.get(item.source_name);
+    if (file && file.file_id && Array.isArray(file.choices)) container.append(fileTypeActions(file));
+  }
+}
+
+function fileTypeActions(file) {
+  const actions = document.createElement("div");
+  actions.className = "file-type-actions";
+  const ok = document.createElement("button");
+  ok.type = "button";
+  ok.textContent = "Corretto";
+  ok.addEventListener("click", () => submitFileType(file.file_id, "correct"));
+  const wrong = document.createElement("button");
+  wrong.type = "button";
+  wrong.className = "ghost";
+  wrong.textContent = "Non è questo tipo";
+  const picker = document.createElement("label");
+  picker.className = "file-type-choice";
+  picker.hidden = true;
+  picker.append(document.createTextNode("Tipo corretto "));
+  const select = document.createElement("select");
+  const empty = document.createElement("option");
+  empty.value = "";
+  empty.textContent = "Scegli il tipo…";
+  select.append(empty);
+  for (const choice of file.choices) {
+    const option = document.createElement("option");
+    option.value = String(choice.code ?? "");
+    option.textContent = String(choice.label ?? "");
+    select.append(option);
+  }
+  const send = document.createElement("button");
+  send.type = "button";
+  send.textContent = "Registra tipo";
+  send.disabled = true;
+  select.addEventListener("change", () => {
+    send.disabled = select.value === "";
+  });
+  picker.append(select, document.createTextNode(" "), send);
+  wrong.addEventListener("click", () => {
+    picker.hidden = false;
+  });
+  send.addEventListener("click", () => {
+    const code = select.value;
+    if (code === "") return;
+    if (code === "not_sure") submitFileType(file.file_id, "not_sure");
+    else submitFileType(file.file_id, "wrong", code);
+  });
+  actions.append(ok, document.createTextNode(" "), wrong, document.createTextNode(" "), picker);
+  return actions;
+}
+
+async function submitFileType(fileId, decision, correctType) {
+  const body = { decision };
+  if (correctType) body.correct_type = correctType;
+  try {
+    await api(`/api/files/${encodeURIComponent(fileId)}/type`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+    showFlash("Tipo di file registrato.");
+    loadMappings();
+  } catch (err) {
+    showFlash(err.message);
   }
 }
 
@@ -215,7 +285,7 @@ async function loadMappings() {
       loadMappings();
     });
   });
-  renderProfileLabels(data.mappings);
+  renderProfileLabels(data.mappings, data.files);
   const body = document.querySelector("#mappings");
   body.innerHTML = data.mappings.map(mappingRow).join("");
   body.querySelectorAll("button[data-confirm]").forEach((button) => {
@@ -228,6 +298,20 @@ async function loadMappings() {
     button.addEventListener("click", async () => {
       await api(`/api/mappings/${button.dataset.reject}/reject`, { method: "POST" });
       loadMappings();
+    });
+  });
+  body.querySelectorAll("button[data-revoke]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      try {
+        await api(`/api/mapping-decisions/${button.dataset.revoke}/revoke`, {
+          method: "POST",
+          body: "{}",
+        });
+        showFlash("Correzione annullata.");
+        loadMappings();
+      } catch (err) {
+        showFlash(err.message);
+      }
     });
   });
 }

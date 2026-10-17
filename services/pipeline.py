@@ -16,6 +16,7 @@ from services.agent.baseline import BASELINE_CONFIDENCE_RULE
 from services.agent.order_agent import build_context, run_order_agent
 from services.agent.stub_model import StubOrderModel
 from services.canonical.store import _put_fact, materialize
+from services.audit import record
 from services.errors import AppError
 from services.quality import document_reasons
 from services.ingest.csv_connector import read_csv
@@ -23,8 +24,8 @@ from services.ingest.document_connector import read_order_document
 from services.ingest.excel_connector import read_excel
 from services.ingest.landing import land
 from services.ingest.sql_connector import extract_sql
-from services.mapping.engine import rule_id_for
-from services.mapping.threshold import active_threshold
+from services.mapping.engine import THRESHOLD, assigned_mapping, rule_id_for
+from services.mapping.labels import PROFILE_LABELS
 from services.rules.engine import requires_cfo
 from services.text import coerce_number
 from services.sources import register_source
@@ -75,10 +76,18 @@ def ingest_csv(
     actor: str,
     role: str,
     source_class: str,
+    company_id: str | None = None,
 ) -> dict:
     _require_mapper(role)
-    register_source(conn, source_name, source_class)
-    return land(conn, source_name=source_name, extracted=read_csv(path), actor=actor, role=role)
+    register_source(conn, source_name, source_class, company_id=company_id)
+    return land(
+        conn,
+        source_name=source_name,
+        extracted=read_csv(path),
+        actor=actor,
+        role=role,
+        company_id=company_id,
+    )
 
 
 def ingest_excel(
@@ -88,13 +97,28 @@ def ingest_excel(
     actor: str,
     role: str,
     source_class: str,
+    company_id: str | None = None,
 ) -> dict:
     _require_mapper(role)
-    register_source(conn, source_name, source_class)
-    return land(conn, source_name=source_name, extracted=read_excel(path), actor=actor, role=role)
+    register_source(conn, source_name, source_class, company_id=company_id)
+    return land(
+        conn,
+        source_name=source_name,
+        extracted=read_excel(path),
+        actor=actor,
+        role=role,
+        company_id=company_id,
+    )
 
 
-def ingest_document(conn: psycopg.Connection, path: Path, actor: str, role: str, model: Ontology) -> dict:
+def ingest_document(
+    conn: psycopg.Connection,
+    path: Path,
+    actor: str,
+    role: str,
+    model: Ontology,
+    company_id: str | None = None,
+) -> dict:
     del model
     _require_mapper(role)
     try:
@@ -104,8 +128,18 @@ def ingest_document(conn: psycopg.Connection, path: Path, actor: str, role: str,
     reasons = document_reasons(document["customer"], document["lines"], conn)
     landed = []
     for source_name, extracted in document["sources"]:
-        register_source(conn, source_name, "external")
-        landed.append({"source": source_name, **land(conn, source_name=source_name, extracted=extracted, actor=actor, role=role)})
+        register_source(conn, source_name, "external", company_id=company_id)
+        landed.append({
+            "source": source_name,
+            **land(
+                conn,
+                source_name=source_name,
+                extracted=extracted,
+                actor=actor,
+                role=role,
+                company_id=company_id,
+            ),
+        })
         conn.execute(
             """
             UPDATE app.field_mappings
@@ -168,21 +202,31 @@ def ingest_sql(
     actor: str,
     role: str,
     source_class: str,
+    company_id: str | None = None,
 ) -> dict:
     _require_mapper(role)
-    register_source(conn, source_name, source_class)
+    register_source(conn, source_name, source_class, company_id=company_id)
     try:
         extracted = extract_sql(conn, table)
     except ValueError as exc:
         raise AppError(400, str(exc)) from exc
-    return land(conn, source_name=source_name, extracted=extracted, actor=actor, role=role)
+    return land(
+        conn,
+        source_name=source_name,
+        extracted=extracted,
+        actor=actor,
+        role=role,
+        company_id=company_id,
+    )
 
 
 def _mapping_row(conn: psycopg.Connection, mapping_id: str) -> dict:
     row = conn.execute(
         """
         SELECT id::text, source_name, source_field, target_type, target_property,
-               confidence, profile, status
+               confidence, profile, status, company_id::text AS company_id,
+               origin, source_decision_id::text AS source_decision_id,
+               batch_id::text AS batch_id
         FROM app.field_mappings
         WHERE id = %s AND valid_to IS NULL
         """,
@@ -204,6 +248,14 @@ def _corrected_property(model: Ontology, target_type: str, corrected: str | None
     return value
 
 
+def _suggestion_origin(row: dict) -> tuple[str, str | None]:
+    origin = row.get("origin") or "rule"
+    source_decision_id = row.get("source_decision_id")
+    if origin != "learned" or not source_decision_id:
+        return "rule", None
+    return "learned", source_decision_id
+
+
 def _record_mapping_decision(
     conn: psycopg.Connection,
     row: dict,
@@ -213,16 +265,18 @@ def _record_mapping_decision(
     actor: str,
     role: str,
     corrected: str | None,
+    company_id: str | None,
 ) -> str:
     decision_id = str(uuid.uuid4())
+    origin, source_decision_id = _suggestion_origin(row)
     conn.execute(
         """
         INSERT INTO app.mapping_decisions (
           id, mapping_id, decision, confidence_method, actor, actor_role,
           source_name, source_field, target_property, target_property_corrected,
-          score, confidence_rule
+          score, confidence_rule, company_id, origin, source_decision_id, batch_id
         )
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         """,
         (
             decision_id,
@@ -237,6 +291,10 @@ def _record_mapping_decision(
             corrected,
             row["confidence"],
             rule_id_for(row["profile"], row["source_field"]),
+            company_id,
+            origin,
+            source_decision_id,
+            row.get("batch_id"),
         ),
     )
     return decision_id
@@ -250,11 +308,13 @@ def confirm_mapping(
     model: Ontology,
     *,
     target_property_corrected: str | None = None,
+    company_id: str | None = None,
 ) -> dict:
     _require_mapper(role)
     if target_property_corrected is not None and str(target_property_corrected).strip() != "":
         raise AppError(422, "La proprietà corretta si registra solo su un rifiuto")
     row = _mapping_row(conn, mapping_id)
+    _require_visible_company(row.get("company_id"), company_id)
     model.require_prop(row["target_type"], row["target_property"])
     corrected = None
     conn.execute(
@@ -269,6 +329,7 @@ def confirm_mapping(
         actor=actor,
         role=role,
         corrected=corrected,
+        company_id=company_id,
     )
     return {"id": mapping_id, "status": "confirmed", "decision_id": decision_id}
 
@@ -281,9 +342,11 @@ def reject_mapping(
     actor: str,
     model: Ontology,
     target_property_corrected: str | None = None,
+    company_id: str | None = None,
 ) -> dict:
     _require_mapper(role)
     row = _mapping_row(conn, mapping_id)
+    _require_visible_company(row.get("company_id"), company_id)
     corrected = _corrected_property(model, row["target_type"], target_property_corrected)
     updated = conn.execute(
         """
@@ -303,21 +366,41 @@ def reject_mapping(
         actor=actor,
         role=role,
         corrected=corrected,
+        company_id=company_id,
     )
     return {"id": mapping_id, "status": "rejected", "decision_id": decision_id}
 
 
-def confirm_confident(conn: psycopg.Connection, role: str, model: Ontology, *, actor: str) -> int:
+def confirm_confident(
+    conn: psycopg.Connection,
+    role: str,
+    model: Ontology,
+    *,
+    actor: str,
+    company_id: str | None = None,
+) -> int:
+    """Confirm strong rule suggestions. Learned rows stay proposed.
+
+    Strong is the uncalibrated fallback 0.75, not a measured guarantee.
+    """
     _require_mapper(role)
-    threshold, _measured, _support = active_threshold(conn)
     rows = conn.execute(
         """
         SELECT id::text, source_name, source_field, target_type, target_property,
-               confidence, profile, status
+               confidence, profile, status, company_id::text AS company_id,
+               origin, source_decision_id::text AS source_decision_id,
+               batch_id::text AS batch_id
         FROM app.field_mappings
-        WHERE status = 'proposed' AND valid_to IS NULL AND confidence >= %s
+        WHERE status = 'proposed'
+          AND valid_to IS NULL
+          AND confidence >= %s
+          AND (origin IS NULL OR origin = 'rule')
+          AND (
+            company_id IS NULL
+            OR (%s::uuid IS NOT NULL AND company_id = %s::uuid)
+          )
         """,
-        (threshold,),
+        (THRESHOLD, company_id, company_id),
     ).fetchall()
     count = 0
     for row in rows:
@@ -334,9 +417,221 @@ def confirm_confident(conn: psycopg.Connection, role: str, model: Ontology, *, a
             actor=actor,
             role=role,
             corrected=None,
+            company_id=company_id,
         )
         count += 1
     return count
+
+
+def revoke_correction(
+    conn: psycopg.Connection,
+    decision_id: str,
+    *,
+    actor: str,
+    role: str,
+    company_id: str | None,
+) -> dict:
+    """Append revoked. The revoked row stays. Same company as the actor."""
+    _require_mapper(role)
+    if not company_id:
+        raise AppError(403, "Azienda non assegnata")
+    row = conn.execute(
+        """
+        SELECT id::text, mapping_id::text, decision, source_name, source_field,
+               target_property, target_property_corrected, score, confidence_rule,
+               company_id::text AS company_id, origin,
+               source_decision_id::text AS source_decision_id,
+               batch_id::text AS batch_id
+        FROM app.mapping_decisions
+        WHERE id = %s::uuid
+          AND company_id = %s::uuid
+        """,
+        (decision_id, company_id),
+    ).fetchone()
+    if row is None or row["decision"] != "reject" or not row["target_property_corrected"]:
+        raise AppError(404, "Correzione assente")
+    if row["score"] is None or not row["confidence_rule"]:
+        raise AppError(422, "Correzione senza fotografia")
+    already = conn.execute(
+        """
+        SELECT 1 FROM app.mapping_decisions
+        WHERE revoked_decision_id = %s::uuid
+        """,
+        (decision_id,),
+    ).fetchone()
+    if already:
+        raise AppError(409, "Correzione già annullata")
+    revoked_id = str(uuid.uuid4())
+    conn.execute(
+        """
+        INSERT INTO app.mapping_decisions (
+          id, mapping_id, decision, confidence_method, actor, actor_role,
+          source_name, source_field, target_property, score, confidence_rule,
+          company_id, origin, source_decision_id, batch_id, revoked_decision_id
+        )
+        VALUES (%s, %s, 'revoked', 'human', %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        """,
+        (
+            revoked_id,
+            row["mapping_id"],
+            actor,
+            role,
+            row["source_name"],
+            row["source_field"],
+            row["target_property"],
+            row["score"],
+            row["confidence_rule"],
+            company_id,
+            row["origin"],
+            row["source_decision_id"],
+            row["batch_id"],
+            decision_id,
+        ),
+    )
+    open_rows = conn.execute(
+        """
+        SELECT id::text, source_field, profile
+        FROM app.field_mappings
+        WHERE source_decision_id = %s::uuid
+          AND company_id = %s::uuid
+          AND status = 'proposed'
+          AND valid_to IS NULL
+        """,
+        (decision_id, company_id),
+    ).fetchall()
+    for mapping in open_rows:
+        target_type, target_property, confidence, _rule = assigned_mapping(
+            mapping["profile"], mapping["source_field"]
+        )
+        conn.execute(
+            """
+            UPDATE app.field_mappings
+            SET target_type = %s,
+                target_property = %s,
+                confidence = %s,
+                origin = 'rule',
+                source_decision_id = NULL
+            WHERE id = %s
+            """,
+            (target_type, target_property, confidence, mapping["id"]),
+        )
+    conn.execute(
+        """
+        UPDATE app.field_mappings
+        SET origin = 'rule', source_decision_id = NULL
+        WHERE source_decision_id = %s::uuid
+          AND company_id = %s::uuid
+        """,
+        (decision_id, company_id),
+    )
+    record(
+        conn,
+        action="human_decision",
+        actor=actor,
+        role=role,
+        entity_ref=decision_id,
+        payload={
+            "kind": "mapping_correction_revoked",
+            "revoked_decision_id": decision_id,
+            "decision_id": revoked_id,
+            "company_id": company_id,
+        },
+    )
+    return {"id": revoked_id, "revoked_decision_id": decision_id, "decision": "revoked"}
+
+
+def record_table_type_decision(
+    conn: psycopg.Connection,
+    file_id: str,
+    *,
+    actor: str,
+    role: str,
+    company_id: str | None,
+    decision: str,
+    correct_type: str | None,
+) -> dict:
+    """Store a file-type decision. Proposed type and score come from the batch."""
+    _require_mapper(role)
+    if not company_id:
+        raise AppError(403, "Azienda non assegnata")
+    if decision not in ("correct", "wrong", "not_sure"):
+        raise AppError(422, "Decisione sul tipo non valida")
+    if decision == "wrong":
+        if correct_type not in PROFILE_LABELS:
+            raise AppError(422, "Tipo corretto non ammesso")
+    elif correct_type not in (None, ""):
+        raise AppError(422, "Il tipo corretto si indica solo se il file non è di questo tipo")
+    else:
+        correct_type = None
+    batch = conn.execute(
+        """
+        SELECT id::text, source_name, proposed_type, proposed_score, proposed_rule,
+               company_id::text AS company_id
+        FROM app.landing_batches
+        WHERE id = %s::uuid
+        """,
+        (file_id,),
+    ).fetchone()
+    if batch is None or batch["company_id"] != company_id:
+        raise AppError(404, "File assente")
+    if decision == "wrong" and correct_type == batch["proposed_type"]:
+        raise AppError(422, "Il tipo corretto è quello già proposto")
+    if batch["proposed_type"] is None or batch["proposed_score"] is None or not batch["proposed_rule"]:
+        raise AppError(422, "Tipo di file non fotografato")
+    decision_id = str(uuid.uuid4())
+    conn.execute(
+        """
+        INSERT INTO app.table_type_decisions (
+          id, company_id, file_id, proposed_type, score, rule_version, decision, correct_type,
+          actor, actor_role
+        )
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        """,
+        (
+            decision_id,
+            company_id,
+            file_id,
+            batch["proposed_type"],
+            batch["proposed_score"],
+            batch["proposed_rule"],
+            decision,
+            correct_type,
+            actor,
+            role,
+        ),
+    )
+    record(
+        conn,
+        action="human_decision",
+        actor=actor,
+        role=role,
+        entity_ref=file_id,
+        payload={
+            "kind": "table_type_decision",
+            "decision_id": decision_id,
+            "file_id": file_id,
+            "proposed_type": batch["proposed_type"],
+            "decision": decision,
+            "correct_type": correct_type,
+            "company_id": company_id,
+        },
+    )
+    return {
+        "id": decision_id,
+        "file_id": file_id,
+        "proposed_type": batch["proposed_type"],
+        "score": batch["proposed_score"],
+        "rule_version": batch["proposed_rule"],
+        "decision": decision,
+        "correct_type": correct_type,
+    }
+
+
+def _require_visible_company(mapping_company: str | None, viewer_company: str | None) -> None:
+    if mapping_company is None:
+        return
+    if viewer_company is None or mapping_company != viewer_company:
+        raise AppError(404, "Mapping assente")
 
 
 def refresh_canonical(conn: psycopg.Connection, model: Ontology) -> dict[str, int]:

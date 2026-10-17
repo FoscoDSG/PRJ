@@ -230,8 +230,16 @@ def propose_mappings(
     rows: list[dict[str, Any]],
     actor: str | None = None,
     role: str | None = None,
+    company_id: str | None = None,
+    profile: str | None = None,
+    batch_id: str | None = None,
 ) -> dict[str, Any]:
-    profile = detect_profile(columns, rows)
+    # 0010 amends the 0007 rule: a learned suggestion may read mapping_decisions
+    # for this company, this source, and this normalized header only.
+    from services.mapping.corrections import active_correction
+
+    if profile is None:
+        profile = detect_profile(columns, rows)
     column_hash = digest(columns)
     previous = conn.execute(
         """
@@ -277,24 +285,53 @@ def propose_mappings(
             )
     created = []
     for column in columns:
-        existing = conn.execute(
+        open_rows = conn.execute(
             """
-            SELECT id FROM app.field_mappings
+            SELECT company_id::text AS company_id, origin,
+                   source_decision_id::text AS source_decision_id
+            FROM app.field_mappings
             WHERE source_name = %s AND source_field = %s AND valid_to IS NULL
             """,
             (source_name, column),
-        ).fetchone()
-        if existing:
-            continue
+        ).fetchall()
         target_type, target_property, confidence, _rule = assigned_mapping(profile, column)
+        origin = "rule"
+        source_decision_id = None
+        correction = active_correction(
+            conn,
+            company_id=company_id,
+            source_name=source_name,
+            header=normalize_header(column),
+        )
+        learned = (
+            correction is not None
+            and correction.get("target_type")
+            and correction.get("target_property_corrected")
+        )
+        if learned:
+            # A legacy NULL-company row stays as it is. The company gets its own
+            # proposal, and a second upload does not add another copy.
+            applied = any(
+                row["company_id"] == company_id and row["source_decision_id"] == correction["id"]
+                for row in open_rows
+            )
+            if applied or not company_id:
+                continue
+            target_type = correction["target_type"]
+            target_property = correction["target_property_corrected"]
+            origin = "learned"
+            source_decision_id = correction["id"]
+        elif open_rows:
+            continue
         mapping_id = str(uuid.uuid4())
         conn.execute(
             """
             INSERT INTO app.field_mappings (
               id, source_name, source_field, target_type, target_property,
-              confidence, status, samples, profile
+              confidence, status, samples, profile, company_id, origin, source_decision_id,
+              batch_id
             )
-            VALUES (%s, %s, %s, %s, %s, %s, 'proposed', %s, %s)
+            VALUES (%s, %s, %s, %s, %s, %s, 'proposed', %s, %s, %s, %s, %s, %s)
             """,
             (
                 mapping_id,
@@ -305,6 +342,10 @@ def propose_mappings(
                 confidence,
                 Json(_samples(rows, column)),
                 profile,
+                company_id,
+                origin,
+                source_decision_id,
+                batch_id,
             ),
         )
         created.append(
@@ -315,6 +356,8 @@ def propose_mappings(
                 "target_property": target_property,
                 "confidence": confidence,
                 "status": "proposed",
+                "origin": origin,
+                "decision_id": source_decision_id,
             }
         )
     if drift is not None:

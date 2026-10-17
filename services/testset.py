@@ -4,9 +4,17 @@ Outcomes come from human decisions, from a hand-written fixture, or from
 synthetic fixtures used only to exercise the code. Synthetic cases are stored
 and are excluded from the 30-case minimum and from threshold selection.
 A human mapping decision is a label: confidence_method human, who, when.
-The latest decision per mapping counts. A confirm and a reject both count.
-A reject is an error. A correction is a wrong prediction. The score is the
-one stored on the decision. Evaluation does not recompute it.
+The latest confirm or reject per mapping counts. revoked does not replace
+that label. A confirm and a reject both count. A reject is an error. A
+correction is a wrong prediction. The score is the one stored on the
+decision. Evaluation does not recompute it.
+Recognition keeps only the first batch of a company and a source. The batch
+is the file, not the insert time of the mapping. Bulk confirms stay out.
+Confirms and rejects of learned suggestions stay out of recognition and are
+counted apart, from the origin column, as the latest decision of that
+mapping. not_sure on a file type is an error of that suggestion and is not
+a learning example. File-type measurement keeps the latest decision on the
+first batch only.
 Mapping folds are split by source. A source is never in both threshold
 selection and evaluation. The agent is not a source of labels. Evaluation
 reads the labelled cases, not the decisions log. The running agent is the
@@ -26,6 +34,7 @@ from psycopg.types.json import Json
 
 from services.agent.order_agent import AGENT_VERSION
 from services.errors import AppError
+from services.mapping.corrections import file_type_metric, learned_metric
 from services.mapping.engine import HEADER_SIMILARITY_RULE, THRESHOLD
 
 AGENT_IS_RULES = "agente = regole, nessun confronto possibile"
@@ -128,14 +137,20 @@ def evaluate_testset(conn: psycopg.Connection) -> dict[str, Any]:
     mapping_report, threshold_row = _mapping_report(mapping_cases)
     above, below = _above_below(mapping_cases, float(threshold_row["threshold"]))
     bulk_rule = _bulk_rule_count(conn)
+    learned = learned_metric(conn)
+    file_type = file_type_metric(conn)
     mapping_report["human_above"] = above
     mapping_report["human_below"] = below
     mapping_report["bulk_rule"] = bulk_rule
     mapping_report["missing_source"] = missing_source
+    mapping_report["learned"] = learned
+    mapping_report["file_type"] = file_type
     threshold_row["metrics"]["human_above"] = above
     threshold_row["metrics"]["human_below"] = below
     threshold_row["metrics"]["bulk_rule"] = bulk_rule
     threshold_row["metrics"]["missing_source"] = missing_source
+    threshold_row["metrics"]["learned"] = learned
+    threshold_row["metrics"]["file_type"] = file_type
     _store_eval(conn, current, "mapping", mapping_report, HEADER_SIMILARITY_RULE)
     _store_threshold(conn, current, threshold_row, mapping_report)
     return {
@@ -190,21 +205,60 @@ def _human_recommendation_cases(conn: psycopg.Connection) -> list[dict[str, Any]
 def _latest_mapping_decisions(conn: psycopg.Connection) -> list[dict[str, Any]]:
     return list(conn.execute(
         """
-        SELECT DISTINCT ON (mapping_id)
-               id::text AS decision_id, mapping_id::text AS mapping_id, decision,
-               confidence_method, actor, decided_at, source_name, source_field,
-               target_property, target_property_corrected, score, confidence_rule
-        FROM app.mapping_decisions
-        ORDER BY mapping_id, decided_at DESC, id DESC
+        SELECT DISTINCT ON (d.mapping_id)
+               d.id::text AS decision_id, d.mapping_id::text AS mapping_id, d.decision,
+               d.confidence_method, d.actor, d.decided_at, d.source_name, d.source_field,
+               d.target_property, d.target_property_corrected, d.score, d.confidence_rule,
+               d.origin, d.batch_id::text AS batch_id,
+               m.company_id::text AS mapping_company_id, m.source_name AS mapping_source
+        FROM app.mapping_decisions d
+        JOIN app.field_mappings m ON m.id = d.mapping_id
+        WHERE d.decision IN ('confirm', 'reject')
+        ORDER BY d.mapping_id, d.decided_at DESC, d.id DESC
         """
     ).fetchall())
 
 
+def _first_batch_ids(conn: psycopg.Connection) -> set[str]:
+    """Earliest landed file for each company and source. Not a decision timestamp."""
+    rows = conn.execute(
+        """
+        SELECT DISTINCT ON (company_id, source_name) id::text AS id
+        FROM app.landing_batches
+        ORDER BY company_id, source_name, loaded_at, id
+        """
+    ).fetchall()
+    return {row["id"] for row in rows}
+
+
+def _sources_with_a_batch(conn: psycopg.Connection) -> set[tuple[str | None, str]]:
+    rows = conn.execute(
+        """
+        SELECT company_id::text AS company_id, source_name
+        FROM app.landing_batches
+        GROUP BY company_id, source_name
+        """
+    ).fetchall()
+    return {(row["company_id"], row["source_name"]) for row in rows}
+
+
 def _human_mapping_cases(conn: psycopg.Connection) -> list[dict[str, Any]]:
-    rows = [
-        row for row in _latest_mapping_decisions(conn)
-        if row["confidence_method"] == "human" and row["score"] is not None
-    ]
+    first_batches = _first_batch_ids(conn)
+    seen_sources = _sources_with_a_batch(conn)
+    rows = []
+    for row in _latest_mapping_decisions(conn):
+        if row["confidence_method"] != "human" or row["score"] is None:
+            continue
+        if row.get("origin") == "learned":
+            continue
+        batch_id = row.get("batch_id")
+        if batch_id is None:
+            key = (row.get("mapping_company_id"), row.get("mapping_source"))
+            if key in seen_sources:
+                continue
+        elif batch_id not in first_batches:
+            continue
+        rows.append(row)
     ordered = sorted(rows, key=lambda row: (row["source_name"] or "", row["source_field"] or "", row["decision_id"]))
     return [
         {
