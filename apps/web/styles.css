@@ -69,6 +69,10 @@ th, td { text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--li
 th { background: #f8f9fb; color: var(--muted); font-weight: 650; font-size: var(--fs-xs); letter-spacing: 0.05em; text-transform: uppercase; position: sticky; top: 0; }
 tbody tr:nth-child(even) { background: #fafbfc; } tbody tr:hover { background: var(--brand-soft); }
 .mapping-confidence { font-variant-numeric: tabular-nums; }
+.origin-line, .suggestion-band, .suggestion-note { margin: 0; }
+.suggestion-note { display: block; color: var(--muted); font-size: var(--fs-xs); font-weight: 650; }
+.file-type-actions { display: inline-flex; flex-wrap: wrap; gap: var(--s2); align-items: center; margin: 0 0 var(--s3); }
+.file-type-choice { font-size: var(--fs-sm); }
 
 /* Card e liste */
 .cards, .stack { display: grid; gap: var(--s3); }

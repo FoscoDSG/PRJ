@@ -25,7 +25,12 @@ def weakest_source_class(classes: list[str]) -> str:
     return weakest
 
 
-def register_source(conn: psycopg.Connection, name: str, source_class: str) -> None:
+def register_source(
+    conn: psycopg.Connection,
+    name: str,
+    source_class: str,
+    company_id: str | None = None,
+) -> None:
     cleaned = (name or "").strip()
     if cleaned == "" or len(cleaned) > 128:
         raise AppError(422, "Nome fonte non valido")
@@ -37,8 +42,8 @@ def register_source(conn: psycopg.Connection, name: str, source_class: str) -> N
     ).fetchone()
     if current is None:
         conn.execute(
-            "INSERT INTO app.sources (name, source_class) VALUES (%s, %s)",
-            (cleaned, source_class),
+            "INSERT INTO app.sources (name, source_class, company_id) VALUES (%s, %s, %s)",
+            (cleaned, source_class, company_id),
         )
         return
     if current["source_class"] != source_class:

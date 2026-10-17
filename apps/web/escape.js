@@ -61,7 +61,11 @@
   // Usato solo dai test anti-XSS. La pagina assegna il testo con textContent.
   function tableTypeMarkup(item) {
     const source = item && typeof item === "object" ? item.source_name : "";
-    return `<p class="profile-label"><span class="profile-label-source">${escapeHtml(source)}</span> <span class="profile-label-text">${escapeHtml(profileLabelText(item))}</span></p>`;
+    const fileId = item && typeof item === "object" ? item.file_id : "";
+    const options = fileTypeChoices()
+      .map((choice) => `<option value="${escapeHtml(choice.code)}">${escapeHtml(choice.label)}</option>`)
+      .join("");
+    return `<p class="profile-label"><span class="profile-label-source">${escapeHtml(source)}</span> <span class="profile-label-text">${escapeHtml(profileLabelText(item))}</span></p><div class="file-type-actions"><button type="button" data-type-ok="${escapeHtml(fileId)}">Corretto</button> <button type="button" class="ghost" data-type-wrong="${escapeHtml(fileId)}">Non è questo tipo</button> <label class="file-type-choice">Tipo corretto <select data-type-choice="${escapeHtml(fileId)}">${options}</select></label></div>`;
   }
 
   function escapeHtml(value) {
@@ -171,15 +175,49 @@
     return `<ul class="edges fact-list">${items.join("") || "<li>Nessun fatto</li>"}</ul>`;
   }
 
+  function originText(item) {
+    if (item && item.origin === "learned" && item.origin_text) {
+      return String(item.origin_text);
+    }
+    return "Da regola";
+  }
+
+  function suggestionBand(item) {
+    if (item && item.band === "forte") {
+      return {
+        band: "Suggerimento forte",
+        note: "Indicazione automatica, da verificare",
+      };
+    }
+    return { band: "Da verificare", note: "" };
+  }
+
+  function fileTypeChoices() {
+    const choices = Object.keys(PROFILE_LABELS).map((code) => ({
+      code,
+      label: PROFILE_LABELS[code],
+    }));
+    choices.push({ code: "non_so", label: "Non so" });
+    return choices;
+  }
+
   function mappingRow(item) {
-    const actions = item.status === "proposed"
+    const confirm = item.status === "proposed"
       ? `<button type="button" data-confirm="${escapeHtml(item.id)}">Conferma</button> <button type="button" class="ghost" data-reject="${escapeHtml(item.id)}">Rifiuta</button>`
+      : "";
+    const revoke = item.origin === "learned" && item.decision_id
+      ? `<button type="button" class="ghost" data-revoke="${escapeHtml(item.decision_id)}">Annulla correzione</button>`
+      : "";
+    const actions = [confirm, revoke].filter(Boolean).join(" ");
+    const shown = suggestionBand(item);
+    const note = shown.note
+      ? `<p class="suggestion-note">${escapeHtml(shown.note)}</p>`
       : "";
     return `<tr>
         <td>${escapeHtml(item.source_name)}</td>
         <td><code>${escapeHtml(item.source_field)}</code></td>
         <td>${escapeHtml(item.target_type)}.${escapeHtml(item.target_property)}</td>
-        <td class="mapping-confidence">${escapeHtml(mappingConfidence(item))}</td>
+        <td class="mapping-confidence"><p class="origin-line">${escapeHtml(originText(item))}</p><p class="suggestion-band">${escapeHtml(shown.band)}</p>${note}</td>
         <td>${pill(item.status)}</td>
         <td>${actions}</td>
       </tr>`;
@@ -303,6 +341,8 @@
     mappingRow,
     profileLabelText,
     tableTypeMarkup,
+    fileTypeChoices,
+    originText,
     orderCard,
     orderDetail,
     customerDetail,

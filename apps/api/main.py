@@ -20,6 +20,8 @@ from ontology.loader import load_merged
 from services.actions.executor import compensate
 from apps.api.schemas import (
     ApproveBody,
+    EmptyBody,
+    FileTypeDecisionBody,
     LoginBody,
     ModifyBody,
     RejectBody,
@@ -33,6 +35,7 @@ from services.evidence import evidence_key
 from services.pii import install_log_redaction, read_cleartext, unmask_entity
 from services.migrate import require_migrated
 from services.errors import AppError
+from services.mapping.corrections import company_id_for_user
 from services.pipeline import (
     acknowledge_drift,
     adjust_on_hand,
@@ -45,13 +48,24 @@ from services.pipeline import (
     ingest_excel,
     ingest_sql,
     load_fixtures,
+    record_table_type_decision,
     release_document,
     ontology,
     refresh_canonical,
     reject_mapping,
+    revoke_correction,
     run_agents,
 )
-from services.queries import get_customer, get_order, list_audit, list_drift, list_inbox, list_mappings, list_orders
+from services.queries import (
+    get_customer,
+    get_order,
+    list_audit,
+    list_drift,
+    list_inbox,
+    list_mappings,
+    list_orders,
+    list_table_files,
+)
 from services.text import jsonable
 from services.workflow.engine import modify, reject
 
@@ -220,10 +234,15 @@ async def _ingest_upload(
         path = await _save_upload(file)
         name = (source_name or Path(file.filename or "upload").stem).strip()
         with app_connect() as conn:
+            company_id = company_id_for_user(conn, user["username"])
             if excel:
-                result = ingest_excel(conn, path, name, user["username"], user["role"], source_class)
+                result = ingest_excel(
+                    conn, path, name, user["username"], user["role"], source_class, company_id=company_id
+                )
             else:
-                result = ingest_csv(conn, path, name, user["username"], user["role"], source_class)
+                result = ingest_csv(
+                    conn, path, name, user["username"], user["role"], source_class, company_id=company_id
+                )
             conn.commit()
     finally:
         if path is not None:
@@ -237,7 +256,10 @@ async def ingest_document_route(file: UploadFile = File(...), user: dict = Depen
     try:
         path = await _save_upload(file)
         with app_connect() as conn:
-            result = ingest_document(conn, path, user["username"], user["role"], ontology())
+            company_id = company_id_for_user(conn, user["username"])
+            result = ingest_document(
+                conn, path, user["username"], user["role"], ontology(), company_id=company_id
+            )
             conn.commit()
     finally:
         if path is not None:
@@ -305,7 +327,16 @@ def ingest_sql_route(body: SqlIngestBody, user: dict = Depends(require_user)) ->
     table = body.table
     source_name = body.source_name or table.replace(".", "_")
     with app_connect() as conn:
-        result = ingest_sql(conn, table, source_name, user["username"], user["role"], body.source_class)
+        company_id = company_id_for_user(conn, user["username"])
+        result = ingest_sql(
+            conn,
+            table,
+            source_name,
+            user["username"],
+            user["role"],
+            body.source_class,
+            company_id=company_id,
+        )
         conn.commit()
     return _ok(result)
 
@@ -313,7 +344,12 @@ def ingest_sql_route(body: SqlIngestBody, user: dict = Depends(require_user)) ->
 @app.get("/api/mappings")
 def mappings(user: dict = Depends(require_user)) -> dict:
     with app_connect() as conn:
-        return _ok({"mappings": list_mappings(conn, user["role"], ontology()), "drift": list_drift(conn)})
+        company_id = company_id_for_user(conn, user["username"])
+        return _ok({
+            "mappings": list_mappings(conn, user["role"], ontology(), company_id),
+            "drift": list_drift(conn),
+            "files": list_table_files(conn, company_id),
+        })
 
 
 @app.post("/api/mappings/{mapping_id}/confirm")
@@ -324,6 +360,7 @@ def confirm(
 ) -> dict:
     model = ontology()
     with app_connect() as conn:
+        company_id = company_id_for_user(conn, user["username"])
         result = confirm_mapping(
             conn,
             mapping_id,
@@ -331,6 +368,7 @@ def confirm(
             user["role"],
             model,
             target_property_corrected=target_property_corrected,
+            company_id=company_id,
         )
         conn.commit()
     return _ok(result)
@@ -344,6 +382,7 @@ def reject_map(
 ) -> dict:
     model = ontology()
     with app_connect() as conn:
+        company_id = company_id_for_user(conn, user["username"])
         result = reject_mapping(
             conn,
             mapping_id,
@@ -351,6 +390,7 @@ def reject_map(
             actor=user["username"],
             model=model,
             target_property_corrected=target_property_corrected,
+            company_id=company_id,
         )
         conn.commit()
     return _ok(result)
@@ -360,9 +400,51 @@ def reject_map(
 def confirm_high(user: dict = Depends(require_user)) -> dict:
     model = ontology()
     with app_connect() as conn:
-        count = confirm_confident(conn, user["role"], model, actor=user["username"])
+        company_id = company_id_for_user(conn, user["username"])
+        count = confirm_confident(conn, user["role"], model, actor=user["username"], company_id=company_id)
         conn.commit()
     return {"confirmed": count}
+
+
+@app.post("/api/mapping-decisions/{decision_id}/revoke")
+def revoke_route(
+    decision_id: str,
+    body: EmptyBody,
+    user: dict = Depends(require_user),
+) -> dict:
+    del body
+    with app_connect() as conn:
+        company_id = company_id_for_user(conn, user["username"])
+        result = revoke_correction(
+            conn,
+            decision_id,
+            actor=user["username"],
+            role=user["role"],
+            company_id=company_id,
+        )
+        conn.commit()
+    return _ok(result)
+
+
+@app.post("/api/files/{file_id}/type")
+def file_type_route(
+    file_id: str,
+    body: FileTypeDecisionBody,
+    user: dict = Depends(require_user),
+) -> dict:
+    with app_connect() as conn:
+        company_id = company_id_for_user(conn, user["username"])
+        result = record_table_type_decision(
+            conn,
+            file_id,
+            actor=user["username"],
+            role=user["role"],
+            company_id=company_id,
+            decision=body.decision,
+            correct_type=body.correct_type,
+        )
+        conn.commit()
+    return _ok(result)
 
 
 @app.post("/api/drift/{drift_id}/acknowledge")

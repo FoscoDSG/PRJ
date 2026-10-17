@@ -11,6 +11,18 @@ SourceClass = Literal["system_of_record", "operational", "external", "manual", "
 _HASH = r"^[0-9a-f]{64}$"
 
 
+class EmptyBody(BaseModel):
+    """No client fields. company_id is not accepted."""
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class FileTypeDecisionBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    decision: Literal["corretto", "sbagliato", "non_so"]
+    correct_type: str | None = None
+
+
 class LoginBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
     username: str = Field(min_length=1, max_length=64)

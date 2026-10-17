@@ -6,6 +6,7 @@ from typing import Any
 
 import psycopg
 
+from services.mapping.corrections import present_origin, proposed_label, table_file_choice_codes
 from services.mapping.labels import profile_label
 from services.mapping.threshold import active_threshold
 from services.pii import is_pii_key, is_pii_property, redact
@@ -17,17 +18,29 @@ PRIVILEGED = {"admin", "approver"}
 SENSITIVE_KEYS = {"vat", "amount", "cost", "margin", "piva", "costo", "importo"}
 
 
-def list_mappings(conn: psycopg.Connection, role: str, ontology: Any) -> list[dict]:
+def list_mappings(
+    conn: psycopg.Connection,
+    role: str,
+    ontology: Any,
+    company_id: str | None = None,
+) -> list[dict]:
     _threshold, measured, support = active_threshold(conn)
     rows = conn.execute(
         """
         SELECT id::text, source_name, source_field, target_type, target_property,
-               confidence, status, samples, profile
+               confidence, status, samples, profile, company_id::text AS company_id,
+               origin, source_decision_id::text AS source_decision_id
         FROM app.field_mappings
         WHERE valid_to IS NULL
+          AND (
+            company_id IS NULL
+            OR (%s::uuid IS NOT NULL AND company_id = %s::uuid)
+          )
         ORDER BY source_name, confidence DESC, source_field
-        """
+        """,
+        (company_id, company_id),
     ).fetchall()
+    decisions = _learned_decisions(conn, rows, company_id)
     visible = []
     for row in rows:
         item = dict(row)
@@ -41,8 +54,70 @@ def list_mappings(conn: psycopg.Connection, role: str, ontology: Any) -> list[di
         item["measured"] = bool(measured)
         item["support"] = support
         item["profile_label"] = profile_label(item.get("profile"))
+        source_decision_id = item.get("source_decision_id")
+        item.update(present_origin(item, decisions.get(source_decision_id), viewer_company=company_id))
+        item.pop("source_decision_id", None)
         visible.append(item)
     return visible
+
+
+def list_table_files(conn: psycopg.Connection, company_id: str | None) -> list[dict]:
+    """Files whose proposed type was stored at landing. Legacy batches stay out."""
+    rows = conn.execute(
+        """
+        SELECT DISTINCT ON (b.source_name)
+               b.id::text AS file_id, b.source_name, b.proposed_type
+        FROM app.landing_batches b
+        WHERE b.proposed_type IS NOT NULL
+          AND EXISTS (
+            SELECT 1 FROM app.field_mappings m
+            WHERE m.source_name = b.source_name
+              AND m.valid_to IS NULL
+              AND (
+                m.company_id IS NULL
+                OR (%s::uuid IS NOT NULL AND m.company_id = %s::uuid)
+              )
+          )
+        ORDER BY b.source_name, b.loaded_at DESC
+        """,
+        (company_id, company_id),
+    ).fetchall()
+    choices = table_file_choice_codes()
+    files = []
+    for row in rows:
+        item = dict(row)
+        item["profile_label"] = proposed_label(item["proposed_type"])
+        item["choices"] = choices
+        files.append(item)
+    return files
+
+
+def _learned_decisions(
+    conn: psycopg.Connection,
+    rows: list[dict],
+    company_id: str | None,
+) -> dict[str, dict]:
+    if not company_id:
+        return {}
+    ids = [
+        row["source_decision_id"]
+        for row in rows
+        if row.get("company_id") == company_id
+        and row.get("origin") == "learned"
+        and row.get("source_decision_id")
+    ]
+    if not ids:
+        return {}
+    found = conn.execute(
+        """
+        SELECT id::text, actor, decided_at, company_id::text AS company_id
+        FROM app.mapping_decisions
+        WHERE id = ANY(%s::uuid[])
+          AND company_id = %s::uuid
+        """,
+        (ids, company_id),
+    ).fetchall()
+    return {row["id"]: dict(row) for row in found}
 
 
 def list_drift(conn: psycopg.Connection) -> list[dict]:
