@@ -1,0 +1,4 @@
+ANAG_CLI,RAGIONE_SOCIALE,PIVA,EMAIL
+C001,Acme Srl,IT12345678901,ordini@acme.example
+C001B,ACME SRL,IT12345678901,ordini@acme.example
+C002,Bianchi SpA,IT00987654321,buyer@bianchi.example

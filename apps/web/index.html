@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Operating layer — ordini</title>
+  <link rel="stylesheet" href="/assets/styles.css" />
+</head>
+<body>
+  <header class="top">
+    <div>
+      <p class="eyebrow">Intelligent Enterprise Operating Layer</p>
+      <h1>Order management</h1>
+    </div>
+    <div class="session" id="session" hidden>
+      <span id="who"></span>
+      <button type="button" id="logout" class="ghost">Esci</button>
+    </div>
+  </header>
+
+  <section id="login" class="panel login">
+    <h2>Accesso</h2>
+    <p class="lede">Accedi con utente e password assegnati. L'operatore legge e non approva. La password non è il nome del ruolo.</p>
+    <form id="login-form">
+      <label>Utente <input name="username" autocomplete="username" required /></label>
+      <label>Password <input name="password" type="password" autocomplete="current-password" required /></label>
+      <button type="submit">Entra</button>
+    </form>
+    <p id="login-error" class="error" hidden></p>
+  </section>
+
+  <div id="app" hidden>
+    <nav aria-label="Sezioni">
+      <button type="button" data-view="mapping" class="active">Mapping</button>
+      <button type="button" data-view="orders">Ordini</button>
+      <button type="button" data-view="inbox">Inbox</button>
+      <button type="button" data-view="audit">Audit</button>
+    </nav>
+    <p id="flash" class="flash" hidden></p>
+
+    <section id="view-mapping" class="panel">
+      <div class="row">
+        <div>
+          <h2>Review del mapping</h2>
+          <p class="lede">Le colonne sotto soglia restano in review. Un'email o un PDF ordine entra nello stesso modello: cliente, numero ordine e righe articolo quantità prezzo.</p>
+        </div>
+        <div class="actions">
+          <button type="button" id="load-fixture" hidden>Carica fixture</button>
+          <label class="file">Email o PDF<input id="upload-document" type="file" accept=".txt,.eml,.pdf,text/plain,application/pdf" /></label>
+          <button type="button" id="confirm-high" class="ghost">Conferma i suggerimenti forti</button>
+          <button type="button" id="materialize" class="ghost">Aggiorna modello</button>
+        </div>
+      </div>
+      <div id="profile-labels" class="profile-labels"></div>
+      <div id="drift"></div>
+      <div id="quarantine"></div>
+      <div id="identity"></div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Fonte</th><th>Colonna</th><th>Destinazione</th><th>Suggerimento</th><th>Stato</th><th></th>
+            </tr>
+          </thead>
+          <tbody id="mappings"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section id="view-orders" class="panel" hidden>
+      <h2>Ordini</h2>
+      <div id="order-list" class="cards"></div>
+      <article id="order-detail" hidden></article>
+    </section>
+
+    <section id="view-inbox" class="panel" hidden>
+      <h2>Inbox eccezioni</h2>
+      <p class="lede">L'agente propone. L'anteprima mostra raccomandazione, provenienza, confidenza e payload prima di qualsiasi scrittura.</p>
+      <div id="inbox" class="stack"></div>
+    </section>
+
+    <section id="view-audit" class="panel" hidden>
+      <h2>Audit</h2>
+      <p class="lede">Sola lettura. Chi, quando (ora di Roma), cosa e quale ordine.</p>
+      <div class="row filters">
+        <label>Ordine <input id="audit-order" /></label>
+        <label>Utente <input id="audit-user" /></label>
+        <label>Lotto <input id="audit-batch" /></label>
+        <label>Dal <input id="audit-from" type="date" /></label>
+        <label>Al <input id="audit-to" type="date" /></label>
+        <button type="button" id="audit-apply">Filtra</button>
+      </div>
+      <div id="audit" class="stack"></div>
+      <div class="row pager">
+        <button type="button" id="audit-prev" class="ghost">Precedenti</button>
+        <span id="audit-page"></span>
+        <button type="button" id="audit-next" class="ghost">Successivi</button>
+      </div>
+    </section>
+  </div>
+  <script src="/assets/escape.js"></script>
+  <script src="/assets/app.js"></script>
+</body>
+</html>
