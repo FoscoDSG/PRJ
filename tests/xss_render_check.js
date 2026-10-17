@@ -170,7 +170,7 @@ const requiredClasses = [
   "fact-confidence", "confidence-badge", "decision-bar", "blocked-reason",
   "audit-when", "audit-what", "audit-order", "audit-detail",
   "origin-line", "suggestion-band", "suggestion-note", "file-type-actions",
-  "mapping-actions",
+  "file-type-choice", "mapping-actions",
 ];
 for (const token of requiredClasses) {
   if (!seenClasses.has(token)) {

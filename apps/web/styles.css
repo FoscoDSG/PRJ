@@ -76,10 +76,15 @@ tbody tr:nth-child(even) { background: #fafbfc; } tbody tr:hover { background: v
 td.mapping-actions { white-space: nowrap; }
 @media (max-width: 700px) {
   .table-wrap { overflow-x: visible; max-width: 100%; }
-  table { table-layout: fixed; }
+  table { table-layout: auto; }
   th, td { overflow-wrap: anywhere; }
-  td.mapping-actions { white-space: normal; width: 34%; }
-  td.mapping-actions button { white-space: normal; }
+  button, .pill {
+    white-space: nowrap;
+    hyphens: none;
+    overflow-wrap: normal;
+    word-break: normal;
+  }
+  td.mapping-actions { white-space: normal; width: 34%; min-width: 11rem; }
 }
 
 /* Card e liste */

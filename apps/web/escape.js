@@ -149,20 +149,6 @@
     return `soglia misurata su ${support} casi`;
   }
 
-  function mappingConfidence(item) {
-    const phrase = measuredThreshold(item);
-    if (phrase) return phrase;
-    const confidence = item && typeof item === "object" ? item.confidence : item;
-    if (confidence == null || confidence === "") {
-      return "confidenza non disponibile";
-    }
-    const number = Number(confidence);
-    if (!Number.isFinite(number)) {
-      return "confidenza non disponibile";
-    }
-    return number.toFixed(2);
-  }
-
   function factValue(value) {
     if (value != null && typeof value === "object") {
       return JSON.stringify(value);
@@ -325,7 +311,6 @@
     provenanceLabel,
     confidenceLabel,
     recommendationConfidence,
-    mappingConfidence,
     showFixtureButton,
     factList,
     driftCard,

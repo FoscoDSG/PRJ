@@ -1081,7 +1081,7 @@ def test_unmask_field_and_measured_threshold_phrase():
     import subprocess
 
     script = r"""
-const { customerDetail, confidenceLabel, mappingConfidence } = require("./apps/web/escape.js");
+const { customerDetail, confidenceLabel } = require("./apps/web/escape.js");
 const fs = require("fs");
 const app = fs.readFileSync("./apps/web/app.js", "utf8");
 if (app.includes("window.prompt")) process.exit(2);
@@ -1094,11 +1094,6 @@ const html = customerDetail({
 }, "admin");
 if (!html.includes("data-reason") || !html.includes("unmask-pii")) process.exit(3);
 if (html.includes("window.prompt")) process.exit(4);
-const phrase = mappingConfidence({ confidence: 0.98, calibrated: true, measured: true, support: 30 });
-if (phrase !== "soglia misurata su 30 casi") process.exit(5);
-if (phrase.includes("%")) process.exit(6);
-const plainNumber = mappingConfidence({ confidence: 0.5, calibrated: true });
-if (plainNumber !== "0.50" || plainNumber.includes("%")) process.exit(7);
 const plain = confidenceLabel({
   confidence: 0.93,
   confidence_method: "rule",
