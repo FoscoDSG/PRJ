@@ -75,9 +75,9 @@ tbody tr:nth-child(even) { background: #fafbfc; } tbody tr:hover { background: v
 .file-type-choice { font-size: var(--fs-sm); }
 td.mapping-actions { white-space: nowrap; }
 @media (max-width: 700px) {
-  .table-wrap { overflow-x: visible; max-width: 100%; }
+  .table-wrap { overflow-x: auto; max-width: 100%; }
   table { table-layout: auto; }
-  th, td { overflow-wrap: anywhere; }
+  th, td { overflow-wrap: normal; word-break: normal; hyphens: none; }
   button, .pill {
     white-space: nowrap;
     hyphens: none;
