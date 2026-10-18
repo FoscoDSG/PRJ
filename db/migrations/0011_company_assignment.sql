@@ -5,6 +5,7 @@
 -- L'azienda di un utente si scrive una sola volta, da NULL a un valore.
 -- Un batch e una fonte non ricevono e non cambiano azienda dopo la
 -- creazione. Le righe nuove prendono l'azienda in INSERT.
+-- is_demo si scrive solo in INSERT: un UPDATE successivo non lo cambia.
 --
 -- Allowlist, riga esatta:
 --   ALTER TABLE app.audit_log DROP CONSTRAINT IF EXISTS audit_log_action_check
@@ -13,10 +14,23 @@ ALTER TABLE app.companies
   ADD COLUMN IF NOT EXISTS is_demo boolean NOT NULL DEFAULT false;
 
 COMMENT ON COLUMN app.companies.is_demo IS
-  'Azienda demo. Le misure di riconoscimento colonne e di tipo file escludono queste righe sempre, non solo la prima volta. Si usa il flag, mai il nome.';
+  'Azienda demo. Le misure di riconoscimento colonne e di tipo file escludono queste righe sempre, non solo la prima volta. Si usa il flag, mai il nome. Il flag si scrive alla creazione e non si cambia dopo.';
 
 COMMENT ON TABLE app.companies IS
   'Azienda del tenant. Si crea solo dal comando amministrativo sul server. is_demo marca la demo: il nome non conta. Un''azienda pilota si crea solo dopo la firma dell''accordo sui dati: è una regola operativa, non un controllo di questo schema.';
+
+CREATE OR REPLACE FUNCTION app.enforce_company_demo_frozen()
+RETURNS trigger
+LANGUAGE plpgsql
+SET search_path = app, public
+AS $$
+BEGIN
+  IF NEW.is_demo IS DISTINCT FROM OLD.is_demo THEN
+    RAISE EXCEPTION 'il flag demo di un''azienda non si cambia dopo la creazione';
+  END IF;
+  RETURN NEW;
+END;
+$$;
 
 CREATE OR REPLACE FUNCTION app.enforce_user_company_once()
 RETURNS trigger
@@ -59,6 +73,16 @@ $$;
 
 DO $$
 BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_trigger
+    WHERE tgname = 'companies_demo_frozen'
+      AND tgrelid = 'app.companies'::regclass
+      AND NOT tgisinternal
+  ) THEN
+    CREATE TRIGGER companies_demo_frozen
+    BEFORE UPDATE ON app.companies
+    FOR EACH ROW EXECUTE FUNCTION app.enforce_company_demo_frozen();
+  END IF;
   IF NOT EXISTS (
     SELECT 1 FROM pg_trigger
     WHERE tgname = 'users_company_once'

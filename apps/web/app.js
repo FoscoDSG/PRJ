@@ -32,6 +32,7 @@ const {
   readableCard,
   showFixtureButton,
   companyUploadNotice,
+  canWriteDecisions,
 } = globalThis.ieolEscape;
 
 const auditState = { offset: 0, limit: 50 };
@@ -60,7 +61,10 @@ function enter(me) {
   document.querySelector("#session").hidden = false;
   document.querySelector("#who").textContent = `${me.username} · ${me.role}`;
   document.querySelector("#load-fixture").hidden = !showFixtureButton(state.role, state.demoMode);
-  document.querySelector("#upload-label").hidden = !state.hasCompany;
+  const canWrite = canWriteDecisions(state.hasCompany);
+  document.querySelector("#upload-label").hidden = !canWrite;
+  document.querySelector("#confirm-high").hidden = !canWrite;
+  document.querySelector("#materialize").hidden = !canWrite;
   const companyNotice = document.querySelector("#company-notice");
   companyNotice.hidden = state.hasCompany;
   companyNotice.textContent = state.hasCompany ? "" : companyUploadNotice();
@@ -177,7 +181,9 @@ function renderProfileLabels(mappings, files) {
     row.append(source, document.createTextNode(" "), text);
     container.append(row);
     const file = bySource.get(item.source_name);
-    if (file && file.file_id && Array.isArray(file.choices)) container.append(fileTypeActions(file));
+    if (file && file.file_id && Array.isArray(file.choices) && canWriteDecisions(state.hasCompany)) {
+      container.append(fileTypeActions(file));
+    }
   }
 }
 
@@ -293,7 +299,7 @@ async function loadMappings() {
   });
   renderProfileLabels(data.mappings, data.files);
   const body = document.querySelector("#mappings");
-  body.innerHTML = data.mappings.map(mappingRow).join("");
+  body.innerHTML = data.mappings.map((item) => mappingRow(item, canWriteDecisions(state.hasCompany))).join("");
   body.querySelectorAll("button[data-confirm]").forEach((button) => {
     button.addEventListener("click", async () => {
       await api(`/api/mappings/${button.dataset.confirm}/confirm`, { method: "POST" });

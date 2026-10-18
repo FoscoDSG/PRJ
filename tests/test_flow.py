@@ -749,6 +749,7 @@ def test_executed_order_is_not_proposed_again(client: TestClient):
     assert decide(client, recommendation).status_code == 200
     assert client.post(f"/api/recommendations/{recommendation['id']}/execute").status_code == 200
     login(client, "mapper")
+    give_company("mapper", "Riesecuzione")
     again = client.post("/api/agent/run")
     assert again.status_code == 200, again.text
     assert again.json()["recommendations"] == []

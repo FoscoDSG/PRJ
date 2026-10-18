@@ -17,6 +17,7 @@ from services.agent.order_agent import build_context, run_order_agent
 from services.agent.stub_model import StubOrderModel
 from services.canonical.store import _put_fact, materialize
 from services.audit import record
+from services.companies import NO_COMPANY_UPLOAD
 from services.errors import AppError
 from services.quality import document_reasons
 from services.ingest.csv_connector import read_csv
@@ -434,7 +435,7 @@ def revoke_correction(
     """Append revoked. The revoked row stays. Same company as the actor."""
     _require_mapper(role)
     if not company_id:
-        raise AppError(403, "Azienda non assegnata")
+        raise AppError(403, NO_COMPANY_UPLOAD)
     row = conn.execute(
         """
         SELECT id::text, mapping_id::text, decision, source_name, source_field,
@@ -553,7 +554,7 @@ def record_table_type_decision(
     """Store a file-type decision. Proposed type and score come from the batch."""
     _require_mapper(role)
     if not company_id:
-        raise AppError(403, "Azienda non assegnata")
+        raise AppError(403, NO_COMPANY_UPLOAD)
     if decision not in ("correct", "wrong", "not_sure"):
         raise AppError(422, "Decisione sul tipo non valida")
     if decision == "wrong":

@@ -267,6 +267,98 @@ def test_database_triggers_block_a_second_company_and_a_late_batch_company():
     assert legacy["company_id"] is None
 
 
+def test_database_refuses_to_change_the_demo_flag():
+    plain = _cli_json(["company", "create", "--name", "Fissa"])["company_id"]
+    demo = _cli_json(["company", "create-demo", "--name", "Vetrina"])["company_id"]
+    with connect() as conn:
+        with pytest.raises(psycopg.errors.RaiseException, match="flag demo"):
+            conn.execute("UPDATE app.companies SET is_demo = true WHERE id = %s", (plain,))
+            conn.commit()
+        conn.rollback()
+        with pytest.raises(psycopg.errors.RaiseException, match="flag demo"):
+            conn.execute("UPDATE app.companies SET is_demo = false WHERE id = %s", (demo,))
+            conn.commit()
+        conn.rollback()
+        conn.execute("UPDATE app.companies SET is_demo = false WHERE id = %s", (plain,))
+        conn.execute("UPDATE app.companies SET name = 'Fissa rinominata' WHERE id = %s", (plain,))
+        conn.execute("UPDATE app.companies SET is_demo = true WHERE id = %s", (demo,))
+        conn.commit()
+        flags = {
+            row["id"]: {"name": row["name"], "is_demo": row["is_demo"]}
+            for row in conn.execute(
+                "SELECT id::text AS id, name, is_demo FROM app.companies"
+            ).fetchall()
+        }
+    assert flags[plain] == {"name": "Fissa rinominata", "is_demo": False}
+    assert flags[demo]["is_demo"] is True
+    assert flags[demo]["name"] == "Vetrina"
+
+
+def test_user_without_a_company_cannot_write_a_decision(client: TestClient):
+    login(client, "mapper")
+    viewed = client.get("/api/mappings")
+    assert viewed.status_code == 200
+    assert viewed.json()["mappings"] == []
+    assert client.get("/api/orders").status_code == 200
+    missing = str(uuid.uuid4())
+    writes = [
+        (f"/api/mappings/{missing}/confirm", None),
+        (f"/api/mappings/{missing}/reject", None),
+        (f"/api/mapping-decisions/{missing}/revoke", {}),
+        (f"/api/files/{missing}/type", {"decision": "correct"}),
+        ("/api/mappings/confirm-confident", None),
+        ("/api/materialize", None),
+        ("/api/agent/run", None),
+    ]
+    for path, body in writes:
+        denied = client.post(path) if body is None else client.post(path, json=body)
+        assert denied.status_code == 403, path
+        assert denied.json()["detail"] == NO_COMPANY_UPLOAD
+    login(client, "operator")
+    operator = client.post("/api/mappings/confirm-confident")
+    assert operator.status_code == 403
+    assert operator.json()["detail"] == NOTICE
+    assert client.get("/api/inbox").status_code == 200
+    company_id = _cli_json(["company", "create", "--name", "Decisioni"])["company_id"]
+    _cli_json(["company", "assign", "--username", "mapper", "--company-id", company_id])
+    _cli_json(["company", "assign", "--username", "operator", "--company-id", company_id])
+    login(client, "mapper")
+    opened = client.post(f"/api/mappings/{missing}/confirm")
+    assert opened.status_code == 404
+    assert opened.json()["detail"] != NOTICE
+    rejected = client.post(f"/api/mappings/{missing}/reject")
+    assert rejected.status_code == 404
+    revoked = client.post(f"/api/mapping-decisions/{missing}/revoke", json={})
+    assert revoked.status_code == 404
+    typed = client.post(f"/api/files/{missing}/type", json={"decision": "correct"})
+    assert typed.status_code == 404
+    bulk = client.post("/api/mappings/confirm-confident")
+    assert bulk.status_code == 200
+    assert bulk.json()["confirmed"] == 0
+    rebuilt = client.post("/api/materialize")
+    assert rebuilt.status_code == 200, rebuilt.text
+    ran = client.post("/api/agent/run")
+    assert ran.status_code == 200, ran.text
+    login(client, "operator")
+    still_blocked = client.post("/api/materialize")
+    assert still_blocked.status_code == 403
+    assert still_blocked.json()["detail"] == "Serve il ruolo mapper"
+    page = (ROOT / "apps" / "web" / "app.js").read_text(encoding="utf-8")
+    assert 'querySelector("#confirm-high").hidden = !canWrite' in page
+    assert 'querySelector("#materialize").hidden = !canWrite' in page
+    assert "mappingRow(item, canWriteDecisions(state.hasCompany))" in page
+    assert "canWriteDecisions(state.hasCompany)" in page
+    assert "innerHTML" not in page.split("companyNotice")[1].split("show(")[0]
+    rendered = subprocess.run(
+        ["node", "-e", _DECISION_BUTTONS],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+    )
+    assert rendered.returncode == 0, rendered.stderr
+    assert rendered.stdout == "ok\n"
+
+
 def test_app_role_cannot_create_a_company_or_assign_a_user_and_there_is_no_api(client: TestClient):
     company_id = _cli_json(["company", "create", "--name", "Chiusa"])["company_id"]
     with app_connect() as conn:
@@ -553,5 +645,36 @@ if (text !== "Il tuo utente non è ancora collegato a un'azienda: chiedi all'amm
   process.exit(1);
 }
 if (text.includes("<") || text.includes(hostile)) process.exit(2);
+console.log("ok");
+"""
+
+_DECISION_BUTTONS = r"""
+const { canWriteDecisions, mappingRow } = require("./apps/web/escape.js");
+if (canWriteDecisions(true) !== true) process.exit(1);
+if (canWriteDecisions(false) !== false) process.exit(2);
+if (canWriteDecisions(undefined) !== false) process.exit(3);
+if (canWriteDecisions("true") !== false) process.exit(4);
+const item = {
+  id: "1",
+  status: "proposed",
+  origin: "learned",
+  decision_id: "d1",
+  source_name: "ordini",
+  source_field: "cod",
+  target_type: "Order",
+  target_property: "number",
+  origin_text: "Da una correzione",
+  band: "forte",
+  band_note: "nota",
+};
+const hidden = mappingRow(item, false);
+if (hidden.includes("<button") || hidden.includes("Conferma") || hidden.includes("Rifiuta") || hidden.includes("Annulla")) {
+  console.error(hidden);
+  process.exit(5);
+}
+if (!hidden.includes("ordini") || !hidden.includes("cod")) process.exit(6);
+const shown = mappingRow(item, true);
+if (!shown.includes(">Conferma<") || !shown.includes(">Rifiuta<") || !shown.includes("Annulla correzione")) process.exit(7);
+if (!mappingRow(item).includes(">Conferma<")) process.exit(8);
 console.log("ok");
 """

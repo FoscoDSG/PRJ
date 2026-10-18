@@ -14,11 +14,12 @@ import pytest
 from fastapi.testclient import TestClient
 
 from apps.api.main import app
+from services.companies import NO_COMPANY_UPLOAD
 from services.db import connect, password_hash
 from services.mapping.corrections import active_correction, file_type_metric, learned_metric, present_origin
 from services.mapping.engine import propose_mappings
 from services.testset import _human_mapping_cases, build_testset, evaluate_testset
-from tests.test_flow import load_demo, login
+from tests.test_flow import give_company, load_demo, login
 
 ROOT = Path(__file__).resolve().parents[1]
 ROME = ZoneInfo("Europe/Rome")
@@ -125,12 +126,13 @@ def test_user_cannot_see_or_revoke_another_companys_decisions(client: TestClient
     missing = str(uuid.uuid4())
     denied = client.post(f"/api/mapping-decisions/{missing}/revoke", json={})
     assert denied.status_code == 403
-    assert denied.json()["detail"] == "Azienda non assegnata"
+    assert denied.json()["detail"] == NO_COMPANY_UPLOAD
     untyped = client.post(f"/api/files/{missing}/type", json={"decision": "correct"})
     assert untyped.status_code == 403
-    assert untyped.json()["detail"] == "Azienda non assegnata"
+    assert untyped.json()["detail"] == NO_COMPANY_UPLOAD
     client.post("/api/logout")
     login(client, "operator")
+    give_company("operator", "Sola lettura")
     forbidden = client.post(f"/api/mapping-decisions/{missing}/revoke", json={})
     assert forbidden.status_code == 403
     assert forbidden.json()["detail"] == "Serve il ruolo mapper"

@@ -183,7 +183,8 @@ def _public_user(user: dict) -> dict:
     return {**user, "demo_mode": demo_mode(), "has_company": company_id is not None}
 
 
-def _require_upload_company(username: str) -> None:
+def _require_company(username: str) -> None:
+    """A user without a company can read. Uploads and decision writes stop here."""
     with app_connect() as conn:
         if company_id_for_user(conn, username) is None:
             raise AppError(403, NO_COMPANY_UPLOAD)
@@ -210,7 +211,7 @@ async def ingest_csv_route(
     source_name: str | None = Form(None),
     user: dict = Depends(require_user),
 ) -> dict:
-    _require_upload_company(user["username"])
+    _require_company(user["username"])
     return await _ingest_upload(file, source_name, source_class, user, excel=False)
 
 
@@ -221,7 +222,7 @@ async def ingest_excel_route(
     source_name: str | None = Form(None),
     user: dict = Depends(require_user),
 ) -> dict:
-    _require_upload_company(user["username"])
+    _require_company(user["username"])
     return await _ingest_upload(file, source_name, source_class, user, excel=True)
 
 
@@ -272,7 +273,7 @@ async def _ingest_upload(
 
 @app.post("/api/ingest/document")
 async def ingest_document_route(file: UploadFile = File(...), user: dict = Depends(require_user)) -> dict:
-    _require_upload_company(user["username"])
+    _require_company(user["username"])
     path: Path | None = None
     try:
         path = await _save_upload(file)
@@ -345,7 +346,7 @@ def reject_identity(review_id: str, user: dict = Depends(require_user)) -> dict:
 
 @app.post("/api/ingest/sql")
 def ingest_sql_route(body: SqlIngestBody, user: dict = Depends(require_user)) -> dict:
-    _require_upload_company(user["username"])
+    _require_company(user["username"])
     table = body.table
     source_name = body.source_name or table.replace(".", "_")
     with app_connect() as conn:
@@ -380,6 +381,7 @@ def confirm(
     target_property_corrected: str | None = None,
     user: dict = Depends(require_user),
 ) -> dict:
+    _require_company(user["username"])
     model = ontology()
     with app_connect() as conn:
         company_id = company_id_for_user(conn, user["username"])
@@ -402,6 +404,7 @@ def reject_map(
     target_property_corrected: str | None = None,
     user: dict = Depends(require_user),
 ) -> dict:
+    _require_company(user["username"])
     model = ontology()
     with app_connect() as conn:
         company_id = company_id_for_user(conn, user["username"])
@@ -420,6 +423,7 @@ def reject_map(
 
 @app.post("/api/mappings/confirm-confident")
 def confirm_high(user: dict = Depends(require_user)) -> dict:
+    _require_company(user["username"])
     model = ontology()
     with app_connect() as conn:
         company_id = company_id_for_user(conn, user["username"])
@@ -435,6 +439,7 @@ def revoke_route(
     user: dict = Depends(require_user),
 ) -> dict:
     del body
+    _require_company(user["username"])
     with app_connect() as conn:
         company_id = company_id_for_user(conn, user["username"])
         result = revoke_correction(
@@ -454,6 +459,7 @@ def file_type_route(
     body: FileTypeDecisionBody,
     user: dict = Depends(require_user),
 ) -> dict:
+    _require_company(user["username"])
     with app_connect() as conn:
         company_id = company_id_for_user(conn, user["username"])
         result = record_table_type_decision(
@@ -481,6 +487,7 @@ def ack_drift(drift_id: str, user: dict = Depends(require_user)) -> dict:
 
 @app.post("/api/materialize")
 def materialize_route(user: dict = Depends(require_user)) -> dict:
+    _require_company(user["username"])
     if user["role"] not in ("admin", "mapper"):
         raise AppError(403, "Serve il ruolo mapper")
     with app_connect() as conn:
@@ -491,6 +498,7 @@ def materialize_route(user: dict = Depends(require_user)) -> dict:
 
 @app.post("/api/agent/run")
 def agent_run(user: dict = Depends(require_user)) -> dict:
+    _require_company(user["username"])
     with app_connect() as conn:
         created = run_agents(conn, actor=user["username"], role=user["role"])
         conn.commit()

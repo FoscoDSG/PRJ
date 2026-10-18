@@ -3,7 +3,8 @@
 There is no API and no page for this. Each successful operation is an
 audit row in the same transaction. A user's company is written once,
 from NULL to a value. A later change is a new user. ``is_demo`` marks
-the demo company: the name is never the signal.
+the demo company: the name is never the signal. ``is_demo`` is
+written at insert and a trigger refuses a later change.
 """
 
 from __future__ import annotations
