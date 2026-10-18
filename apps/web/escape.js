@@ -178,6 +178,14 @@
     return { band: "Da verificare", note: "" };
   }
 
+  const MAPPING_HEADERS = {
+    source: "Fonte",
+    column: "Colonna",
+    destination: "Destinazione",
+    suggestion: "Suggerimento",
+    status: "Stato",
+  };
+
   function mappingRow(item) {
     const confirm = item.status === "proposed"
       ? `<button type="button" data-confirm="${escapeHtml(item.id)}">Conferma</button> <button type="button" class="ghost" data-reject="${escapeHtml(item.id)}">Rifiuta</button>`
@@ -191,11 +199,11 @@
       ? `<p class="suggestion-note">${escapeHtml(shown.note)}</p>`
       : "";
     return `<tr>
-        <td>${escapeHtml(item.source_name)}</td>
-        <td><code>${escapeHtml(item.source_field)}</code></td>
-        <td>${escapeHtml(item.target_type)}.${escapeHtml(item.target_property)}</td>
-        <td class="mapping-confidence"><p class="origin-line">${escapeHtml(originText(item))}</p><p class="suggestion-band">${escapeHtml(shown.band)}</p>${note}</td>
-        <td>${pill(item.status)}</td>
+        <td class="mapping-source" data-label="${MAPPING_HEADERS.source}">${escapeHtml(item.source_name)}</td>
+        <td class="mapping-column" data-label="${MAPPING_HEADERS.column}"><code>${escapeHtml(item.source_field)}</code></td>
+        <td class="mapping-destination" data-label="${MAPPING_HEADERS.destination}">${escapeHtml(item.target_type)}.${escapeHtml(item.target_property)}</td>
+        <td class="mapping-confidence" data-label="${MAPPING_HEADERS.suggestion}"><p class="origin-line">${escapeHtml(originText(item))}</p><p class="suggestion-band">${escapeHtml(shown.band)}</p>${note}</td>
+        <td class="mapping-status" data-label="${MAPPING_HEADERS.status}">${pill(item.status)}</td>
         <td class="mapping-actions">${actions}</td>
       </tr>`;
   }
