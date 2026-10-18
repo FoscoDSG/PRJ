@@ -35,6 +35,7 @@ from services.evidence import evidence_key
 from services.pii import install_log_redaction, read_cleartext, unmask_entity
 from services.migrate import require_migrated
 from services.errors import AppError
+from services.companies import NO_COMPANY_UPLOAD
 from services.mapping.corrections import company_id_for_user
 from services.pipeline import (
     acknowledge_drift,
@@ -157,7 +158,7 @@ def login(request: Request, body: LoginBody) -> dict:
     if user is None:
         raise AppError(401, "Credenziali non valide")
     request.session["user"] = user
-    return {**user, "demo_mode": demo_mode()}
+    return _public_user(user)
 
 
 @app.post("/api/logout")
@@ -168,7 +169,24 @@ def logout(request: Request) -> dict:
 
 @app.get("/api/me")
 def me(user: dict = Depends(require_user)) -> dict:
-    return {**user, "demo_mode": demo_mode()}
+    return _public_user(user)
+
+
+def _public_user(user: dict) -> dict:
+    """Session fields plus whether this user already has a company.
+
+    The company id stays on the server. The page only needs the boolean,
+    and it is read again here so an assignment is visible without a new login.
+    """
+    with app_connect() as conn:
+        company_id = company_id_for_user(conn, user["username"])
+    return {**user, "demo_mode": demo_mode(), "has_company": company_id is not None}
+
+
+def _require_upload_company(username: str) -> None:
+    with app_connect() as conn:
+        if company_id_for_user(conn, username) is None:
+            raise AppError(403, NO_COMPANY_UPLOAD)
 
 
 @app.post("/api/demo/load")
@@ -192,6 +210,7 @@ async def ingest_csv_route(
     source_name: str | None = Form(None),
     user: dict = Depends(require_user),
 ) -> dict:
+    _require_upload_company(user["username"])
     return await _ingest_upload(file, source_name, source_class, user, excel=False)
 
 
@@ -202,6 +221,7 @@ async def ingest_excel_route(
     source_name: str | None = Form(None),
     user: dict = Depends(require_user),
 ) -> dict:
+    _require_upload_company(user["username"])
     return await _ingest_upload(file, source_name, source_class, user, excel=True)
 
 
@@ -252,6 +272,7 @@ async def _ingest_upload(
 
 @app.post("/api/ingest/document")
 async def ingest_document_route(file: UploadFile = File(...), user: dict = Depends(require_user)) -> dict:
+    _require_upload_company(user["username"])
     path: Path | None = None
     try:
         path = await _save_upload(file)
@@ -324,6 +345,7 @@ def reject_identity(review_id: str, user: dict = Depends(require_user)) -> dict:
 
 @app.post("/api/ingest/sql")
 def ingest_sql_route(body: SqlIngestBody, user: dict = Depends(require_user)) -> dict:
+    _require_upload_company(user["username"])
     table = body.table
     source_name = body.source_name or table.replace(".", "_")
     with app_connect() as conn:

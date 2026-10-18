@@ -205,12 +205,13 @@ _FRESH = [
     {"version": "0008", "name": "mapping_decision_snapshot", "baselined": False},
     {"version": "0009", "name": "mapping_decision_snapshot_checks", "baselined": False},
     {"version": "0010", "name": "companies_learned_corrections", "baselined": False},
+    {"version": "0011", "name": "company_assignment", "baselined": False},
 ]
 
 
 def test_migration_files_do_not_drop_or_truncate():
     files = migration_files()
-    assert [item.version for item in files] == ["0001", "0002", "0003", "0004", "0005", "0006", "0007", "0008", "0009", "0010"]
+    assert [item.version for item in files] == ["0001", "0002", "0003", "0004", "0005", "0006", "0007", "0008", "0009", "0010", "0011"]
     assert [item.name for item in files] == [
         "initial",
         "provenance_audit_quality",
@@ -222,6 +223,7 @@ def test_migration_files_do_not_drop_or_truncate():
         "mapping_decision_snapshot",
         "mapping_decision_snapshot_checks",
         "companies_learned_corrections",
+        "company_assignment",
     ]
     for item in files:
         text = item.path.read_text(encoding="utf-8")
@@ -251,6 +253,8 @@ def test_migration_files_do_not_drop_or_truncate():
     assert migration_violation(allowed_audit, "0007_mapping_decisions_key_audit.sql") is None
     assert migration_violation(allowed_audit, "0006_later.sql") is not None
     assert migration_violation(allowed_audit, "0008_later.sql") is not None
+    assert migration_violation(allowed_audit, "0011_company_assignment.sql") is None
+    assert migration_violation(allowed_audit, "0012_later.sql") is not None
     drop_origin = (
         "ALTER TABLE app.labelled_cases DROP CONSTRAINT IF EXISTS labelled_cases_origin_check;\n"
     )
@@ -421,6 +425,7 @@ def test_legacy_database_is_baselined_without_touching_data_or_audit():
         {"version": "0008", "name": "mapping_decision_snapshot", "baselined": False},
         {"version": "0009", "name": "mapping_decision_snapshot_checks", "baselined": False},
         {"version": "0010", "name": "companies_learned_corrections", "baselined": False},
+        {"version": "0011", "name": "company_assignment", "baselined": False},
     ]
     assert again == []
     assert third == []
@@ -445,6 +450,7 @@ def test_legacy_database_is_baselined_without_touching_data_or_audit():
         ("0008", "mapping_decision_snapshot", False),
         ("0009", "mapping_decision_snapshot_checks", False),
         ("0010", "companies_learned_corrections", False),
+        ("0011", "company_assignment", False),
     ]
 
 
@@ -687,6 +693,7 @@ def test_upgraded_schema_is_baselined_without_touching_audit():
         {"version": "0008", "name": "mapping_decision_snapshot", "baselined": False},
         {"version": "0009", "name": "mapping_decision_snapshot_checks", "baselined": False},
         {"version": "0010", "name": "companies_learned_corrections", "baselined": False},
+        {"version": "0011", "name": "company_assignment", "baselined": False},
     ]
     assert again == []
     assert fact == [("0.42", "system_of_record", "unknown", None)]
@@ -702,6 +709,7 @@ def test_upgraded_schema_is_baselined_without_touching_audit():
         ("0008", "mapping_decision_snapshot", False),
         ("0009", "mapping_decision_snapshot_checks", False),
         ("0010", "companies_learned_corrections", False),
+        ("0011", "company_assignment", False),
     ]
 
 

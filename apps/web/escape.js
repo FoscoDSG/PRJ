@@ -142,6 +142,11 @@
     return role === "admin" && demoMode === true;
   }
 
+  // Testo fisso. La pagina lo assegna con textContent, non come HTML.
+  function companyUploadNotice() {
+    return "Il tuo utente non è ancora collegato a un'azienda: chiedi all'amministratore";
+  }
+
   function measuredThreshold(item) {
     if (!item || typeof item !== "object" || item.measured !== true) return null;
     const support = Number(item.support);
@@ -312,6 +317,7 @@
     confidenceLabel,
     recommendationConfidence,
     showFixtureButton,
+    companyUploadNotice,
     factList,
     driftCard,
     mappingRow,

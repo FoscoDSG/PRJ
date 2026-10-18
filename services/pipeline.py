@@ -706,7 +706,13 @@ def execute_recommendation(
     return execute(conn, model, recommendation_id, actor=actor, role=role)
 
 
-def load_fixtures(conn: psycopg.Connection, actor: str, role: str, model: Ontology) -> dict[str, Any]:
+def load_fixtures(
+    conn: psycopg.Connection,
+    actor: str,
+    role: str,
+    model: Ontology,
+    company_id: str | None = None,
+) -> dict[str, Any]:
     _require_mapper(role)
     loaded = []
     for source_name, filename in FIXTURE_FILES.items():
@@ -717,11 +723,12 @@ def load_fixtures(conn: psycopg.Connection, actor: str, role: str, model: Ontolo
             actor,
             role,
             FIXTURE_SOURCE_CLASS[source_name],
+            company_id=company_id,
         )
         loaded.append({"source": source_name, **result})
     seed_src(conn)
     seed_price_list(conn)
-    confirmed = confirm_confident(conn, role, model, actor=actor)
+    confirmed = confirm_confident(conn, role, model, actor=actor, company_id=company_id)
     counts = refresh_canonical(conn, model)
     recommendations = run_agents(conn, actor=actor, role=role)
     return {

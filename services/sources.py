@@ -31,6 +31,12 @@ def register_source(
     source_class: str,
     company_id: str | None = None,
 ) -> None:
+    """Register the source for this company. Does not update an existing row.
+
+    A legacy row with no company stays without one. The same name under
+    another company is a separate source. The company is the one of the
+    user doing the upload, passed by the server, not by the client.
+    """
     cleaned = (name or "").strip()
     if cleaned == "" or len(cleaned) > 128:
         raise AppError(422, "Nome fonte non valido")

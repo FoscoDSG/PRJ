@@ -12,6 +12,7 @@ from fastapi.testclient import TestClient
 from apps.api.main import app
 from services.db import connect, seed_users
 from services.text import norm
+from tests.test_flow import give_company
 
 ROOT = Path(__file__).resolve().parents[1]
 PAYLOAD = '"><img src=x onerror=alert(1)>'
@@ -191,7 +192,8 @@ def test_legacy_sha256_login_rehashes_to_argon2(client: TestClient):
     assert body["username"] == "legacy-user"
     assert body["role"] == "operator"
     assert isinstance(body["demo_mode"], bool)
-    assert set(body) == {"username", "role", "demo_mode"}
+    assert body["has_company"] is False
+    assert set(body) == {"username", "role", "demo_mode", "has_company"}
     with connect() as conn:
         upgraded = conn.execute(
             "SELECT password_hash FROM app.users WHERE username = %s",
@@ -230,6 +232,7 @@ def test_seed_script_does_not_print_passwords():
 
 
 def test_malicious_csv_value_renders_inert(client: TestClient):
+    give_company("mapper", "Maschera")
     _login(client, "mapper")
     ingested = client.post(
         "/api/ingest/csv",

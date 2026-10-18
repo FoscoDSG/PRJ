@@ -31,6 +31,7 @@ const {
   inboxCard,
   readableCard,
   showFixtureButton,
+  companyUploadNotice,
 } = globalThis.ieolEscape;
 
 const auditState = { offset: 0, limit: 50 };
@@ -55,9 +56,14 @@ function enter(me) {
   app.hidden = false;
   state.role = me.role;
   state.demoMode = Boolean(me.demo_mode);
+  state.hasCompany = me.has_company === true;
   document.querySelector("#session").hidden = false;
   document.querySelector("#who").textContent = `${me.username} · ${me.role}`;
   document.querySelector("#load-fixture").hidden = !showFixtureButton(state.role, state.demoMode);
+  document.querySelector("#upload-label").hidden = !state.hasCompany;
+  const companyNotice = document.querySelector("#company-notice");
+  companyNotice.hidden = state.hasCompany;
+  companyNotice.textContent = state.hasCompany ? "" : companyUploadNotice();
   show("mapping");
 }
 

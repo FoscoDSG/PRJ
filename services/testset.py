@@ -9,7 +9,11 @@ that label. A confirm and a reject both count. A reject is an error. A
 correction is a wrong prediction. The score is the one stored on the
 decision. Evaluation does not recompute it.
 Recognition keeps only the first batch of a company and a source. The batch
-is the file, not the insert time of the mapping. Bulk confirms stay out.
+is the file, not the insert time of the mapping. A batch with no company
+is not that first file, and it does not become a suggestion. A company
+with is_demo true is out of column recognition and of the file-type count
+entirely, including a file that would otherwise be the first. The name
+is not read. Bulk confirms stay out.
 Confirms and rejects of learned suggestions stay out of recognition and are
 counted apart, from the origin column, as the latest decision of that
 mapping. not_sure on a file type is an error of that suggestion and is not
@@ -34,7 +38,14 @@ from psycopg.types.json import Json
 
 from services.agent.order_agent import AGENT_VERSION
 from services.errors import AppError
-from services.mapping.corrections import file_type_metric, learned_metric
+from services.mapping.corrections import (
+    demo_company_ids,
+    file_type_metric,
+    learned_metric,
+    legacy_null_batch_sources,
+    measured_batch_sources,
+    measured_first_batch_ids,
+)
 from services.mapping.engine import HEADER_SIMILARITY_RULE, THRESHOLD
 
 AGENT_IS_RULES = "agente = regole, nessun confronto possibile"
@@ -220,41 +231,40 @@ def _latest_mapping_decisions(conn: psycopg.Connection) -> list[dict[str, Any]]:
 
 
 def _first_batch_ids(conn: psycopg.Connection) -> set[str]:
-    """Earliest landed file for each company and source. Not a decision timestamp."""
-    rows = conn.execute(
-        """
-        SELECT DISTINCT ON (company_id, source_name) id::text AS id
-        FROM app.landing_batches
-        ORDER BY company_id, source_name, loaded_at, id
-        """
-    ).fetchall()
-    return {row["id"] for row in rows}
+    """Earliest counted file for each company and source. Not a decision timestamp.
+
+    NULL-company batches and demo companies are not included.
+    """
+    return measured_first_batch_ids(conn)
 
 
-def _sources_with_a_batch(conn: psycopg.Connection) -> set[tuple[str | None, str]]:
-    rows = conn.execute(
-        """
-        SELECT company_id::text AS company_id, source_name
-        FROM app.landing_batches
-        GROUP BY company_id, source_name
-        """
-    ).fetchall()
-    return {(row["company_id"], row["source_name"]) for row in rows}
+def _sources_with_a_batch(conn: psycopg.Connection) -> set[tuple[str, str]]:
+    """Counted company and source pairs. Legacy NULL batches are not included."""
+    return measured_batch_sources(conn)
 
 
 def _human_mapping_cases(conn: psycopg.Connection) -> list[dict[str, Any]]:
     first_batches = _first_batch_ids(conn)
     seen_sources = _sources_with_a_batch(conn)
+    demo = demo_company_ids(conn)
+    null_sources = legacy_null_batch_sources(conn)
     rows = []
     for row in _latest_mapping_decisions(conn):
         if row["confidence_method"] != "human" or row["score"] is None:
             continue
         if row.get("origin") == "learned":
             continue
+        company = row.get("mapping_company_id")
+        if company in demo:
+            continue
         batch_id = row.get("batch_id")
+        if company is None and batch_id is not None:
+            continue
         if batch_id is None:
-            key = (row.get("mapping_company_id"), row.get("mapping_source"))
+            key = (company, row.get("mapping_source"))
             if key in seen_sources:
+                continue
+            if company is None and row.get("mapping_source") in null_sources:
                 continue
         elif batch_id not in first_batches:
             continue
