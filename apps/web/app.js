@@ -256,22 +256,17 @@ async function loadMappings() {
   const canWrite = canWriteDecisions(state.hasCompany);
   document.querySelector("#mapping-table").classList.toggle("mappings-readonly", !canWrite);
   const drift = document.querySelector("#drift");
-  drift.innerHTML = data.drift
-    .filter((item) => item.status === "open")
-    .map((item) => driftCard(item, canWrite))
-    .join("");
+  drift.innerHTML = data.drift.map((item) => driftCard(item, canWrite)).join("");
   drift.querySelectorAll("button[data-drift]").forEach((button) => {
     button.addEventListener("click", async () => {
       await api(`/api/drift/${button.dataset.drift}/acknowledge`, { method: "POST" });
       loadMappings();
     });
   });
+  bindRevokes(drift, loadMappings);
   const quarantine = document.querySelector("#quarantine");
   const held = await api("/api/quarantine");
-  quarantine.innerHTML = held.documents
-    .filter((item) => item.status === "open")
-    .map((item) => quarantineCard(item, canWrite))
-    .join("");
+  quarantine.innerHTML = held.documents.map((item) => quarantineCard(item, canWrite)).join("");
   quarantine.querySelectorAll("button[data-release]").forEach((button) => {
     button.addEventListener("click", async () => {
       try {
@@ -283,12 +278,10 @@ async function loadMappings() {
       }
     });
   });
+  bindRevokes(quarantine, loadMappings);
   const identity = document.querySelector("#identity");
   const reviews = await api("/api/identity-reviews");
-  identity.innerHTML = reviews.reviews
-    .filter((item) => item.status === "open")
-    .map((item) => identityCard(item, canWrite))
-    .join("");
+  identity.innerHTML = reviews.reviews.map((item) => identityCard(item, canWrite)).join("");
   identity.querySelectorAll("button[data-merge]").forEach((button) => {
     button.addEventListener("click", async () => {
       await api(`/api/identity-reviews/${button.dataset.merge}/confirm`, { method: "POST" });
@@ -301,6 +294,7 @@ async function loadMappings() {
       loadMappings();
     });
   });
+  bindRevokes(identity, loadMappings);
   renderProfileLabels(data.mappings, data.files);
   const body = document.querySelector("#mappings");
   body.innerHTML = data.mappings.map((item) => mappingRow(item, canWriteDecisions(state.hasCompany))).join("");
@@ -316,20 +310,49 @@ async function loadMappings() {
       loadMappings();
     });
   });
-  body.querySelectorAll("button[data-revoke]").forEach((button) => {
-    button.addEventListener("click", async () => {
-      try {
-        await api(`/api/mapping-decisions/${button.dataset.revoke}/revoke`, {
-          method: "POST",
-          body: "{}",
-        });
-        showFlash("Correzione annullata.");
-        loadMappings();
-      } catch (err) {
-        showFlash(err.message);
-      }
+  bindRevokes(body, loadMappings);
+}
+
+function revokeReason(button, id) {
+  const root = button.closest("article, tr") || button.parentElement;
+  const field = root ? root.querySelector(`[data-revoke-reason="${CSS.escape(id)}"]`) : null;
+  const reason = field ? field.value.trim() : "";
+  if (reason.length < 5) {
+    showFlash("Scrivi il motivo dell'annullamento (almeno 5 caratteri).");
+    return "";
+  }
+  return reason;
+}
+
+async function postRevoke(url, reason, reload) {
+  try {
+    await api(url, { method: "POST", body: JSON.stringify({ reason }) });
+    showFlash("Decisione annullata. Resta nello storico, barrata.");
+    reload();
+  } catch (err) {
+    showFlash(err.message);
+  }
+}
+
+function bindRevokes(root, reload) {
+  const routes = [
+    ["button[data-revoke]", (button) => button.dataset.revoke, (id) => `/api/mapping-decisions/${id}/revoke`],
+    ["button[data-revoke-mapping]", (button) => button.dataset.revokeMapping, (id) => `/api/mapping-decisions/${id}/revoke`],
+    ["button[data-revoke-inbox]", (button) => button.dataset.revokeInbox, (id) => `/api/decisions/${id}/revoke`],
+    ["button[data-revoke-quarantine]", (button) => button.dataset.revokeQuarantine, (id) => `/api/quarantine/${id}/revoke`],
+    ["button[data-revoke-identity]", (button) => button.dataset.revokeIdentity, (id) => `/api/identity-reviews/${id}/revoke`],
+    ["button[data-revoke-drift]", (button) => button.dataset.revokeDrift, (id) => `/api/drift/${id}/revoke`],
+  ];
+  for (const [selector, idFor, urlFor] of routes) {
+    root.querySelectorAll(selector).forEach((button) => {
+      button.addEventListener("click", async () => {
+        const id = idFor(button);
+        const reason = revokeReason(button, id);
+        if (!reason) return;
+        await postRevoke(urlFor(id), reason, reload);
+      });
     });
-  });
+  }
 }
 
 async function loadOrders() {
@@ -395,6 +418,7 @@ async function loadInbox() {
   const root = document.querySelector("#inbox");
   const canWrite = canWriteDecisions(state.hasCompany);
   root.innerHTML = data.recommendations.map((item) => inboxCard(item, state.role, canWrite)).join("") || "<p>Nessuna eccezione in inbox.</p>";
+  bindRevokes(root, loadInbox);
   root.querySelectorAll("article").forEach((card) => {
     card.querySelectorAll("button[data-act]").forEach((button) => {
       button.addEventListener("click", () => act(card.dataset.id, button.dataset.act, card));

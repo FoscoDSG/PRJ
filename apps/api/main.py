@@ -20,11 +20,11 @@ from ontology.loader import load_merged
 from services.actions.executor import compensate
 from apps.api.schemas import (
     ApproveBody,
-    EmptyBody,
     FileTypeDecisionBody,
     LoginBody,
     ModifyBody,
     RejectBody,
+    RevokeBody,
     SqlIngestBody,
     StockBody,
     UnmaskBody,
@@ -292,15 +292,29 @@ async def ingest_document_route(file: UploadFile = File(...), user: dict = Depen
 @app.get("/api/quarantine")
 def quarantine(user: dict = Depends(require_user)) -> dict:
     del user
+    from services.revocation import state_histories
+
     with app_connect() as conn:
-        rows = conn.execute(
-            """
-            SELECT id::text, source_name, order_key, reasons, status
-            FROM app.quarantine_documents
-            ORDER BY created_at DESC
-            """
-        ).fetchall()
-    return _ok({"documents": list(rows)})
+        rows = list(
+            conn.execute(
+                """
+                SELECT id::text, source_name, order_key, reasons, status
+                FROM app.quarantine_documents
+                ORDER BY created_at DESC
+                """
+            ).fetchall()
+        )
+        histories = state_histories(
+            conn,
+            subject_table="app.quarantine_documents",
+            revocation_table="app.quarantine_decisions",
+            subject_ids=[row["id"] for row in rows],
+            decision_for_status={"released": "released", "rejected": "rejected"},
+        )
+    for row in rows:
+        row["history"] = histories.get(row["id"], [])
+        row["executed"] = False
+    return _ok({"documents": rows})
 
 
 @app.post("/api/quarantine/{quarantine_id}/release")
@@ -448,10 +462,9 @@ def confirm_high(user: dict = Depends(require_user)) -> dict:
 @app.post("/api/mapping-decisions/{decision_id}/revoke")
 def revoke_route(
     decision_id: str,
-    body: EmptyBody,
+    body: RevokeBody,
     user: dict = Depends(require_user),
 ) -> dict:
-    del body
     _require_company(user["username"])
     with app_connect() as conn:
         company_id = company_id_for_user(conn, user["username"])
@@ -461,6 +474,7 @@ def revoke_route(
             actor=user["username"],
             role=user["role"],
             company_id=company_id,
+            reason=body.reason,
         )
         conn.commit()
     return _ok(result)
@@ -483,6 +497,75 @@ def file_type_route(
             company_id=company_id,
             decision=body.decision,
             correct_type=body.correct_type,
+        )
+        conn.commit()
+    return _ok(result)
+
+
+@app.post("/api/quarantine/{quarantine_id}/revoke")
+def revoke_quarantine_route(
+    quarantine_id: str,
+    body: RevokeBody,
+    user: dict = Depends(require_user),
+) -> dict:
+    from services.revocation import revoke_quarantine
+
+    _require_company(user["username"])
+    with app_connect() as conn:
+        company_id = company_id_for_user(conn, user["username"])
+        result = revoke_quarantine(
+            conn,
+            quarantine_id,
+            actor=user["username"],
+            role=user["role"],
+            company_id=company_id,
+            reason=body.reason,
+        )
+        conn.commit()
+    return _ok(result)
+
+
+@app.post("/api/identity-reviews/{review_id}/revoke")
+def revoke_identity_route(
+    review_id: str,
+    body: RevokeBody,
+    user: dict = Depends(require_user),
+) -> dict:
+    from services.revocation import revoke_identity
+
+    _require_company(user["username"])
+    with app_connect() as conn:
+        company_id = company_id_for_user(conn, user["username"])
+        result = revoke_identity(
+            conn,
+            review_id,
+            actor=user["username"],
+            role=user["role"],
+            company_id=company_id,
+            reason=body.reason,
+        )
+        conn.commit()
+    return _ok(result)
+
+
+@app.post("/api/drift/{drift_id}/revoke")
+def revoke_drift_route(
+    drift_id: str,
+    body: RevokeBody,
+    user: dict = Depends(require_user),
+) -> dict:
+    from services.revocation import revoke_drift
+
+    _require_company(user["username"])
+    with app_connect() as conn:
+        company_id = company_id_for_user(conn, user["username"])
+        result = revoke_drift(
+            conn,
+            drift_id,
+            actor=user["username"],
+            role=user["role"],
+            company_id=company_id,
+            reason=body.reason,
         )
         conn.commit()
     return _ok(result)
@@ -630,6 +713,29 @@ def reject_route(recommendation_id: str, body: RejectBody, user: dict = Depends(
         except AppError as exc:
             error = exc
         result = _finish_decision(conn, result, error)
+    return _ok(result)
+
+
+@app.post("/api/decisions/{decision_id}/revoke")
+def revoke_inbox_route(
+    decision_id: str,
+    body: RevokeBody,
+    user: dict = Depends(require_user),
+) -> dict:
+    from services.revocation import revoke_inbox_decision
+
+    _require_approver_company(user)
+    with app_connect() as conn:
+        company_id = company_id_for_user(conn, user["username"])
+        result = revoke_inbox_decision(
+            conn,
+            decision_id,
+            actor=user["username"],
+            role=user["role"],
+            company_id=company_id,
+            reason=body.reason,
+        )
+        conn.commit()
     return _ok(result)
 
 

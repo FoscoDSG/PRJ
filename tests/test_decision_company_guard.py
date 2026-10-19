@@ -53,7 +53,7 @@ def _prepare_through_0011(conn) -> None:
     wipe_test_database(conn)
     _ensure_registry(conn)
     for item in migration_files():
-        if item.version == "0012":
+        if item.version >= "0012":
             continue
         _execute_migration(conn, item)
         _record(conn, item, baselined=False)
@@ -66,6 +66,10 @@ def test_0012_does_not_rewrite_rows_and_keeps_the_two_measures():
     assert "UPDATE app." not in code
     assert "UPDATE src." not in code
     assert "NOT VALID" in script
+    later = (ROOT / "db" / "migrations" / "0013_decided_row_revocation.sql").read_text(encoding="utf-8")
+    later_code = "\n".join(line.split("--", 1)[0] for line in later.splitlines())
+    assert "UPDATE app." not in later_code
+    assert "UPDATE src." not in later_code
 
     company_id = str(uuid.uuid4())
     other_id = str(uuid.uuid4())
@@ -191,7 +195,15 @@ def test_0012_does_not_rewrite_rows_and_keeps_the_two_measures():
             ).fetchone(),
         }
         conn.commit()
-        applied = migrate(conn)
+        applied = []
+        for version in ("0012", "0013"):
+            item = next(found for found in migration_files() if found.version == version)
+            _execute_migration(conn, item)
+            _record(conn, item, baselined=False)
+            conn.commit()
+            applied.append({"version": item.version, "name": item.name, "baselined": False})
+            if version == "0012":
+                after_guard = _measure(conn)
         after = _measure(conn)
         historical_company = conn.execute(
             "SELECT company_id::text AS company_id FROM app.mapping_decisions WHERE id = %s",
@@ -220,12 +232,15 @@ def test_0012_does_not_rewrite_rows_and_keeps_the_two_measures():
         ).fetchone()
         conn.commit()
 
-    assert applied == [{"version": "0012", "name": "decision_company_guard", "baselined": False}]
-    assert before["accuracy"] == after["accuracy"]
-    assert before["n"] == after["n"]
-    assert before["errors"] == after["errors"]
-    assert before["learned"] == after["learned"]
-    assert before["recognition_ids"] == after["recognition_ids"]
+    assert applied == [
+        {"version": "0012", "name": "decision_company_guard", "baselined": False},
+        {"version": "0013", "name": "decided_row_revocation", "baselined": False},
+    ]
+    assert before["accuracy"] == after_guard["accuracy"] == after["accuracy"]
+    assert before["n"] == after_guard["n"] == after["n"]
+    assert before["errors"] == after_guard["errors"] == after["errors"]
+    assert before["learned"] == after_guard["learned"] == after["learned"]
+    assert before["recognition_ids"] == after_guard["recognition_ids"] == after["recognition_ids"]
     assert before["accuracy"] == 1.0
     assert before["n"] == 2
     assert set(before["recognition_ids"]) == {kept, other}

@@ -126,7 +126,10 @@ def test_user_cannot_see_or_revoke_another_companys_decisions(client: TestClient
 
     login(client, "mapper")
     missing = str(uuid.uuid4())
-    denied = client.post(f"/api/mapping-decisions/{missing}/revoke", json={})
+    denied = client.post(
+        f"/api/mapping-decisions/{missing}/revoke",
+        json={"reason": "annullo la correzione"},
+    )
     assert denied.status_code == 403
     assert denied.json()["detail"] == NO_COMPANY_UPLOAD
     untyped = client.post(f"/api/files/{missing}/type", json={"decision": "correct"})
@@ -135,7 +138,10 @@ def test_user_cannot_see_or_revoke_another_companys_decisions(client: TestClient
     client.post("/api/logout")
     login(client, "operator")
     give_company("operator", "Sola lettura")
-    forbidden = client.post(f"/api/mapping-decisions/{missing}/revoke", json={})
+    forbidden = client.post(
+        f"/api/mapping-decisions/{missing}/revoke",
+        json={"reason": "annullo la correzione"},
+    )
     assert forbidden.status_code == 403
     assert forbidden.json()["detail"] == "Serve il ruolo mapper"
     client.post("/api/logout")
@@ -276,9 +282,15 @@ def test_user_cannot_see_or_revoke_another_companys_decisions(client: TestClient
     assert decision_company == company_a
     not_a_correction = client.post(
         f"/api/mapping-decisions/{confirmed.json()['decision_id']}/revoke",
-        json={},
+        json={"reason": "annullo una conferma"},
     )
-    assert not_a_correction.status_code == 404
+    assert not_a_correction.status_code == 200, not_a_correction.text
+    with connect() as conn:
+        stayed = conn.execute(
+            "SELECT status FROM app.field_mappings WHERE id = %s",
+            (proposed["id"],),
+        ).fetchone()["status"]
+    assert stayed == "confirmed"
 
     client.post("/api/logout")
     client.post("/api/login", json={"username": "altra", "password": ALTRO_PASSWORD})
@@ -287,7 +299,10 @@ def test_user_cannot_see_or_revoke_another_companys_decisions(client: TestClient
     assert all(item["source_name"] != "solo_alfa" for item in hidden["mappings"])
     assert correction_id not in json.dumps(hidden)
     assert all(item["source_name"] != "solo_alfa" for item in hidden["files"])
-    cannot_revoke = client.post(f"/api/mapping-decisions/{correction_id}/revoke", json={})
+    cannot_revoke = client.post(
+        f"/api/mapping-decisions/{correction_id}/revoke",
+        json={"reason": "annullo la correzione"},
+    )
     assert cannot_revoke.status_code == 404
     cannot_smuggle = client.post(
         f"/api/mapping-decisions/{correction_id}/revoke",
@@ -299,10 +314,16 @@ def test_user_cannot_see_or_revoke_another_companys_decisions(client: TestClient
 
     client.post("/api/logout")
     login(client, "mapper")
-    revoked = client.post(f"/api/mapping-decisions/{correction_id}/revoke", json={})
+    revoked = client.post(
+        f"/api/mapping-decisions/{correction_id}/revoke",
+        json={"reason": "annullo la correzione"},
+    )
     assert revoked.status_code == 200, revoked.text
     assert revoked.json()["decision"] == "revoked"
-    again = client.post(f"/api/mapping-decisions/{correction_id}/revoke", json={})
+    again = client.post(
+        f"/api/mapping-decisions/{correction_id}/revoke",
+        json={"reason": "annullo la correzione"},
+    )
     assert again.status_code == 409
     assert again.json()["detail"] == "Correzione già annullata"
     assert revoked.json()["revoked_decision_id"] == correction_id

@@ -9,6 +9,7 @@ import psycopg
 from services.mapping.corrections import present_origin, proposed_label, table_file_choice_codes
 from services.mapping.labels import profile_label
 from services.mapping.threshold import active_threshold
+from services.revocation import EXECUTED_MESSAGE, inbox_histories, mapping_histories, state_histories
 from services.pii import is_pii_key, is_pii_property, redact
 from services.text import stable
 
@@ -58,6 +59,9 @@ def list_mappings(
         item.update(present_origin(item, decisions.get(source_decision_id), viewer_company=company_id))
         item.pop("source_decision_id", None)
         visible.append(item)
+    histories = mapping_histories(conn, [item["id"] for item in visible], company_id)
+    for item in visible:
+        item["history"] = histories.get(item["id"], [])
     return visible
 
 
@@ -115,7 +119,7 @@ def _learned_decisions(
 
 
 def list_drift(conn: psycopg.Connection) -> list[dict]:
-    return list(
+    rows = list(
         conn.execute(
             """
             SELECT id::text, source_name, previous_hash, new_hash, diff, status, created_at
@@ -124,6 +128,17 @@ def list_drift(conn: psycopg.Connection) -> list[dict]:
             """
         ).fetchall()
     )
+    histories = state_histories(
+        conn,
+        subject_table="app.drift_reviews",
+        revocation_table="app.drift_decisions",
+        subject_ids=[row["id"] for row in rows],
+        decision_for_status={"acknowledged": "acknowledged"},
+    )
+    for row in rows:
+        row["history"] = histories.get(row["id"], [])
+        row["executed"] = False
+    return rows
 
 
 def list_orders(conn: psycopg.Connection, role: str) -> list[dict]:
@@ -231,6 +246,11 @@ def list_inbox(conn: psycopg.Connection, role: str) -> list[dict]:
         }
         item["dry_run"] = item["preview"]["payloads"] if payloads else None
         inbox.append(item)
+    histories = inbox_histories(conn, [item["id"] for item in inbox])
+    for item in inbox:
+        item["history"] = histories.get(item["id"], [])
+        item["executed"] = item["status"] == "executed"
+        item["executed_message"] = EXECUTED_MESSAGE if item["executed"] else ""
     return inbox
 
 

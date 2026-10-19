@@ -181,12 +181,40 @@ def _fixture_origin(item: dict[str, Any]) -> str:
     return origin
 
 
+def inbox_decision_metric(conn: psycopg.Connection) -> dict[str, int]:
+    """Latest decision per recommendation. A revocation is not an approval.
+
+    Revocations are counted on their own. An earlier approve that was later
+    revoked does not stay in ``approve``.
+    """
+    rows = conn.execute(
+        """
+        SELECT DISTINCT ON (recommendation_id) decision
+        FROM app.decisions_log
+        ORDER BY recommendation_id, decided_at DESC, id DESC
+        """
+    ).fetchall()
+    counts = {"approve": 0, "reject": 0, "modify": 0, "revoked": 0}
+    for row in rows:
+        kind = row["decision"]
+        if kind in counts:
+            counts[kind] += 1
+    return counts
+
+
 def _human_recommendation_cases(conn: psycopg.Connection) -> list[dict[str, Any]]:
+    """Latest decision of each recommendation. A revoked approval is not a case."""
     rows = conn.execute(
         """
         SELECT d.id::text AS decision_id, d.decision, d.action_label, d.context_snapshot
-        FROM app.decisions_log d
-        WHERE d.action_label IS NOT NULL
+        FROM (
+          SELECT DISTINCT ON (recommendation_id)
+                 id, recommendation_id, decision, action_label, context_snapshot, decided_at
+          FROM app.decisions_log
+          ORDER BY recommendation_id, decided_at DESC, id DESC
+        ) d
+        WHERE d.decision IN ('approve', 'reject', 'modify')
+          AND d.action_label IS NOT NULL
           AND d.context_snapshot IS NOT NULL
           AND EXISTS (
             SELECT 1 FROM app.decisions_log_sources s WHERE s.decision_id = d.id

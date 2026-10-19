@@ -357,7 +357,7 @@ def test_migration_checksum_mismatch_stops_migrate():
         ).fetchall()
         files = list((ROOT / "db" / "migrations").glob("*.sql"))
         by_version = {path.name.split("_", 1)[0]: path for path in files}
-        assert [row["version"] for row in recorded] == ["0001", "0002", "0003", "0004", "0005", "0006", "0007", "0008", "0009", "0010", "0011", "0012"]
+        assert [row["version"] for row in recorded] == ["0001", "0002", "0003", "0004", "0005", "0006", "0007", "0008", "0009", "0010", "0011", "0012", "0013"]
         for row in recorded:
             assert row["checksum"] == migration_checksum(by_version[row["version"]])
         conn.execute(
