@@ -11,6 +11,7 @@ from apps.api.main import app
 from ontology.loader import load_merged
 from services.actions.executor import execute
 from services.db import connect
+from services.mapping.corrections import company_id_for_user
 from services.errors import AppError
 from services.pipeline import load_fixtures, seed_src
 
@@ -30,8 +31,26 @@ def login(client: TestClient, role: str) -> None:
 def load_demo() -> None:
     model = load_merged()
     with connect() as conn:
-        load_fixtures(conn, actor="mapper", role="mapper", model=model)
+        company_id = company_id_for_user(conn, "mapper")
+        load_fixtures(conn, actor="mapper", role="mapper", model=model, company_id=company_id)
         conn.commit()
+
+
+def give_company(username: str = "mapper", name: str = "Azienda test") -> str:
+    """Create a company and assign it. API uploads need this link."""
+    import json
+    from contextlib import redirect_stdout
+    from io import StringIO
+
+    from apps.cli import main
+
+    created = StringIO()
+    with redirect_stdout(created):
+        main(["company", "create", "--name", name])
+    company_id = json.loads(created.getvalue().strip().splitlines()[-1])["company_id"]
+    with redirect_stdout(StringIO()):
+        main(["company", "assign", "--username", username, "--company-id", company_id])
+    return company_id
 
 
 def decide(client: TestClient, item: dict, decision: str = "approve", **extra):
@@ -162,6 +181,7 @@ def test_modify_changes_dry_run_quantity(client: TestClient):
 
 
 def test_reload_is_idempotent_and_drift_is_reviewed(client: TestClient, tmp_path: Path):
+    give_company("mapper", "Ricarica")
     login(client, "mapper")
     first = client.post(
         "/api/ingest/csv",
@@ -195,6 +215,7 @@ def test_reload_is_idempotent_and_drift_is_reviewed(client: TestClient, tmp_path
 
 
 def test_excel_and_sql_connectors(client: TestClient, tmp_path: Path):
+    give_company("mapper", "Connettori")
     login(client, "mapper")
     workbook_path = tmp_path / "articoli.xlsx"
     workbook = Workbook()
@@ -284,6 +305,7 @@ def test_inbox_previews_the_payload_before_approval(client: TestClient):
 def test_similar_names_stay_apart_until_review(client: TestClient, tmp_path: Path):
     login(client, "mapper")
     load_demo()
+    give_company("mapper", "Nomi vicini")
     path = tmp_path / "rossi.csv"
     path.write_text(
         "ANAG_CLI,RAGIONE_SOCIALE,PIVA\nR1,Mario Rossi Srl,IT11111111111\nR2,M. Rossi SRL,IT22222222222\n",
@@ -610,6 +632,7 @@ def test_direct_fixture_pipeline_records_detected_state():
 
 
 def test_operator_cannot_rebuild_or_upload_without_limit(client: TestClient, monkeypatch: pytest.MonkeyPatch):
+    give_company("mapper", "Limite byte")
     login(client, "operator")
     denied = client.post("/api/materialize")
     assert denied.status_code == 403
@@ -627,6 +650,7 @@ def test_email_and_pdf_orders_enter_the_same_model(client: TestClient, tmp_path:
     from pypdf import PdfWriter
     from pypdf.generic import DictionaryObject, NameObject, StreamObject
 
+    give_company("mapper", "Documenti")
     login(client, "mapper")
     load_demo()
     email = client.post(
@@ -689,6 +713,7 @@ def test_email_and_pdf_orders_enter_the_same_model(client: TestClient, tmp_path:
 
 
 def test_sql_connector_rejects_application_tables(client: TestClient):
+    give_company("mapper", "Sql rifiutato")
     login(client, "mapper")
     denied = client.post(
         "/api/ingest/sql",
@@ -724,6 +749,7 @@ def test_executed_order_is_not_proposed_again(client: TestClient):
     assert decide(client, recommendation).status_code == 200
     assert client.post(f"/api/recommendations/{recommendation['id']}/execute").status_code == 200
     login(client, "mapper")
+    give_company("mapper", "Riesecuzione")
     again = client.post("/api/agent/run")
     assert again.status_code == 200, again.text
     assert again.json()["recommendations"] == []

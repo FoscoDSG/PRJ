@@ -9,6 +9,12 @@ does not read the table.
 
 ``company_id`` is the authenticated user's company. Callers pass the value
 loaded from ``app.users``. It is not a request field.
+
+A decision with no company is not a suggestion. Measurement of column
+recognition and of file type skips legacy batches with a NULL company,
+and skips every row of a company with ``is_demo`` true. The company name
+is not the signal. Demo rows stay out even when they would otherwise be
+the first file of that company and source.
 """
 
 from __future__ import annotations
@@ -199,24 +205,76 @@ def learned_metric(conn: psycopg.Connection) -> dict[str, Any]:
     }
 
 
+def demo_company_ids(conn: psycopg.Connection) -> set[str]:
+    """Companies marked demo. The name is irrelevant."""
+    rows = conn.execute(
+        "SELECT id::text AS id FROM app.companies WHERE is_demo"
+    ).fetchall()
+    return {row["id"] for row in rows}
+
+
+def measured_first_batch_ids(conn: psycopg.Connection) -> set[str]:
+    """Earliest file per company and source, outside NULL and demo companies.
+
+    A NULL ``company_id`` does not match ``app.companies``, so a legacy
+    batch stays out. ``is_demo`` drops the demo company even when that
+    file is the first one.
+    """
+    rows = conn.execute(
+        """
+        SELECT DISTINCT ON (b.company_id, b.source_name) b.id::text AS id
+        FROM app.landing_batches b
+        JOIN app.companies c ON c.id = b.company_id
+        WHERE c.is_demo = false
+        ORDER BY b.company_id, b.source_name, b.loaded_at, b.id
+        """
+    ).fetchall()
+    return {row["id"] for row in rows}
+
+
+def measured_batch_sources(conn: psycopg.Connection) -> set[tuple[str, str]]:
+    """Company and source pairs that have a batch counted in the measures."""
+    rows = conn.execute(
+        """
+        SELECT b.company_id::text AS company_id, b.source_name
+        FROM app.landing_batches b
+        JOIN app.companies c ON c.id = b.company_id
+        WHERE c.is_demo = false
+        GROUP BY b.company_id, b.source_name
+        """
+    ).fetchall()
+    return {(row["company_id"], row["source_name"]) for row in rows}
+
+
+def legacy_null_batch_sources(conn: psycopg.Connection) -> set[str]:
+    """Source names that still have a batch with no company."""
+    rows = conn.execute(
+        """
+        SELECT source_name
+        FROM app.landing_batches
+        WHERE company_id IS NULL
+        GROUP BY source_name
+        """
+    ).fetchall()
+    return {row["source_name"] for row in rows}
+
+
 def file_type_metric(conn: psycopg.Connection) -> dict[str, int]:
-    """Latest decision on the first batch of a company and a source.
+    """Latest decision on the first counted batch of a company and a source.
 
     ``not_sure`` is an error of the suggestion and is not a learning example.
     A ``wrong`` with a type from the closed list is a learning example.
-    Later files of the same company and source stay out.
+    Later files of the same company and source stay out. Legacy batches
+    with no company stay out. A demo company (``is_demo``, not the name)
+    stays out even on its first file.
     """
+    first_ids = list(measured_first_batch_ids(conn))
     row = conn.execute(
         """
-        WITH first_batch AS (
-          SELECT DISTINCT ON (company_id, source_name) id
-          FROM app.landing_batches
-          ORDER BY company_id, source_name, loaded_at, id
-        ),
-        latest AS (
+        WITH latest AS (
           SELECT DISTINCT ON (d.file_id) d.decision
           FROM app.table_type_decisions d
-          JOIN first_batch f ON f.id = d.file_id
+          WHERE d.file_id = ANY(%s::uuid[])
           ORDER BY d.file_id, d.decided_at DESC, d.id DESC
         )
         SELECT
@@ -224,7 +282,8 @@ def file_type_metric(conn: psycopg.Connection) -> dict[str, int]:
           count(*) FILTER (WHERE decision = 'wrong') AS wrong,
           count(*) FILTER (WHERE decision = 'not_sure') AS not_sure
         FROM latest
-        """
+        """,
+        (first_ids,),
     ).fetchone()
     wrong = int(row["wrong"])
     not_sure = int(row["not_sure"])

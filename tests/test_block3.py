@@ -15,7 +15,7 @@ from services.mapping.engine import HEADER_SIMILARITY_RULE
 from services.pii import MASK
 from services.testset import MIN_MEASURED_CASES, build_testset, evaluate_testset, load_hand_labels
 from services.text import digest
-from tests.test_flow import decide, load_demo, login
+from tests.test_flow import decide, give_company, load_demo, login
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -403,6 +403,7 @@ def test_a_source_is_never_in_selection_and_evaluation():
 
 
 def test_human_mapping_confirmation_is_a_decision(client: TestClient):
+    give_company("mapper", "Decisioni")
     login(client, "mapper")
     load_demo()
     with connect() as conn:

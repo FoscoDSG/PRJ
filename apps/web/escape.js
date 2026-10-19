@@ -142,6 +142,16 @@
     return role === "admin" && demoMode === true;
   }
 
+  // Solo true abilita scrittura. La pagina nasconde i pulsanti di decisione.
+  function canWriteDecisions(hasCompany) {
+    return hasCompany === true;
+  }
+
+  // Testo fisso. La pagina lo assegna con textContent, non come HTML.
+  function companyUploadNotice() {
+    return "Il tuo utente non è ancora collegato a un'azienda: chiedi all'amministratore";
+  }
+
   function measuredThreshold(item) {
     if (!item || typeof item !== "object" || item.measured !== true) return null;
     const support = Number(item.support);
@@ -186,11 +196,12 @@
     status: "Stato",
   };
 
-  function mappingRow(item) {
-    const confirm = item.status === "proposed"
+  function mappingRow(item, canWrite) {
+    const writable = canWrite !== false;
+    const confirm = writable && item.status === "proposed"
       ? `<button type="button" data-confirm="${escapeHtml(item.id)}">Conferma</button> <button type="button" class="ghost" data-reject="${escapeHtml(item.id)}">Rifiuta</button>`
       : "";
-    const revoke = item.origin === "learned" && item.decision_id
+    const revoke = writable && item.origin === "learned" && item.decision_id
       ? `<button type="button" class="ghost" data-revoke="${escapeHtml(item.decision_id)}">Annulla correzione</button>`
       : "";
     const actions = [confirm, revoke].filter(Boolean).join(" ");
@@ -320,6 +331,8 @@
     confidenceLabel,
     recommendationConfidence,
     showFixtureButton,
+    companyUploadNotice,
+    canWriteDecisions,
     factList,
     driftCard,
     mappingRow,

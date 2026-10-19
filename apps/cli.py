@@ -23,6 +23,7 @@ from services.migrate import (
     require_migrated,
     reset_demo_database,
 )
+from services.companies import assign_user_company, create_company
 from services.errors import AppError
 from services.pii import redact
 from services.pipeline import adjust_on_hand, approve, execute_recommendation, load_fixtures
@@ -64,6 +65,27 @@ def main(argv: list[str] | None = None) -> None:
     )
     sub.add_parser("expire", help="Nel database della demo, cambia la giacenza e fa scadere la raccomandazione")
     sub.add_parser("execute", help="Nel database della demo, esegue il dry-run già approvato, in modo idempotente")
+    company = sub.add_parser(
+        "company",
+        help="Crea un'azienda o assegna un utente. Solo da qui, come owner di DATABASE_URL. Non c'è una pagina né un'API.",
+    )
+    company_commands = company.add_subparsers(dest="company_command", required=True)
+    create = company_commands.add_parser(
+        "create",
+        help="Crea un'azienda. Un'azienda pilota si crea solo dopo la firma dell'accordo sui dati: il comando non verifica la firma.",
+    )
+    create.add_argument("--name", required=True)
+    create_demo = company_commands.add_parser(
+        "create-demo",
+        help="Crea l'azienda demo e imposta is_demo. Il nome non decide l'esclusione dalle misure.",
+    )
+    create_demo.add_argument("--name", required=True)
+    assign = company_commands.add_parser(
+        "assign",
+        help="Assegna l'azienda a un utente che non ne ha una. Un secondo assegnamento è rifiutato.",
+    )
+    assign.add_argument("--username", required=True)
+    assign.add_argument("--company-id", required=True)
     testset = sub.add_parser("testset", help="Costruisce o valuta il test set etichettato")
     testset_commands = testset.add_subparsers(dest="testset_command", required=True)
     testset_commands.add_parser("build", help="Congela i casi da decisioni umane e dalla fixture manoscritta")
@@ -108,6 +130,22 @@ def main(argv: list[str] | None = None) -> None:
             message = exc.message if isinstance(exc, AppError) else str(exc)
             raise SystemExit(message) from exc
         print(json.dumps(redact(stable(result)), ensure_ascii=False))
+        return
+    if args.command == "company":
+        try:
+            with connect() as conn:
+                require_migrated(conn)
+                if args.company_command == "create":
+                    result = create_company(conn, args.name, demo=False)
+                elif args.company_command == "create-demo":
+                    result = create_company(conn, args.name, demo=True)
+                else:
+                    result = assign_user_company(conn, args.username, args.company_id)
+                conn.commit()
+        except (RuntimeError, AppError) as exc:
+            message = exc.message if isinstance(exc, AppError) else str(exc)
+            raise SystemExit(message) from exc
+        print(json.dumps(result, ensure_ascii=False))
         return
     model = load_merged()
     try:
