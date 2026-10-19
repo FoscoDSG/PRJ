@@ -46,11 +46,12 @@
         </div>
         <div class="actions">
           <button type="button" id="load-fixture" hidden>Carica fixture</button>
-          <label class="file">Email o PDF<input id="upload-document" type="file" accept=".txt,.eml,.pdf,text/plain,application/pdf" /></label>
+          <label class="file" id="upload-label">Email o PDF<input id="upload-document" type="file" accept=".txt,.eml,.pdf,text/plain,application/pdf" /></label>
           <button type="button" id="confirm-high" class="ghost">Conferma i suggerimenti forti</button>
           <button type="button" id="materialize" class="ghost">Aggiorna modello</button>
         </div>
       </div>
+      <p id="company-notice" class="error" hidden></p>
       <div id="profile-labels" class="profile-labels"></div>
       <div id="drift"></div>
       <div id="quarantine"></div>

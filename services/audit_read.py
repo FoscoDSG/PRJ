@@ -25,6 +25,8 @@ ACTION_LABELS = {
     "pii_read": "Lettura dati personali",
     "pii_mask": "Mascheramento dati personali",
     "evidence_key_rotate": "Rotazione chiave evidenze",
+    "company_create": "Creazione azienda",
+    "user_company_assign": "Assegnazione azienda",
     "approve": "Approvazione",
     "reject": "Rifiuto",
     "modify": "Modifica",

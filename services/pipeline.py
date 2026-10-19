@@ -17,6 +17,7 @@ from services.agent.order_agent import build_context, run_order_agent
 from services.agent.stub_model import StubOrderModel
 from services.canonical.store import _put_fact, materialize
 from services.audit import record
+from services.companies import NO_COMPANY_UPLOAD
 from services.errors import AppError
 from services.quality import document_reasons
 from services.ingest.csv_connector import read_csv
@@ -434,7 +435,7 @@ def revoke_correction(
     """Append revoked. The revoked row stays. Same company as the actor."""
     _require_mapper(role)
     if not company_id:
-        raise AppError(403, "Azienda non assegnata")
+        raise AppError(403, NO_COMPANY_UPLOAD)
     row = conn.execute(
         """
         SELECT id::text, mapping_id::text, decision, source_name, source_field,
@@ -553,7 +554,7 @@ def record_table_type_decision(
     """Store a file-type decision. Proposed type and score come from the batch."""
     _require_mapper(role)
     if not company_id:
-        raise AppError(403, "Azienda non assegnata")
+        raise AppError(403, NO_COMPANY_UPLOAD)
     if decision not in ("correct", "wrong", "not_sure"):
         raise AppError(422, "Decisione sul tipo non valida")
     if decision == "wrong":
@@ -706,7 +707,13 @@ def execute_recommendation(
     return execute(conn, model, recommendation_id, actor=actor, role=role)
 
 
-def load_fixtures(conn: psycopg.Connection, actor: str, role: str, model: Ontology) -> dict[str, Any]:
+def load_fixtures(
+    conn: psycopg.Connection,
+    actor: str,
+    role: str,
+    model: Ontology,
+    company_id: str | None = None,
+) -> dict[str, Any]:
     _require_mapper(role)
     loaded = []
     for source_name, filename in FIXTURE_FILES.items():
@@ -717,11 +724,12 @@ def load_fixtures(conn: psycopg.Connection, actor: str, role: str, model: Ontolo
             actor,
             role,
             FIXTURE_SOURCE_CLASS[source_name],
+            company_id=company_id,
         )
         loaded.append({"source": source_name, **result})
     seed_src(conn)
     seed_price_list(conn)
-    confirmed = confirm_confident(conn, role, model, actor=actor)
+    confirmed = confirm_confident(conn, role, model, actor=actor, company_id=company_id)
     counts = refresh_canonical(conn, model)
     recommendations = run_agents(conn, actor=actor, role=role)
     return {

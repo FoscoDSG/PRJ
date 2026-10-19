@@ -25,7 +25,7 @@ from services.ingest.landing import MAX_LANDING_ROWS
 from services.mapping.engine import THRESHOLD
 from services.migrate import demo_database_url, ensure_database, migrate, migration_checksum, require_migrated
 from services.rules.engine import CFO_THRESHOLD, RULES_VERSION
-from tests.test_flow import decide, load_demo, login
+from tests.test_flow import decide, give_company, load_demo, login
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -305,6 +305,7 @@ def test_calculated_fact_takes_the_weakest_input_class(client: TestClient):
 
 
 def test_source_class_is_declared_and_not_inferred_from_the_name(client: TestClient):
+    give_company("mapper", "Provenienza")
     login(client, "mapper")
     denied = client.post(
         "/api/ingest/csv",
@@ -352,7 +353,7 @@ def test_migration_checksum_mismatch_stops_migrate():
         ).fetchall()
         files = list((ROOT / "db" / "migrations").glob("*.sql"))
         by_version = {path.name.split("_", 1)[0]: path for path in files}
-        assert [row["version"] for row in recorded] == ["0001", "0002", "0003", "0004", "0005", "0006", "0007", "0008", "0009", "0010"]
+        assert [row["version"] for row in recorded] == ["0001", "0002", "0003", "0004", "0005", "0006", "0007", "0008", "0009", "0010", "0011"]
         for row in recorded:
             assert row["checksum"] == migration_checksum(by_version[row["version"]])
         conn.execute(
@@ -504,6 +505,7 @@ def test_demo_load_is_admin_only_on_ieol_demo(client: TestClient):
 
 
 def test_upload_row_limit(client: TestClient, monkeypatch: pytest.MonkeyPatch):
+    give_company("mapper", "Limite righe")
     login(client, "mapper")
     monkeypatch.setattr("services.ingest.landing.MAX_LANDING_ROWS", 1)
     assert MAX_LANDING_ROWS == 5000

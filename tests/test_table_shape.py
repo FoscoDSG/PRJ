@@ -23,7 +23,7 @@ from services.mapping.shape import (
     shape_rules,
 )
 from services.testset import MIN_MEASURED_CASES, MIN_MEASURED_SOURCES
-from tests.test_flow import login
+from tests.test_flow import give_company, login
 
 import pytest
 
@@ -238,6 +238,7 @@ def test_profile_label_comes_from_the_fixed_map():
 
 
 def test_uploaded_file_does_not_become_the_label(client: TestClient):
+    give_company("mapper", "Etichette")
     login(client, "mapper")
     hostile = '"><img src=x onerror=alert(1)>'
     order = "Order Date,Total Payment Due\n2024-01-02,10.00\n2024-02-03,12.50\n"
