@@ -206,12 +206,13 @@ _FRESH = [
     {"version": "0009", "name": "mapping_decision_snapshot_checks", "baselined": False},
     {"version": "0010", "name": "companies_learned_corrections", "baselined": False},
     {"version": "0011", "name": "company_assignment", "baselined": False},
+    {"version": "0012", "name": "decision_company_guard", "baselined": False},
 ]
 
 
 def test_migration_files_do_not_drop_or_truncate():
     files = migration_files()
-    assert [item.version for item in files] == ["0001", "0002", "0003", "0004", "0005", "0006", "0007", "0008", "0009", "0010", "0011"]
+    assert [item.version for item in files] == ["0001", "0002", "0003", "0004", "0005", "0006", "0007", "0008", "0009", "0010", "0011", "0012"]
     assert [item.name for item in files] == [
         "initial",
         "provenance_audit_quality",
@@ -224,6 +225,7 @@ def test_migration_files_do_not_drop_or_truncate():
         "mapping_decision_snapshot_checks",
         "companies_learned_corrections",
         "company_assignment",
+        "decision_company_guard",
     ]
     for item in files:
         text = item.path.read_text(encoding="utf-8")
@@ -426,6 +428,7 @@ def test_legacy_database_is_baselined_without_touching_data_or_audit():
         {"version": "0009", "name": "mapping_decision_snapshot_checks", "baselined": False},
         {"version": "0010", "name": "companies_learned_corrections", "baselined": False},
         {"version": "0011", "name": "company_assignment", "baselined": False},
+        {"version": "0012", "name": "decision_company_guard", "baselined": False},
     ]
     assert again == []
     assert third == []
@@ -451,6 +454,7 @@ def test_legacy_database_is_baselined_without_touching_data_or_audit():
         ("0009", "mapping_decision_snapshot_checks", False),
         ("0010", "companies_learned_corrections", False),
         ("0011", "company_assignment", False),
+        ("0012", "decision_company_guard", False),
     ]
 
 
@@ -694,6 +698,7 @@ def test_upgraded_schema_is_baselined_without_touching_audit():
         {"version": "0009", "name": "mapping_decision_snapshot_checks", "baselined": False},
         {"version": "0010", "name": "companies_learned_corrections", "baselined": False},
         {"version": "0011", "name": "company_assignment", "baselined": False},
+        {"version": "0012", "name": "decision_company_guard", "baselined": False},
     ]
     assert again == []
     assert fact == [("0.42", "system_of_record", "unknown", None)]
@@ -710,6 +715,7 @@ def test_upgraded_schema_is_baselined_without_touching_audit():
         ("0009", "mapping_decision_snapshot_checks", False),
         ("0010", "companies_learned_corrections", False),
         ("0011", "company_assignment", False),
+        ("0012", "decision_company_guard", False),
     ]
 
 

@@ -521,15 +521,19 @@ def test_null_batches_are_out_of_first_time_and_out_of_suggestions():
         null_mapping = _mapping(
             conn, company_id=None, source="vecchia", field="cod_art", batch_id=null_batch,
         )
-        null_decision = _decision(
-            conn, null_mapping, decision="confirm", company_id=None, actor="mapper",
-            source_name="vecchia", source_field="cod_art", origin="rule", batch_id=null_batch,
-        )
+        with pytest.raises(psycopg.errors.RaiseException, match="decisione senza azienda"):
+            with conn.transaction():
+                _decision(
+                    conn, null_mapping, decision="confirm", company_id=None, actor="mapper",
+                    source_name="vecchia", source_field="cod_art", origin="rule", batch_id=null_batch,
+                )
         loose = _mapping(conn, company_id=None, source="vecchia", field="qty")
-        loose_decision = _decision(
-            conn, loose, decision="confirm", company_id=None, actor="mapper",
-            source_name="vecchia", source_field="qty", origin="rule",
-        )
+        with pytest.raises(psycopg.errors.RaiseException, match="decisione senza azienda"):
+            with conn.transaction():
+                _decision(
+                    conn, loose, decision="confirm", company_id=None, actor="mapper",
+                    source_name="vecchia", source_field="qty", origin="rule",
+                )
         real_mapping = _mapping(
             conn, company_id=company_a, source="vecchia", field="cod_art", batch_id=real_batch,
         )
@@ -538,11 +542,13 @@ def test_null_batches_are_out_of_first_time_and_out_of_suggestions():
             source_name="vecchia", source_field="cod_art", origin="rule", batch_id=real_batch,
         )
         learned_host = _mapping(conn, company_id=None, source="impara", field="COD_ART")
-        _decision(
-            conn, learned_host, decision="reject", company_id=None, actor="mapper",
-            source_name="impara", source_field="COD_ART", corrected="unit_price",
-            batch_id=null_batch,
-        )
+        with pytest.raises(psycopg.errors.RaiseException, match="decisione senza azienda"):
+            with conn.transaction():
+                _decision(
+                    conn, learned_host, decision="reject", company_id=None, actor="mapper",
+                    source_name="impara", source_field="COD_ART", corrected="unit_price",
+                    batch_id=null_batch,
+                )
         open_host = _mapping(conn, company_id=company_a, source="libera", field="COD_ART")
         opened = _decision(
             conn, open_host, decision="reject", company_id=company_a, actor="ada",
@@ -552,8 +558,6 @@ def test_null_batches_are_out_of_first_time_and_out_of_suggestions():
         conn.commit()
         labels = {item["decision_id"] for item in _human_mapping_cases(conn)}
         assert real_decision in labels
-        assert null_decision not in labels
-        assert loose_decision not in labels
         assert active_correction(conn, company_id=company_a, source_name="impara", header="cod art") is None
         assert active_correction(conn, company_id=None, source_name="impara", header="cod art") is None
         found = active_correction(conn, company_id=company_a, source_name="libera", header="cod art")

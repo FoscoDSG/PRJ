@@ -36,6 +36,18 @@ def load_demo() -> None:
         conn.commit()
 
 
+def ensure_company(username: str, name: str | None = None) -> str:
+    """Give a seeded user a company once, so an existing decision test can pass the gate."""
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT company_id::text AS company_id FROM app.users WHERE username = %s",
+            (username,),
+        ).fetchone()
+    if row and row["company_id"]:
+        return row["company_id"]
+    return give_company(username, name or f"Azienda {username}")
+
+
 def give_company(username: str = "mapper", name: str = "Azienda test") -> str:
     """Create a company and assign it. API uploads need this link."""
     import json
@@ -54,6 +66,7 @@ def give_company(username: str = "mapper", name: str = "Azienda test") -> str:
 
 
 def decide(client: TestClient, item: dict, decision: str = "approve", **extra):
+    ensure_company("approver", "Approvazioni")
     body = {"decision": decision, "evidence_hash": item["evidence_hash"], **extra}
     return client.post(f"/api/recommendations/{item['id']}/{decision}", json=body)
 

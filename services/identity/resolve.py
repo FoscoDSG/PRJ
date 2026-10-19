@@ -7,6 +7,9 @@ import unicodedata
 
 import psycopg
 
+from services.companies import NO_COMPANY_UPLOAD
+from services.errors import AppError
+
 _LEGAL = re.compile(r"\b(srl|s\.r\.l|spa|s\.p\.a|sas|snc|srls|llc|ltd)\b", re.IGNORECASE)
 
 
@@ -36,7 +39,15 @@ def queue_identity_doubts(conn: psycopg.Connection) -> int:
     return int(row["created"] or 0)
 
 
-def confirm_review(conn: psycopg.Connection, review_id: str) -> dict:
+def confirm_review(
+    conn: psycopg.Connection,
+    review_id: str,
+    *,
+    actor: str,
+    company_id: str | None,
+) -> dict:
+    if not company_id:
+        raise AppError(403, NO_COMPANY_UPLOAD)
     review = _lock_review(conn, review_id)
     left = _entity_by_key(conn, review["entity_type"], review["left_key"])
     right = _entity_by_key(conn, review["entity_type"], review["right_key"])
@@ -58,13 +69,35 @@ def confirm_review(conn: psycopg.Connection, review_id: str) -> dict:
             (review["entity_type"], review["right_key"], left),
         )
         conn.execute("UPDATE app.entities SET valid_to = now() WHERE id = %s", (right,))
-    conn.execute("UPDATE app.identity_reviews SET status = 'confirmed' WHERE id = %s", (review_id,))
+    conn.execute(
+        """
+        UPDATE app.identity_reviews
+        SET status = 'confirmed', company_id = %s, actor = %s
+        WHERE id = %s
+        """,
+        (company_id, actor, review_id),
+    )
     return {"id": review_id, "status": "confirmed"}
 
 
-def reject_review(conn: psycopg.Connection, review_id: str) -> dict:
+def reject_review(
+    conn: psycopg.Connection,
+    review_id: str,
+    *,
+    actor: str,
+    company_id: str | None,
+) -> dict:
+    if not company_id:
+        raise AppError(403, NO_COMPANY_UPLOAD)
     _lock_review(conn, review_id)
-    conn.execute("UPDATE app.identity_reviews SET status = 'rejected' WHERE id = %s", (review_id,))
+    conn.execute(
+        """
+        UPDATE app.identity_reviews
+        SET status = 'rejected', company_id = %s, actor = %s
+        WHERE id = %s
+        """,
+        (company_id, actor, review_id),
+    )
     return {"id": review_id, "status": "rejected"}
 
 
@@ -97,7 +130,5 @@ def _lock_review(conn: psycopg.Connection, review_id: str) -> dict:
         (review_id,),
     ).fetchone()
     if row is None:
-        from services.errors import AppError
-
         raise AppError(404, "Revisione identità assente")
     return row

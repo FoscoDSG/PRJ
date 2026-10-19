@@ -23,6 +23,8 @@ async function api(path, options = {}) {
 const {
   escapeHtml: esc,
   driftCard,
+  quarantineCard,
+  identityCard,
   mappingRow,
   profileLabelText,
   orderCard,
@@ -251,10 +253,12 @@ async function submitFileType(fileId, decision, correctType) {
 
 async function loadMappings() {
   const data = await api("/api/mappings");
+  const canWrite = canWriteDecisions(state.hasCompany);
+  document.querySelector("#mapping-table").classList.toggle("mappings-readonly", !canWrite);
   const drift = document.querySelector("#drift");
   drift.innerHTML = data.drift
     .filter((item) => item.status === "open")
-    .map(driftCard)
+    .map((item) => driftCard(item, canWrite))
     .join("");
   drift.querySelectorAll("button[data-drift]").forEach((button) => {
     button.addEventListener("click", async () => {
@@ -266,7 +270,7 @@ async function loadMappings() {
   const held = await api("/api/quarantine");
   quarantine.innerHTML = held.documents
     .filter((item) => item.status === "open")
-    .map((item) => `<article class="card"><strong>Quarantena ${esc(item.order_key || item.source_name)}</strong><p>${esc((item.reasons || []).join("; ") || "In attesa di conferma, nessuna scrittura ERP.")}</p><button type="button" data-release="${esc(item.id)}">Rilascia</button></article>`)
+    .map((item) => quarantineCard(item, canWrite))
     .join("");
   quarantine.querySelectorAll("button[data-release]").forEach((button) => {
     button.addEventListener("click", async () => {
@@ -283,7 +287,7 @@ async function loadMappings() {
   const reviews = await api("/api/identity-reviews");
   identity.innerHTML = reviews.reviews
     .filter((item) => item.status === "open")
-    .map((item) => `<article class="card"><strong>Identità ${esc(item.entity_type)}</strong><p>${esc(item.reason)} (${esc(item.score)})</p><button type="button" data-merge="${esc(item.id)}">Conferma fusione</button> <button type="button" class="ghost" data-split="${esc(item.id)}">Tieni separati</button></article>`)
+    .map((item) => identityCard(item, canWrite))
     .join("");
   identity.querySelectorAll("button[data-merge]").forEach((button) => {
     button.addEventListener("click", async () => {
@@ -389,7 +393,8 @@ async function openCustomer(id) {
 async function loadInbox() {
   const data = await api("/api/inbox");
   const root = document.querySelector("#inbox");
-  root.innerHTML = data.recommendations.map((item) => inboxCard(item, state.role)).join("") || "<p>Nessuna eccezione in inbox.</p>";
+  const canWrite = canWriteDecisions(state.hasCompany);
+  root.innerHTML = data.recommendations.map((item) => inboxCard(item, state.role, canWrite)).join("") || "<p>Nessuna eccezione in inbox.</p>";
   root.querySelectorAll("article").forEach((card) => {
     card.querySelectorAll("button[data-act]").forEach((button) => {
       button.addEventListener("click", () => act(card.dataset.id, button.dataset.act, card));

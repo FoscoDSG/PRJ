@@ -85,8 +85,28 @@
     return `<span class="pill${extra}">${escapeHtml(raw)}</span>`;
   }
 
-  function driftCard(item) {
-    return `<article class="card"><strong>Schema drift su ${escapeHtml(item.source_name)}</strong><pre>${escapeHtml(JSON.stringify(item.diff, null, 2))}</pre><button type="button" data-drift="${escapeHtml(item.id)}">Segna visto</button></article>`;
+  function driftCard(item, canWrite) {
+    const button = canWrite !== false
+      ? `<button type="button" data-drift="${escapeHtml(item.id)}">Segna visto</button>`
+      : "";
+    return `<article class="card"><strong>Schema drift su ${escapeHtml(item.source_name)}</strong><pre>${escapeHtml(JSON.stringify(item.diff, null, 2))}</pre>${button}</article>`;
+  }
+
+  function quarantineCard(item, canWrite) {
+    const reasons = (item.reasons || []).join("; ");
+    const note = reasons || "In attesa di conferma, nessuna scrittura ERP.";
+    const title = item.order_key || item.source_name;
+    const button = canWrite !== false
+      ? `<button type="button" data-release="${escapeHtml(item.id)}">Rilascia</button>`
+      : "";
+    return `<article class="card"><strong>Quarantena ${escapeHtml(title)}</strong><p>${escapeHtml(note)}</p>${button}</article>`;
+  }
+
+  function identityCard(item, canWrite) {
+    const buttons = canWrite !== false
+      ? `<button type="button" data-merge="${escapeHtml(item.id)}">Conferma fusione</button> <button type="button" class="ghost" data-split="${escapeHtml(item.id)}">Tieni separati</button>`
+      : "";
+    return `<article class="card"><strong>Identità ${escapeHtml(item.entity_type)}</strong><p>${escapeHtml(item.reason)} (${escapeHtml(item.score)})</p>${buttons}</article>`;
   }
 
   const PROVENANCE_LABELS = {
@@ -278,7 +298,7 @@
     return `<article class="card"><div class="meta">${pill(item.action)}<span class="pill">${escapeHtml(item.who || "")}</span></div><p class="audit-when">${escapeHtml(item.when || "")}</p><p class="audit-what">${escapeHtml(item.what || item.action || "")}</p><p class="audit-order">Ordine ${escapeHtml(item.order || "n/d")}</p><p class="audit-detail">${escapeHtml(item.detail || "")}</p></article>`;
   }
 
-  function inboxCard(item, role) {
+  function inboxCard(item, role, canWrite) {
     const purchase = (item.actions || []).find((action) => action.type === "createPurchaseOrder");
     const qty = purchase?.params.quantity ?? "";
     const preview = item.preview || {};
@@ -286,7 +306,7 @@
     const evidence = (item.evidence || [])
       .map((fact) => `<li>${escapeHtml(fact.property)}: ${escapeHtml(fact.value)}<p>${escapeHtml(provenanceLabel(fact.source_class))}</p></li>`)
       .join("");
-    const canDecide = role === "approver" || role === "admin";
+    const canDecide = (role === "approver" || role === "admin") && canWrite !== false;
     const cfo = item.requires_cfo ? '<span class="pill high">CFO</span>' : "";
     const blocked = item.blocked_reason ? String(item.blocked_reason) : "";
     const executeButton = item.status === "dry_run_ok" || item.status === "executed"
@@ -335,6 +355,8 @@
     canWriteDecisions,
     factList,
     driftCard,
+    quarantineCard,
+    identityCard,
     mappingRow,
     profileLabelText,
     tableTypeMarkup,

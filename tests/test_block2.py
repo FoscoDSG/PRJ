@@ -25,7 +25,7 @@ from services.ingest.landing import MAX_LANDING_ROWS
 from services.mapping.engine import THRESHOLD
 from services.migrate import demo_database_url, ensure_database, migrate, migration_checksum, require_migrated
 from services.rules.engine import CFO_THRESHOLD, RULES_VERSION
-from tests.test_flow import decide, give_company, load_demo, login
+from tests.test_flow import decide, ensure_company, give_company, load_demo, login
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -38,6 +38,7 @@ def client():
 
 def test_decision_log_uses_the_database_and_rejects_a_stale_hash(client: TestClient):
     load_demo()
+    ensure_company("approver", "Approvazioni")
     login(client, "approver")
     item = client.get("/api/inbox").json()["recommendations"][0]
     assert item["confidence_method"] == "rule"
@@ -353,7 +354,7 @@ def test_migration_checksum_mismatch_stops_migrate():
         ).fetchall()
         files = list((ROOT / "db" / "migrations").glob("*.sql"))
         by_version = {path.name.split("_", 1)[0]: path for path in files}
-        assert [row["version"] for row in recorded] == ["0001", "0002", "0003", "0004", "0005", "0006", "0007", "0008", "0009", "0010", "0011"]
+        assert [row["version"] for row in recorded] == ["0001", "0002", "0003", "0004", "0005", "0006", "0007", "0008", "0009", "0010", "0011", "0012"]
         for row in recorded:
             assert row["checksum"] == migration_checksum(by_version[row["version"]])
         conn.execute(
@@ -645,6 +646,7 @@ def test_decision_path_expires_without_an_inbox_write(client: TestClient):
 
 def test_reject_requires_a_reason(client: TestClient):
     load_demo()
+    ensure_company("approver", "Approvazioni")
     login(client, "approver")
     item = client.get("/api/inbox").json()["recommendations"][0]
     short = client.post(

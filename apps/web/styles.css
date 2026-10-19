@@ -74,6 +74,7 @@ tbody tr:nth-child(even) { background: #fafbfc; } tbody tr:hover { background: v
 .file-type-actions { display: inline-flex; flex-wrap: wrap; gap: var(--s2); align-items: center; margin: 0 0 var(--s3); }
 .file-type-choice { font-size: var(--fs-sm); }
 td.mapping-actions { white-space: nowrap; }
+.mappings-readonly .mapping-actions { display: none; }
 @media (max-width: 700px) {
   /* Ogni riga diventa una scheda etichettata. Niente scroll orizzontale. */
   .table-wrap { overflow: visible; max-width: 100%; border: 0; }

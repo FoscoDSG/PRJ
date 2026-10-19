@@ -519,6 +519,7 @@ def test_new_rows_require_the_snapshot_and_a_reject_is_an_error():
     )
     assert "NOT VALID" in script
     assert "VALIDATE CONSTRAINT" not in script
+    company_id = give_company("mapper", "Fotografia")
     with connect() as conn:
         checks = conn.execute(
             """
@@ -570,11 +571,11 @@ def test_new_rows_require_the_snapshot_and_a_reject_is_an_error():
                 INSERT INTO app.mapping_decisions (
                   id, mapping_id, decision, confidence_method, actor, actor_role,
                   decided_at, source_name, source_field, target_property,
-                  target_property_corrected, score, confidence_rule
+                  target_property_corrected, score, confidence_rule, company_id
                 )
                 VALUES (
                   gen_random_uuid(), %s, %s, %s, 'mapper', 'mapper',
-                  %s, %s, %s, %s, %s, %s, %s
+                  %s, %s, %s, %s, %s, %s, %s, %s
                 )
                 """,
                 (
@@ -588,6 +589,7 @@ def test_new_rows_require_the_snapshot_and_a_reject_is_an_error():
                     payload["target_property_corrected"],
                     payload["score"],
                     payload["confidence_rule"],
+                    company_id,
                 ),
             )
 
@@ -643,14 +645,14 @@ def test_new_rows_require_the_snapshot_and_a_reject_is_an_error():
             """
             INSERT INTO app.mapping_decisions (
               id, mapping_id, decision, confidence_method, actor, actor_role,
-              source_name, source_field, target_property, score, confidence_rule
+              source_name, source_field, target_property, score, confidence_rule, company_id
             )
             VALUES (
               gen_random_uuid(), %s, 'confirm', 'bulk_rule', 'mapper', 'mapper',
-              'beta', 'stato', 'status', 0.40, 'mapping.header_similarity@v1'
+              'beta', 'stato', 'status', 0.40, 'mapping.header_similarity@v1', %s
             )
             """,
-            (other_id,),
+            (other_id, company_id),
         )
         built = build_testset(conn)
         stored = conn.execute(
