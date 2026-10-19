@@ -70,16 +70,18 @@ def test_correction_applies_only_for_the_same_company_source_and_header():
             corrected="unit_price",
         )
         legacy_host = _mapping(conn, company_id=None, source="legacy", field="COD_ART")
-        _decision(
-            conn,
-            legacy_host,
-            decision="reject",
-            company_id=None,
-            actor="mapper",
-            source_name="legacy",
-            source_field="COD_ART",
-            corrected="unit_price",
-        )
+        with pytest.raises(psycopg.errors.RaiseException, match="decisione senza azienda"):
+            with conn.transaction():
+                _decision(
+                    conn,
+                    legacy_host,
+                    decision="reject",
+                    company_id=None,
+                    actor="mapper",
+                    source_name="legacy",
+                    source_field="COD_ART",
+                    corrected="unit_price",
+                )
         conn.commit()
         found = active_correction(conn, company_id=company_a, source_name="learnme", header="cod art")
         assert found is not None

@@ -305,8 +305,17 @@ def quarantine(user: dict = Depends(require_user)) -> dict:
 
 @app.post("/api/quarantine/{quarantine_id}/release")
 def release(quarantine_id: str, user: dict = Depends(require_user)) -> dict:
+    _require_company(user["username"])
     with app_connect() as conn:
-        result = release_document(conn, quarantine_id, user["role"], ontology())
+        company_id = company_id_for_user(conn, user["username"])
+        result = release_document(
+            conn,
+            quarantine_id,
+            user["role"],
+            ontology(),
+            actor=user["username"],
+            company_id=company_id,
+        )
         conn.commit()
     return _ok(result)
 
@@ -324,10 +333,12 @@ def identity_reviews(user: dict = Depends(require_user)) -> dict:
 def confirm_identity(review_id: str, user: dict = Depends(require_user)) -> dict:
     if user["role"] not in ("admin", "mapper"):
         raise AppError(403, "Serve il ruolo mapper")
+    _require_company(user["username"])
     from services.identity.resolve import confirm_review
 
     with app_connect() as conn:
-        result = confirm_review(conn, review_id)
+        company_id = company_id_for_user(conn, user["username"])
+        result = confirm_review(conn, review_id, actor=user["username"], company_id=company_id)
         conn.commit()
     return result
 
@@ -336,10 +347,12 @@ def confirm_identity(review_id: str, user: dict = Depends(require_user)) -> dict
 def reject_identity(review_id: str, user: dict = Depends(require_user)) -> dict:
     if user["role"] not in ("admin", "mapper"):
         raise AppError(403, "Serve il ruolo mapper")
+    _require_company(user["username"])
     from services.identity.resolve import reject_review
 
     with app_connect() as conn:
-        result = reject_review(conn, review_id)
+        company_id = company_id_for_user(conn, user["username"])
+        result = reject_review(conn, review_id, actor=user["username"], company_id=company_id)
         conn.commit()
     return result
 
@@ -479,8 +492,12 @@ def file_type_route(
 def ack_drift(drift_id: str, user: dict = Depends(require_user)) -> dict:
     if user["role"] not in ("admin", "mapper"):
         raise AppError(403, "Serve il ruolo mapper")
+    _require_company(user["username"])
     with app_connect() as conn:
-        result = acknowledge_drift(conn, drift_id, user["role"])
+        company_id = company_id_for_user(conn, user["username"])
+        result = acknowledge_drift(
+            conn, drift_id, user["role"], actor=user["username"], company_id=company_id
+        )
         conn.commit()
     return result
 
@@ -536,6 +553,13 @@ def inbox(user: dict = Depends(require_user)) -> dict:
     return _ok({"recommendations": rows})
 
 
+def _require_approver_company(user: dict) -> None:
+    """Approve, modify and reject are human decisions. The role is checked first."""
+    if user["role"] not in ("admin", "approver"):
+        raise AppError(403, "Serve un approvatore")
+    _require_company(user["username"])
+
+
 def _finish_decision(conn, result, error: AppError | None):
     """A 409 from a stale recommendation must keep the expiry already written."""
     if error is not None and error.status == 409:
@@ -549,6 +573,7 @@ def _finish_decision(conn, result, error: AppError | None):
 
 @app.post("/api/recommendations/{recommendation_id}/approve")
 def approve_route(recommendation_id: str, body: ApproveBody, user: dict = Depends(require_user)) -> dict:
+    _require_approver_company(user)
     with app_connect() as conn:
         error = None
         result = None
@@ -568,6 +593,7 @@ def approve_route(recommendation_id: str, body: ApproveBody, user: dict = Depend
 
 @app.post("/api/recommendations/{recommendation_id}/modify")
 def modify_route(recommendation_id: str, body: ModifyBody, user: dict = Depends(require_user)) -> dict:
+    _require_approver_company(user)
     with app_connect() as conn:
         error = None
         result = None
@@ -588,6 +614,7 @@ def modify_route(recommendation_id: str, body: ModifyBody, user: dict = Depends(
 
 @app.post("/api/recommendations/{recommendation_id}/reject")
 def reject_route(recommendation_id: str, body: RejectBody, user: dict = Depends(require_user)) -> dict:
+    _require_approver_company(user)
     with app_connect() as conn:
         error = None
         result = None
@@ -608,6 +635,9 @@ def reject_route(recommendation_id: str, body: RejectBody, user: dict = Depends(
 
 @app.post("/api/recommendations/{recommendation_id}/execute")
 def execute_route(recommendation_id: str, user: dict = Depends(require_user)) -> dict:
+    if user["role"] not in ("admin", "approver"):
+        raise AppError(403, "Solo un approvatore esegue azioni")
+    _require_company(user["username"])
     with app_connect() as conn:
         result = execute_recommendation(
             conn, recommendation_id, user["username"], user["role"], ontology()
@@ -620,6 +650,7 @@ def execute_route(recommendation_id: str, user: dict = Depends(require_user)) ->
 def compensate_route(document_id: str, user: dict = Depends(require_user)) -> dict:
     if user["role"] not in ("admin", "approver"):
         raise AppError(403, "Solo un approvatore compensa")
+    _require_company(user["username"])
     with app_connect() as conn:
         result = compensate(conn, document_id, actor=user["username"], role=user["role"])
         conn.commit()
@@ -630,6 +661,7 @@ def compensate_route(document_id: str, user: dict = Depends(require_user)) -> di
 def adjust_stock(product_key: str, body: StockBody, user: dict = Depends(require_user)) -> dict:
     if user["role"] not in ("admin", "mapper"):
         raise AppError(403, "Serve il ruolo mapper")
+    _require_company(user["username"])
     with app_connect() as conn:
         expired = adjust_on_hand(conn, ontology(), product_key, body.on_hand)
         conn.commit()
@@ -674,6 +706,7 @@ def audit_readable(
 def pii_unmask(body: UnmaskBody, user: dict = Depends(require_user)) -> JSONResponse:
     if user["role"] != "admin":
         raise AppError(403, "Serve il ruolo admin")
+    _require_company(user["username"])
     with app_connect() as conn:
         result = unmask_entity(
             conn,

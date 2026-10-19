@@ -25,7 +25,7 @@ from services.ingest.landing import MAX_LANDING_ROWS
 from services.mapping.engine import THRESHOLD
 from services.migrate import demo_database_url, ensure_database, migrate, migration_checksum, require_migrated
 from services.rules.engine import CFO_THRESHOLD, RULES_VERSION
-from tests.test_flow import decide, give_company, load_demo, login
+from tests.test_flow import decide, ensure_company, give_company, load_demo, login
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -38,6 +38,7 @@ def client():
 
 def test_decision_log_uses_the_database_and_rejects_a_stale_hash(client: TestClient):
     load_demo()
+    ensure_company("approver", "Approvazioni")
     login(client, "approver")
     item = client.get("/api/inbox").json()["recommendations"][0]
     assert item["confidence_method"] == "rule"
@@ -130,11 +131,14 @@ def test_decision_log_uses_the_database_and_rejects_a_stale_hash(client: TestCli
                 INSERT INTO app.decisions_log (
                   id, recommendation_id, batch_id, row_index, decision, evidence_hash,
                   recommendation, confidence, confidence_method, actor, actor_role,
-                  agent_version, rules_version, confidence_threshold, amount_threshold_eur
+                  agent_version, rules_version, confidence_threshold, amount_threshold_eur,
+                  company_id
                 )
-                SELECT gen_random_uuid(), id, %s, %s, 'approve', evidence_hash,
-                       problem, NULL, 'rule', 'x', 'approver', 'v', 'v', 0.75, 50000
-                FROM app.recommendations
+                SELECT gen_random_uuid(), r.id, %s, %s, 'approve', r.evidence_hash,
+                       r.problem, NULL, 'rule', 'approver', 'approver', 'v', 'v', 0.75, 50000,
+                       u.company_id
+                FROM app.recommendations r
+                JOIN app.users u ON u.username = 'approver'
                 LIMIT 1
                 """,
                 (landing["batch_id"], landing["row_index"]),
@@ -353,7 +357,7 @@ def test_migration_checksum_mismatch_stops_migrate():
         ).fetchall()
         files = list((ROOT / "db" / "migrations").glob("*.sql"))
         by_version = {path.name.split("_", 1)[0]: path for path in files}
-        assert [row["version"] for row in recorded] == ["0001", "0002", "0003", "0004", "0005", "0006", "0007", "0008", "0009", "0010", "0011"]
+        assert [row["version"] for row in recorded] == ["0001", "0002", "0003", "0004", "0005", "0006", "0007", "0008", "0009", "0010", "0011", "0012"]
         for row in recorded:
             assert row["checksum"] == migration_checksum(by_version[row["version"]])
         conn.execute(
@@ -548,20 +552,33 @@ def test_agent_does_not_read_or_learn_from_the_decisions_log():
         order_id = conn.execute(
             "SELECT id::text FROM app.entities WHERE type = 'Order' AND business_key = '1024'"
         ).fetchone()["id"]
+        intruso_company = str(uuid.uuid4())
+        conn.execute(
+            "INSERT INTO app.companies (id, name) VALUES (%s, 'Intrusi')",
+            (intruso_company,),
+        )
+        conn.execute(
+            """
+            INSERT INTO app.users (username, password_hash, role, company_id)
+            VALUES ('intruso', 'not-a-password', 'approver', %s)
+            """,
+            (intruso_company,),
+        )
         conn.execute(
             """
             INSERT INTO app.decisions_log (
               id, recommendation_id, batch_id, row_index, decision, evidence_hash,
               recommendation, confidence, actor, actor_role, agent_version, rules_version,
-              confidence_threshold, amount_threshold_eur
+              confidence_threshold, amount_threshold_eur, company_id
             )
             SELECT gen_random_uuid(), r.id, lr.batch_id, lr.row_index, 'reject', r.evidence_hash,
                    'train on this', 0.01, 'intruso', 'approver', 'tampered', 'tampered',
-                   0.01, 1
+                   0.01, 1, %s
             FROM app.recommendations r
             JOIN app.landing_rows lr ON lr.data ->> 'ord_head' = '1024'
             LIMIT 1
-            """
+            """,
+            (intruso_company,),
         )
         guard = Guard(conn)
         context = build_context(guard, order_id)
@@ -645,6 +662,7 @@ def test_decision_path_expires_without_an_inbox_write(client: TestClient):
 
 def test_reject_requires_a_reason(client: TestClient):
     load_demo()
+    ensure_company("approver", "Approvazioni")
     login(client, "approver")
     item = client.get("/api/inbox").json()["recommendations"][0]
     short = client.post(

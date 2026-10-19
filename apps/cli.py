@@ -190,6 +190,7 @@ def main(argv: list[str] | None = None) -> None:
                     actor="approver",
                     role="approver",
                     evidence_hash=item["evidence_hash"],
+                    allow_missing_company=True,
                 )
             conn.commit()
             print(

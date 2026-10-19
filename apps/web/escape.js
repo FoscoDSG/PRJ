@@ -85,8 +85,28 @@
     return `<span class="pill${extra}">${escapeHtml(raw)}</span>`;
   }
 
-  function driftCard(item) {
-    return `<article class="card"><strong>Schema drift su ${escapeHtml(item.source_name)}</strong><pre>${escapeHtml(JSON.stringify(item.diff, null, 2))}</pre><button type="button" data-drift="${escapeHtml(item.id)}">Segna visto</button></article>`;
+  function driftCard(item, canWrite) {
+    const button = canWrite !== false
+      ? `<button type="button" data-drift="${escapeHtml(item.id)}">Segna visto</button>`
+      : "";
+    return `<article class="card"><strong>Schema drift su ${escapeHtml(item.source_name)}</strong><pre>${escapeHtml(JSON.stringify(item.diff, null, 2))}</pre>${button}</article>`;
+  }
+
+  function quarantineCard(item, canWrite) {
+    const reasons = (item.reasons || []).join("; ");
+    const note = reasons || "In attesa di conferma, nessuna scrittura ERP.";
+    const title = item.order_key || item.source_name;
+    const button = canWrite !== false
+      ? `<button type="button" data-release="${escapeHtml(item.id)}">Rilascia</button>`
+      : "";
+    return `<article class="card"><strong>Quarantena ${escapeHtml(title)}</strong><p>${escapeHtml(note)}</p>${button}</article>`;
+  }
+
+  function identityCard(item, canWrite) {
+    const buttons = canWrite !== false
+      ? `<button type="button" data-merge="${escapeHtml(item.id)}">Conferma fusione</button> <button type="button" class="ghost" data-split="${escapeHtml(item.id)}">Tieni separati</button>`
+      : "";
+    return `<article class="card"><strong>Identità ${escapeHtml(item.entity_type)}</strong><p>${escapeHtml(item.reason)} (${escapeHtml(item.score)})</p>${buttons}</article>`;
   }
 
   const PROVENANCE_LABELS = {
@@ -255,7 +275,7 @@
   `;
   }
 
-  function customerDetail(customer, role) {
+  function customerDetail(customer, role, canWrite) {
     const orders = customer.orders
       .map((order) => `<li><button type="button" data-order="${escapeHtml(order.id)}">Ordine ${escapeHtml(order.business_key)}</button></li>`)
       .join("");
@@ -270,7 +290,7 @@
     <ul class="edges">${edges}</ul>
     <h3>Fatti</h3>
     ${factList(customer.facts)}
-    ${role === "admin" ? `<label>Motivo dello smascheramento <input data-reason required minlength="5" maxlength="500" /></label><p><button type="button" id="unmask-pii" data-entity="${escapeHtml(customer.id)}">Mostra dati personali</button></p><pre id="unmask-result"></pre>` : ""}
+    ${role === "admin" && canWrite !== false ? `<label>Motivo dello smascheramento <input data-reason required minlength="5" maxlength="500" /></label><p><button type="button" id="unmask-pii" data-entity="${escapeHtml(customer.id)}">Mostra dati personali</button></p><pre id="unmask-result"></pre>` : ""}
   `;
   }
 
@@ -278,7 +298,7 @@
     return `<article class="card"><div class="meta">${pill(item.action)}<span class="pill">${escapeHtml(item.who || "")}</span></div><p class="audit-when">${escapeHtml(item.when || "")}</p><p class="audit-what">${escapeHtml(item.what || item.action || "")}</p><p class="audit-order">Ordine ${escapeHtml(item.order || "n/d")}</p><p class="audit-detail">${escapeHtml(item.detail || "")}</p></article>`;
   }
 
-  function inboxCard(item, role) {
+  function inboxCard(item, role, canWrite) {
     const purchase = (item.actions || []).find((action) => action.type === "createPurchaseOrder");
     const qty = purchase?.params.quantity ?? "";
     const preview = item.preview || {};
@@ -286,7 +306,6 @@
     const evidence = (item.evidence || [])
       .map((fact) => `<li>${escapeHtml(fact.property)}: ${escapeHtml(fact.value)}<p>${escapeHtml(provenanceLabel(fact.source_class))}</p></li>`)
       .join("");
-    const canDecide = role === "approver" || role === "admin";
     const cfo = item.requires_cfo ? '<span class="pill high">CFO</span>' : "";
     const blocked = item.blocked_reason ? String(item.blocked_reason) : "";
     const executeButton = item.status === "dry_run_ok" || item.status === "executed"
@@ -295,16 +314,21 @@
     const approveButton = blocked
       ? `<button type="button" data-act="approve" disabled>Approva</button> <span class="blocked-reason">${escapeHtml(blocked)}</span>`
       : `<button type="button" data-act="approve">Approva</button>`;
-    const buttons = canDecide
-      ? `<label>Quantità acquisto <input data-qty value="${escapeHtml(qty)}" /></label>
+    let buttons;
+    if (canWrite === false) {
+      buttons = `<p>${escapeHtml(companyUploadNotice())}</p>`;
+    } else if (role === "approver" || role === "admin") {
+      buttons = `<label>Quantità acquisto <input data-qty value="${escapeHtml(qty)}" /></label>
       <label>Motivo del rifiuto <input data-reason required minlength="5" maxlength="500" /></label>
       <div class="decision-bar">
         ${approveButton}
         <button type="button" class="ghost" data-act="modify">Modifica</button>
         <button type="button" class="ghost" data-act="reject">Rifiuta</button>
         ${executeButton}
-      </div>`
-      : "<p>Sola lettura: l'operatore non approva.</p>";
+      </div>`;
+    } else {
+      buttons = "<p>Sola lettura: l'operatore non approva.</p>";
+    }
     return `<article class="card" data-id="${escapeHtml(item.id)}" data-hash="${escapeHtml(item.evidence_hash)}">
       <div class="meta">${pill(item.status)}${cfo}<span class="pill">${escapeHtml(item.risk)}</span></div>
       <h3 class="card-title">Ordine ${escapeHtml(item.order_key)}</h3>
@@ -335,6 +359,8 @@
     canWriteDecisions,
     factList,
     driftCard,
+    quarantineCard,
+    identityCard,
     mappingRow,
     profileLabelText,
     tableTypeMarkup,

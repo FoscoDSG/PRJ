@@ -167,8 +167,18 @@ def ingest_document(
     }
 
 
-def release_document(conn: psycopg.Connection, quarantine_id: str, role: str, model: Ontology) -> dict:
+def release_document(
+    conn: psycopg.Connection,
+    quarantine_id: str,
+    role: str,
+    model: Ontology,
+    *,
+    actor: str,
+    company_id: str | None,
+) -> dict:
     _require_mapper(role)
+    if not company_id:
+        raise AppError(403, NO_COMPANY_UPLOAD)
     row = conn.execute(
         "SELECT * FROM app.quarantine_documents WHERE id = %s FOR UPDATE",
         (quarantine_id,),
@@ -188,10 +198,14 @@ def release_document(conn: psycopg.Connection, quarantine_id: str, role: str, mo
         (row["source_name"] + "%",),
     )
     counts = refresh_canonical(conn, model)
-    recommendations = run_agents(conn, actor=role, role=role)
+    recommendations = run_agents(conn, actor=actor, role=role)
     conn.execute(
-        "UPDATE app.quarantine_documents SET status = 'released' WHERE id = %s",
-        (quarantine_id,),
+        """
+        UPDATE app.quarantine_documents
+        SET status = 'released', company_id = %s, actor = %s
+        WHERE id = %s
+        """,
+        (company_id, actor, quarantine_id),
     )
     return {"id": quarantine_id, "status": "released", "canonical": counts, "recommendations": recommendations}
 
@@ -410,16 +424,19 @@ def confirm_confident(
             "UPDATE app.field_mappings SET status = 'confirmed' WHERE id = %s",
             (row["id"],),
         )
-        _record_mapping_decision(
-            conn,
-            row,
-            decision="confirm",
-            method="bulk_rule",
-            actor=actor,
-            role=role,
-            corrected=None,
-            company_id=company_id,
-        )
+        # A decision row needs a company. The internal fixture load, which
+        # has none, still confirms the mapping and does not write the row.
+        if company_id:
+            _record_mapping_decision(
+                conn,
+                row,
+                decision="confirm",
+                method="bulk_rule",
+                actor=actor,
+                role=role,
+                corrected=None,
+                company_id=company_id,
+            )
         count += 1
     return count
 
@@ -693,8 +710,17 @@ def approve(
     actor: str,
     role: str,
     evidence_hash: str,
+    *,
+    allow_missing_company: bool = False,
 ) -> dict:
-    mark_approved(conn, recommendation_id, actor=actor, role=role, evidence_hash=evidence_hash)
+    mark_approved(
+        conn,
+        recommendation_id,
+        actor=actor,
+        role=role,
+        evidence_hash=evidence_hash,
+        allow_missing_company=allow_missing_company,
+    )
     payloads = dry_run(conn, recommendation_id, actor=actor, role=role)
     return {"id": recommendation_id, "status": "dry_run_ok", "dry_run": payloads}
 
@@ -815,14 +841,25 @@ def _require_mapper(role: str) -> None:
         raise AppError(403, "Serve il ruolo mapper")
 
 
-def acknowledge_drift(conn: psycopg.Connection, drift_id: str, role: str) -> dict:
+def acknowledge_drift(
+    conn: psycopg.Connection,
+    drift_id: str,
+    role: str,
+    *,
+    actor: str,
+    company_id: str | None,
+) -> dict:
     _require_mapper(role)
+    if not company_id:
+        raise AppError(403, NO_COMPANY_UPLOAD)
     row = conn.execute(
         """
-        UPDATE app.drift_reviews SET status = 'acknowledged'
-        WHERE id = %s RETURNING id::text
+        UPDATE app.drift_reviews
+        SET status = 'acknowledged', company_id = %s, actor = %s
+        WHERE id = %s
+        RETURNING id::text
         """,
-        (drift_id,),
+        (company_id, actor, drift_id),
     ).fetchone()
     if row is None:
         raise AppError(404, "Drift assente")

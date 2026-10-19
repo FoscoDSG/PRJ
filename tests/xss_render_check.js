@@ -4,6 +4,8 @@ const {
   escapeHtml,
   pill,
   driftCard,
+  quarantineCard,
+  identityCard,
   mappingRow,
   profileLabelText,
   tableTypeMarkup,
@@ -49,6 +51,8 @@ const html = [
     file_id: value,
   }),
   driftCard({ id: value, source_name: value, diff: { added: [value] } }),
+  quarantineCard({ id: value, source_name: value, order_key: value, reasons: [value] }),
+  identityCard({ id: value, entity_type: value, reason: value, score: value }),
   orderCard({
     id: value,
     business_key: value,
