@@ -9,6 +9,7 @@ import psycopg
 
 from services.companies import NO_COMPANY_UPLOAD
 from services.errors import AppError
+from services.revocation import QUEUE_MESSAGE
 
 _LEGAL = re.compile(r"\b(srl|s\.r\.l|spa|s\.p\.a|sas|snc|srls|llc|ltd)\b", re.IGNORECASE)
 
@@ -49,6 +50,8 @@ def confirm_review(
     if not company_id:
         raise AppError(403, NO_COMPANY_UPLOAD)
     review = _lock_review(conn, review_id)
+    if review["status"] != "open":
+        raise AppError(409, QUEUE_MESSAGE)
     left = _entity_by_key(conn, review["entity_type"], review["left_key"])
     right = _entity_by_key(conn, review["entity_type"], review["right_key"])
     if left and right and left != right:
@@ -89,7 +92,9 @@ def reject_review(
 ) -> dict:
     if not company_id:
         raise AppError(403, NO_COMPANY_UPLOAD)
-    _lock_review(conn, review_id)
+    review = _lock_review(conn, review_id)
+    if review["status"] != "open":
+        raise AppError(409, QUEUE_MESSAGE)
     conn.execute(
         """
         UPDATE app.identity_reviews
@@ -102,7 +107,9 @@ def reject_review(
 
 
 def list_reviews(conn: psycopg.Connection) -> list[dict]:
-    return list(
+    from services.revocation import state_histories
+
+    rows = list(
         conn.execute(
             """
             SELECT id::text, entity_type, left_key, right_key, score, reason, status
@@ -111,6 +118,17 @@ def list_reviews(conn: psycopg.Connection) -> list[dict]:
             """
         ).fetchall()
     )
+    histories = state_histories(
+        conn,
+        subject_table="app.identity_reviews",
+        revocation_table="app.identity_review_decisions",
+        subject_ids=[row["id"] for row in rows],
+        decision_for_status={"confirmed": "confirmed", "rejected": "rejected"},
+    )
+    for row in rows:
+        row["history"] = histories.get(row["id"], [])
+        row["executed"] = False
+    return rows
 
 
 def _entity_by_key(conn: psycopg.Connection, entity_type: str, business_key: str) -> str | None:

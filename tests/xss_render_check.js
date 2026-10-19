@@ -43,6 +43,16 @@ const html = [
     decided_at: value,
     band: "forte",
     band_note: value,
+    history: [{
+      id: value,
+      decision: "confirm",
+      actor: value,
+      decided_at: value,
+      revoked: true,
+      revoker: value,
+      revoked_at: value,
+      revoke_reason: value,
+    }],
   }),
   tableTypeMarkup({
     source_name: value,
@@ -50,9 +60,73 @@ const html = [
     profile_label: value,
     file_id: value,
   }),
-  driftCard({ id: value, source_name: value, diff: { added: [value] } }),
-  quarantineCard({ id: value, source_name: value, order_key: value, reasons: [value] }),
-  identityCard({ id: value, entity_type: value, reason: value, score: value }),
+  driftCard({
+    id: value,
+    source_name: value,
+    diff: { added: [value] },
+    status: "acknowledged",
+    history: [{
+      id: value,
+      decision: "acknowledged",
+      actor: value,
+      decided_at: value,
+      revoked: true,
+      revoker: value,
+      revoked_at: value,
+      revoke_reason: value,
+    }],
+  }),
+  quarantineCard({
+    id: "released-empty",
+    source_name: "archivio",
+    order_key: "2002",
+    reasons: [],
+    status: "released",
+    history: [{
+      id: "qd",
+      decision: "released",
+      actor: "mapper",
+      decided_at: "01/01/2026 10:00",
+      revoked: true,
+      revoker: "mapper",
+      revoked_at: "01/01/2026 10:05",
+      revoke_reason: "motivo del rilascio",
+    }],
+  }),
+  quarantineCard({
+    id: value,
+    source_name: value,
+    order_key: value,
+    reasons: [value],
+    status: "released",
+    history: [{
+      id: value,
+      decision: "released",
+      actor: value,
+      decided_at: value,
+      revoked: true,
+      revoker: value,
+      revoked_at: value,
+      revoke_reason: value,
+    }],
+  }),
+  identityCard({
+    id: value,
+    entity_type: value,
+    reason: value,
+    score: value,
+    status: "confirmed",
+    history: [{
+      id: value,
+      decision: "confirmed",
+      actor: value,
+      decided_at: value,
+      revoked: true,
+      revoker: value,
+      revoked_at: value,
+      revoke_reason: value,
+    }],
+  }),
   orderCard({
     id: value,
     business_key: value,
@@ -83,6 +157,39 @@ const html = [
     actions: [{ type: "createPurchaseOrder", params: { quantity: value } }],
   }),
   inboxCard({
+    id: "proposed-bar",
+    status: "proposed",
+    requires_cfo: false,
+    risk: "low",
+    order_key: "1024",
+    problem: "manca",
+    expected_impact: "niente",
+    confidence: 0.5,
+    blocked_reason: value,
+    actions: [{ type: "createPurchaseOrder", params: { quantity: 1 } }],
+  }, "approver"),
+  inboxCard({
+    id: "revoked-approval",
+    status: "revoked",
+    requires_cfo: false,
+    risk: "low",
+    order_key: "1024",
+    problem: "manca",
+    expected_impact: "niente",
+    confidence: 0.5,
+    actions: [{ type: "createPurchaseOrder", params: { quantity: 1 } }],
+    history: [{
+      id: "ap",
+      decision: "approve",
+      actor: "approver",
+      decided_at: "01/01/2026 10:00",
+      revoked: true,
+      revoker: "approver",
+      revoked_at: "01/01/2026 10:05",
+      revoke_reason: "motivo",
+    }],
+  }, "approver"),
+  inboxCard({
     id: value,
     status: value,
     requires_cfo: false,
@@ -94,6 +201,18 @@ const html = [
     blocked_reason: value,
     dry_run: { note: value },
     actions: [{ type: "createPurchaseOrder", params: { quantity: value } }],
+    executed: true,
+    executed_message: value,
+    history: [{
+      id: value,
+      decision: "approve",
+      actor: value,
+      decided_at: value,
+      revoked: false,
+      revoker: value,
+      revoked_at: value,
+      revoke_reason: value,
+    }],
   }, "approver"),
   auditCard({ action: value, actor: value, payload: { note: value } }),
   readableCard({ action: value, who: value, when: value, what: value, order: value, detail: value }),
@@ -122,6 +241,7 @@ const structural = new Set([
   "origin-line", "suggestion-band", "suggestion-note",
   "file-type-actions", "file-type-choice", "mapping-actions",
   "mapping-source", "mapping-column", "mapping-destination", "mapping-status",
+  "decision-history", "revoked-decision", "revoker-line", "revoke-reason", "executed-note",
 ]);
 const allowedLabels = new Set(["Fonte", "Colonna", "Destinazione", "Suggerimento", "Stato"]);
 const tagRe = /<\/?([a-zA-Z][a-zA-Z0-9]*)\b([^>]*)>/g;
@@ -186,6 +306,7 @@ const requiredClasses = [
   "origin-line", "suggestion-band", "suggestion-note", "file-type-actions",
   "file-type-choice", "mapping-actions",
   "mapping-source", "mapping-column", "mapping-destination", "mapping-status",
+  "decision-history", "revoked-decision", "revoker-line", "revoke-reason", "executed-note",
 ];
 for (const token of requiredClasses) {
   if (!seenClasses.has(token)) {
@@ -223,6 +344,31 @@ if (fromServer !== "Probabile export ordini") {
 const fromColumn = profileLabelText({ profile: "order", profile_label: "Order Date", source_name: value });
 if (fromColumn !== "Probabile export ordini" || fromColumn.includes("Order Date")) {
   console.error("column name became the profile label");
+  process.exit(2);
+}
+if (!html.includes("Il documento resta rilasciato.")) {
+  console.error("quarantine revoke notice missing");
+  process.exit(2);
+}
+if (!html.includes("I clienti restano uniti.")) {
+  console.error("merge revoke notice missing");
+  process.exit(2);
+}
+if (!html.includes("Al prossimo caricamento la colonna torna da decidere; i dati già caricati restano.")) {
+  console.error("revoked confirmation notice missing");
+  process.exit(2);
+}
+if (!html.includes("Documento rilasciato.")) {
+  console.error("released state missing");
+  process.exit(2);
+}
+if (html.includes("In attesa di conferma")) {
+  console.error("released document still looks pending");
+  process.exit(2);
+}
+const revokedCard = html.split('id="revoked-approval"').pop();
+if (revokedCard.includes(">Esegui<") || revokedCard.includes(">Approva<")) {
+  console.error("revoked approval still offers a decision");
   process.exit(2);
 }
 if (!html.includes("Tipo non riconosciuto") || !html.includes(escapeHtml(value))) {

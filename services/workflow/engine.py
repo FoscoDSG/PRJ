@@ -66,7 +66,11 @@ def propose(
     _transition(conn, recommendation_id, None, "detected", actor)
     _transition(conn, recommendation_id, "detected", "proposed", actor)
     conn.execute(
-        "UPDATE app.recommendations SET status = 'proposed' WHERE id = %s",
+        """
+        UPDATE app.recommendations
+        SET status = 'proposed'
+        WHERE id = %s AND status IN ('detected', 'proposed')
+        """,
         (recommendation_id,),
     )
     record(

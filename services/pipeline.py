@@ -26,6 +26,7 @@ from services.ingest.excel_connector import read_excel
 from services.ingest.landing import land
 from services.ingest.sql_connector import extract_sql
 from services.mapping.engine import THRESHOLD, assigned_mapping, rule_id_for
+from services.revocation import ALREADY_REVOKED, QUEUE_MESSAGE, clean_reason
 from services.mapping.labels import PROFILE_LABELS
 from services.rules.engine import requires_cfo
 from services.text import coerce_number
@@ -144,8 +145,8 @@ def ingest_document(
         conn.execute(
             """
             UPDATE app.field_mappings
-            SET confidence = 0.55, status = 'proposed'
-            WHERE source_name = %s AND valid_to IS NULL
+            SET confidence = 0.55
+            WHERE source_name = %s AND valid_to IS NULL AND status = 'proposed'
             """,
             (source_name,),
         )
@@ -448,11 +449,17 @@ def revoke_correction(
     actor: str,
     role: str,
     company_id: str | None,
+    reason: str | None = None,
 ) -> dict:
-    """Append revoked. The revoked row stays. Same company as the actor."""
+    """Append revoked. The revoked row stays. Same company as the actor.
+
+    A learned correction still drops back to the rule on open suggestions.
+    The decided mapping itself does not return to the queue.
+    """
     _require_mapper(role)
     if not company_id:
         raise AppError(403, NO_COMPANY_UPLOAD)
+    motive = clean_reason(reason)
     row = conn.execute(
         """
         SELECT id::text, mapping_id::text, decision, source_name, source_field,
@@ -466,9 +473,10 @@ def revoke_correction(
         """,
         (decision_id, company_id),
     ).fetchone()
-    if row is None or row["decision"] != "reject" or not row["target_property_corrected"]:
-        raise AppError(404, "Correzione assente")
-    if row["score"] is None or not row["confidence_rule"]:
+    if row is None or row["decision"] not in ("confirm", "reject"):
+        raise AppError(404, "Decisione assente")
+    correction = row["decision"] == "reject" and bool(row["target_property_corrected"])
+    if correction and (row["score"] is None or not row["confidence_rule"]):
         raise AppError(422, "Correzione senza fotografia")
     already = conn.execute(
         """
@@ -478,16 +486,19 @@ def revoke_correction(
         (decision_id,),
     ).fetchone()
     if already:
-        raise AppError(409, "Correzione già annullata")
+        if correction:
+            raise AppError(409, "Correzione già annullata")
+        raise AppError(409, ALREADY_REVOKED)
     revoked_id = str(uuid.uuid4())
     conn.execute(
         """
         INSERT INTO app.mapping_decisions (
           id, mapping_id, decision, confidence_method, actor, actor_role,
           source_name, source_field, target_property, score, confidence_rule,
-          company_id, origin, source_decision_id, batch_id, revoked_decision_id
+          company_id, origin, source_decision_id, batch_id, revoked_decision_id,
+          reason
         )
-        VALUES (%s, %s, 'revoked', 'human', %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        VALUES (%s, %s, 'revoked', 'human', %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         """,
         (
             revoked_id,
@@ -504,8 +515,29 @@ def revoke_correction(
             row["source_decision_id"],
             row["batch_id"],
             decision_id,
+            motive,
         ),
     )
+    if correction:
+        _reset_learned_mappings(conn, decision_id, company_id)
+    record(
+        conn,
+        action="human_decision",
+        actor=actor,
+        role=role,
+        entity_ref=decision_id,
+        payload={
+            "kind": "mapping_correction_revoked" if correction else "mapping_decision_revoked",
+            "revoked_decision_id": decision_id,
+            "decision_id": revoked_id,
+            "company_id": company_id,
+            "reason": motive,
+        },
+    )
+    return {"id": revoked_id, "revoked_decision_id": decision_id, "decision": "revoked"}
+
+
+def _reset_learned_mappings(conn: psycopg.Connection, decision_id: str, company_id: str) -> None:
     open_rows = conn.execute(
         """
         SELECT id::text, source_field, profile
@@ -542,20 +574,6 @@ def revoke_correction(
         """,
         (decision_id, company_id),
     )
-    record(
-        conn,
-        action="human_decision",
-        actor=actor,
-        role=role,
-        entity_ref=decision_id,
-        payload={
-            "kind": "mapping_correction_revoked",
-            "revoked_decision_id": decision_id,
-            "decision_id": revoked_id,
-            "company_id": company_id,
-        },
-    )
-    return {"id": revoked_id, "revoked_decision_id": decision_id, "decision": "revoked"}
 
 
 def record_table_type_decision(
@@ -854,13 +872,23 @@ def acknowledge_drift(
         raise AppError(403, NO_COMPANY_UPLOAD)
     row = conn.execute(
         """
-        UPDATE app.drift_reviews
-        SET status = 'acknowledged', company_id = %s, actor = %s
+        SELECT id::text, status
+        FROM app.drift_reviews
         WHERE id = %s
-        RETURNING id::text
+        FOR UPDATE
         """,
-        (company_id, actor, drift_id),
+        (drift_id,),
     ).fetchone()
     if row is None:
         raise AppError(404, "Drift assente")
+    if row["status"] != "open":
+        raise AppError(409, QUEUE_MESSAGE)
+    conn.execute(
+        """
+        UPDATE app.drift_reviews
+        SET status = 'acknowledged', company_id = %s, actor = %s
+        WHERE id = %s
+        """,
+        (company_id, actor, drift_id),
+    )
     return {"id": drift_id, "status": "acknowledged"}

@@ -73,9 +73,24 @@ tbody tr:nth-child(even) { background: #fafbfc; } tbody tr:hover { background: v
 .suggestion-note { display: block; color: var(--muted); font-size: var(--fs-xs); font-weight: 650; }
 .file-type-actions { display: inline-flex; flex-wrap: wrap; gap: var(--s2); align-items: center; margin: 0 0 var(--s3); }
 .file-type-choice { font-size: var(--fs-sm); }
-td.mapping-actions { white-space: nowrap; }
+.decision-history { list-style: none; padding: 0; margin: 6px 0 0; }
+.revoked-decision { text-decoration: line-through; }
+.revoker-line, span.revoke-reason { display: block; color: var(--muted); font-size: var(--fs-xs); }
+.executed-note { margin: 8px 0 0; color: var(--danger); font-weight: 650; }
+label.revoke-reason { display: inline-grid; margin: 6px 8px 0 0; font-size: var(--fs-sm); max-width: 100%; }
+label.revoke-reason input { max-width: 100%; }
+#mapping-table table { width: 100%; table-layout: fixed; }
+#mapping-table .mapping-destination,
+#mapping-table code {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+td.mapping-actions { white-space: normal; }
+td.mapping-actions button,
+td.mapping-actions label.revoke-reason { white-space: normal; max-width: 100%; }
+td.mapping-actions input { width: 100%; min-width: 0; max-width: 100%; }
 .mappings-readonly .mapping-actions { display: none; }
-@media (max-width: 700px) {
+@media (max-width: 859px) {
   /* Ogni riga diventa una scheda etichettata. Niente scroll orizzontale. */
   .table-wrap { overflow: visible; max-width: 100%; border: 0; }
   table, tbody, tr, td { display: block; width: 100%; max-width: 100%; min-width: 0; }

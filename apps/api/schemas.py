@@ -62,6 +62,13 @@ class RejectBody(BaseModel):
     reason: str = Field(min_length=5, max_length=500)
 
 
+class RevokeBody(BaseModel):
+    """Motive of a revocation. company_id is not accepted."""
+
+    model_config = ConfigDict(extra="forbid")
+    reason: str = Field(min_length=1, max_length=500)
+
+
 class UnmaskBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
     entity_id: UUID

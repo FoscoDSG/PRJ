@@ -126,7 +126,10 @@ def test_user_cannot_see_or_revoke_another_companys_decisions(client: TestClient
 
     login(client, "mapper")
     missing = str(uuid.uuid4())
-    denied = client.post(f"/api/mapping-decisions/{missing}/revoke", json={})
+    denied = client.post(
+        f"/api/mapping-decisions/{missing}/revoke",
+        json={"reason": "annullo la correzione"},
+    )
     assert denied.status_code == 403
     assert denied.json()["detail"] == NO_COMPANY_UPLOAD
     untyped = client.post(f"/api/files/{missing}/type", json={"decision": "correct"})
@@ -135,7 +138,10 @@ def test_user_cannot_see_or_revoke_another_companys_decisions(client: TestClient
     client.post("/api/logout")
     login(client, "operator")
     give_company("operator", "Sola lettura")
-    forbidden = client.post(f"/api/mapping-decisions/{missing}/revoke", json={})
+    forbidden = client.post(
+        f"/api/mapping-decisions/{missing}/revoke",
+        json={"reason": "annullo la correzione"},
+    )
     assert forbidden.status_code == 403
     assert forbidden.json()["detail"] == "Serve il ruolo mapper"
     client.post("/api/logout")
@@ -276,9 +282,15 @@ def test_user_cannot_see_or_revoke_another_companys_decisions(client: TestClient
     assert decision_company == company_a
     not_a_correction = client.post(
         f"/api/mapping-decisions/{confirmed.json()['decision_id']}/revoke",
-        json={},
+        json={"reason": "annullo una conferma"},
     )
-    assert not_a_correction.status_code == 404
+    assert not_a_correction.status_code == 200, not_a_correction.text
+    with connect() as conn:
+        stayed = conn.execute(
+            "SELECT status FROM app.field_mappings WHERE id = %s",
+            (proposed["id"],),
+        ).fetchone()["status"]
+    assert stayed == "confirmed"
 
     client.post("/api/logout")
     client.post("/api/login", json={"username": "altra", "password": ALTRO_PASSWORD})
@@ -287,7 +299,10 @@ def test_user_cannot_see_or_revoke_another_companys_decisions(client: TestClient
     assert all(item["source_name"] != "solo_alfa" for item in hidden["mappings"])
     assert correction_id not in json.dumps(hidden)
     assert all(item["source_name"] != "solo_alfa" for item in hidden["files"])
-    cannot_revoke = client.post(f"/api/mapping-decisions/{correction_id}/revoke", json={})
+    cannot_revoke = client.post(
+        f"/api/mapping-decisions/{correction_id}/revoke",
+        json={"reason": "annullo la correzione"},
+    )
     assert cannot_revoke.status_code == 404
     cannot_smuggle = client.post(
         f"/api/mapping-decisions/{correction_id}/revoke",
@@ -299,10 +314,16 @@ def test_user_cannot_see_or_revoke_another_companys_decisions(client: TestClient
 
     client.post("/api/logout")
     login(client, "mapper")
-    revoked = client.post(f"/api/mapping-decisions/{correction_id}/revoke", json={})
+    revoked = client.post(
+        f"/api/mapping-decisions/{correction_id}/revoke",
+        json={"reason": "annullo la correzione"},
+    )
     assert revoked.status_code == 200, revoked.text
     assert revoked.json()["decision"] == "revoked"
-    again = client.post(f"/api/mapping-decisions/{correction_id}/revoke", json={})
+    again = client.post(
+        f"/api/mapping-decisions/{correction_id}/revoke",
+        json={"reason": "annullo la correzione"},
+    )
     assert again.status_code == 409
     assert again.json()["detail"] == "Correzione già annullata"
     assert revoked.json()["revoked_decision_id"] == correction_id
@@ -488,7 +509,7 @@ def test_measurement_uses_the_first_batch_and_the_latest_decision():
         labels = {item["decision_id"] for item in _human_mapping_cases(conn)}
         assert first_id in labels
         assert other_id in labels
-        assert correction in labels
+        assert correction not in labels
         assert later_id not in labels
         assert learned_confirm not in labels
         assert learned_reject not in labels
@@ -680,8 +701,8 @@ def test_review_markup_uses_the_server_phrase_and_hides_revoke_on_a_rule():
     assert 'submitFileType(file.file_id, "correct")' in script
     assert 'submitFileType(file.file_id, "not_sure")' in script
     assert 'submitFileType(file.file_id, "wrong", code)' in script
-    assert "@media (max-width: 700px)" in css
-    narrow = css.split("@media (max-width: 700px)", 1)[1]
+    assert "@media (max-width: 859px)" in css
+    narrow = css.split("@media (max-width: 859px)", 1)[1]
     assert "td.mapping-actions { white-space: normal;" in narrow
     assert "min-width: 11rem" in narrow
     assert "white-space: nowrap" in narrow
@@ -767,38 +788,55 @@ def _decision(
     method: str = "human",
     batch_id: str | None = None,
     decided_at: str | None = None,
+    reason: str | None = None,
 ) -> str:
     decision_id = str(uuid.uuid4())
-    conn.execute(
+    if decision == "revoked" and not reason:
+        reason = "annullo di prova"
+    has_reason = conn.execute(
         """
+        SELECT 1
+        FROM information_schema.columns
+        WHERE table_schema = 'app'
+          AND table_name = 'mapping_decisions'
+          AND column_name = 'reason'
+        """
+    ).fetchone()
+    reason_column = ", reason" if has_reason else ""
+    reason_value = ", %s" if has_reason else ""
+    params = [
+        decision_id,
+        mapping_id,
+        decision,
+        method,
+        actor,
+        source_name,
+        source_field,
+        corrected,
+        company_id,
+        origin,
+        source_decision_id,
+        revoked_decision_id,
+        batch_id,
+    ]
+    if has_reason:
+        params.append(reason)
+    params.append(decided_at)
+    conn.execute(
+        f"""
         INSERT INTO app.mapping_decisions (
           id, mapping_id, decision, confidence_method, actor, actor_role,
           source_name, source_field, target_property, target_property_corrected,
           score, confidence_rule, company_id, origin, source_decision_id,
-          revoked_decision_id, batch_id, decided_at
+          revoked_decision_id, batch_id{reason_column}, decided_at
         )
         VALUES (
           %s, %s, %s, %s, %s, 'mapper', %s, %s, 'product_source_key', %s,
-          0.80, 'mapping.header_similarity@v1', %s, %s, %s, %s, %s,
+          0.80, 'mapping.header_similarity@v1', %s, %s, %s, %s, %s{reason_value},
           coalesce(%s::timestamptz, now())
         )
         """,
-        (
-            decision_id,
-            mapping_id,
-            decision,
-            method,
-            actor,
-            source_name,
-            source_field,
-            corrected,
-            company_id,
-            origin,
-            source_decision_id,
-            revoked_decision_id,
-            batch_id,
-            decided_at,
-        ),
+        tuple(params),
     )
     return decision_id
 

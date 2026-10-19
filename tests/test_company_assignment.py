@@ -304,7 +304,7 @@ def test_user_without_a_company_cannot_write_a_decision(client: TestClient):
     writes = [
         (f"/api/mappings/{missing}/confirm", None),
         (f"/api/mappings/{missing}/reject", None),
-        (f"/api/mapping-decisions/{missing}/revoke", {}),
+        (f"/api/mapping-decisions/{missing}/revoke", {"reason": "annullo la decisione"}),
         (f"/api/files/{missing}/type", {"decision": "correct"}),
         ("/api/mappings/confirm-confident", None),
         ("/api/materialize", None),
@@ -328,7 +328,10 @@ def test_user_without_a_company_cannot_write_a_decision(client: TestClient):
     assert opened.json()["detail"] != NOTICE
     rejected = client.post(f"/api/mappings/{missing}/reject")
     assert rejected.status_code == 404
-    revoked = client.post(f"/api/mapping-decisions/{missing}/revoke", json={})
+    revoked = client.post(
+        f"/api/mapping-decisions/{missing}/revoke",
+        json={"reason": "annullo la decisione"},
+    )
     assert revoked.status_code == 404
     typed = client.post(f"/api/files/{missing}/type", json={"decision": "correct"})
     assert typed.status_code == 404

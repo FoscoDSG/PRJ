@@ -88,8 +88,19 @@ def _materialize_source(conn: psycopg.Connection, ontology: Ontology, source_nam
     mappings = conn.execute(
         """
         SELECT source_field, target_type, target_property, confidence, profile
-        FROM app.field_mappings
-        WHERE source_name = %s AND status = 'confirmed' AND valid_to IS NULL
+        FROM app.field_mappings fm
+        WHERE fm.source_name = %s AND fm.status = 'confirmed' AND fm.valid_to IS NULL
+          AND NOT EXISTS (
+            SELECT 1
+            FROM (
+              SELECT d.decision
+              FROM app.mapping_decisions d
+              WHERE d.mapping_id = fm.id
+              ORDER BY d.decided_at DESC, d.id DESC
+              LIMIT 1
+            ) latest
+            WHERE latest.decision = 'revoked'
+          )
         """,
         (source_name,),
     ).fetchall()
