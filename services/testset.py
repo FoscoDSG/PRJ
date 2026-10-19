@@ -4,8 +4,9 @@ Outcomes come from human decisions, from a hand-written fixture, or from
 synthetic fixtures used only to exercise the code. Synthetic cases are stored
 and are excluded from the 30-case minimum and from threshold selection.
 A human mapping decision is a label: confidence_method human, who, when.
-The latest confirm or reject per mapping counts. revoked does not replace
-that label. A confirm and a reject both count. A reject is an error. A
+The latest decision of any type per mapping counts, including revoked.
+A revoked mapping leaves the recognition measure. A confirm and a reject
+both count when they are that latest decision. A reject is an error. A
 correction is a wrong prediction. The score is the one stored on the
 decision. Evaluation does not recompute it.
 Recognition keeps only the first batch of a company and a source. The batch

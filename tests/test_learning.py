@@ -701,8 +701,8 @@ def test_review_markup_uses_the_server_phrase_and_hides_revoke_on_a_rule():
     assert 'submitFileType(file.file_id, "correct")' in script
     assert 'submitFileType(file.file_id, "not_sure")' in script
     assert 'submitFileType(file.file_id, "wrong", code)' in script
-    assert "@media (max-width: 700px)" in css
-    narrow = css.split("@media (max-width: 700px)", 1)[1]
+    assert "@media (max-width: 859px)" in css
+    narrow = css.split("@media (max-width: 859px)", 1)[1]
     assert "td.mapping-actions { white-space: normal;" in narrow
     assert "min-width: 11rem" in narrow
     assert "white-space: nowrap" in narrow
