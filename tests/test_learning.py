@@ -509,7 +509,7 @@ def test_measurement_uses_the_first_batch_and_the_latest_decision():
         labels = {item["decision_id"] for item in _human_mapping_cases(conn)}
         assert first_id in labels
         assert other_id in labels
-        assert correction in labels
+        assert correction not in labels
         assert later_id not in labels
         assert learned_confirm not in labels
         assert learned_reject not in labels
@@ -788,38 +788,55 @@ def _decision(
     method: str = "human",
     batch_id: str | None = None,
     decided_at: str | None = None,
+    reason: str | None = None,
 ) -> str:
     decision_id = str(uuid.uuid4())
-    conn.execute(
+    if decision == "revoked" and not reason:
+        reason = "annullo di prova"
+    has_reason = conn.execute(
         """
+        SELECT 1
+        FROM information_schema.columns
+        WHERE table_schema = 'app'
+          AND table_name = 'mapping_decisions'
+          AND column_name = 'reason'
+        """
+    ).fetchone()
+    reason_column = ", reason" if has_reason else ""
+    reason_value = ", %s" if has_reason else ""
+    params = [
+        decision_id,
+        mapping_id,
+        decision,
+        method,
+        actor,
+        source_name,
+        source_field,
+        corrected,
+        company_id,
+        origin,
+        source_decision_id,
+        revoked_decision_id,
+        batch_id,
+    ]
+    if has_reason:
+        params.append(reason)
+    params.append(decided_at)
+    conn.execute(
+        f"""
         INSERT INTO app.mapping_decisions (
           id, mapping_id, decision, confidence_method, actor, actor_role,
           source_name, source_field, target_property, target_property_corrected,
           score, confidence_rule, company_id, origin, source_decision_id,
-          revoked_decision_id, batch_id, decided_at
+          revoked_decision_id, batch_id{reason_column}, decided_at
         )
         VALUES (
           %s, %s, %s, %s, %s, 'mapper', %s, %s, 'product_source_key', %s,
-          0.80, 'mapping.header_similarity@v1', %s, %s, %s, %s, %s,
+          0.80, 'mapping.header_similarity@v1', %s, %s, %s, %s, %s{reason_value},
           coalesce(%s::timestamptz, now())
         )
         """,
-        (
-            decision_id,
-            mapping_id,
-            decision,
-            method,
-            actor,
-            source_name,
-            source_field,
-            corrected,
-            company_id,
-            origin,
-            source_decision_id,
-            revoked_decision_id,
-            batch_id,
-            decided_at,
-        ),
+        tuple(params),
     )
     return decision_id
 

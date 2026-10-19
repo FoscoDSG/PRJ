@@ -222,6 +222,32 @@ def _samples(rows: list[dict[str, Any]], column: str) -> list[Any]:
     return values
 
 
+def _revoked_confirmation_only(conn: psycopg.Connection, source_name: str, column: str) -> bool:
+    """True when every open row is a confirmation whose latest decision is revoked.
+
+    The next upload can then propose the column again. The old row stays
+    confirmed, so already loaded facts are not reopened.
+    """
+    rows = conn.execute(
+        """
+        SELECT fm.status,
+               (
+                 SELECT d.decision
+                 FROM app.mapping_decisions d
+                 WHERE d.mapping_id = fm.id
+                 ORDER BY d.decided_at DESC, d.id DESC
+                 LIMIT 1
+               ) AS latest
+        FROM app.field_mappings fm
+        WHERE fm.source_name = %s AND fm.source_field = %s AND fm.valid_to IS NULL
+        """,
+        (source_name, column),
+    ).fetchall()
+    if not rows:
+        return False
+    return all(row["status"] == "confirmed" and row["latest"] == "revoked" for row in rows)
+
+
 def propose_mappings(
     conn: psycopg.Connection,
     *,
@@ -321,7 +347,7 @@ def propose_mappings(
             target_property = correction["target_property_corrected"]
             origin = "learned"
             source_decision_id = correction["id"]
-        elif open_rows:
+        elif open_rows and not _revoked_confirmation_only(conn, source_name, column):
             continue
         mapping_id = str(uuid.uuid4())
         conn.execute(

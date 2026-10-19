@@ -70,6 +70,10 @@ def test_0012_does_not_rewrite_rows_and_keeps_the_two_measures():
     later_code = "\n".join(line.split("--", 1)[0] for line in later.splitlines())
     assert "UPDATE app." not in later_code
     assert "UPDATE src." not in later_code
+    guard = (ROOT / "db" / "migrations" / "0014_revoked_outcome_guard.sql").read_text(encoding="utf-8")
+    guard_code = "\n".join(line.split("--", 1)[0] for line in guard.splitlines())
+    assert "UPDATE app." not in guard_code
+    assert "UPDATE src." not in guard_code
 
     company_id = str(uuid.uuid4())
     other_id = str(uuid.uuid4())
@@ -196,7 +200,7 @@ def test_0012_does_not_rewrite_rows_and_keeps_the_two_measures():
         }
         conn.commit()
         applied = []
-        for version in ("0012", "0013"):
+        for version in ("0012", "0013", "0014"):
             item = next(found for found in migration_files() if found.version == version)
             _execute_migration(conn, item)
             _record(conn, item, baselined=False)
@@ -235,6 +239,7 @@ def test_0012_does_not_rewrite_rows_and_keeps_the_two_measures():
     assert applied == [
         {"version": "0012", "name": "decision_company_guard", "baselined": False},
         {"version": "0013", "name": "decided_row_revocation", "baselined": False},
+        {"version": "0014", "name": "revoked_outcome_guard", "baselined": False},
     ]
     assert before["accuracy"] == after_guard["accuracy"] == after["accuracy"]
     assert before["n"] == after_guard["n"] == after["n"]

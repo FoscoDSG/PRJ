@@ -22,6 +22,7 @@ from services.errors import AppError
 ROME = ZoneInfo("Europe/Rome")
 QUEUE_MESSAGE = "La decisione è già presa e non torna in coda."
 EXECUTED_MESSAGE = "L'azione è già stata eseguita e non si può annullare da qui."
+REVOKED_EXECUTE_MESSAGE = "La decisione è stata annullata e non si può eseguire."
 REASON_MESSAGE = "Scrivi il motivo dell'annullamento (almeno 5 caratteri)."
 ALREADY_REVOKED = "Decisione già annullata"
 
@@ -35,7 +36,7 @@ _OPEN = {
 _DECIDED = {
     "field_mappings": frozenset({"confirmed", "rejected"}),
     "recommendations": frozenset({
-        "approved", "modified", "rejected", "dry_run_ok", "executed", "failed", "expired",
+        "approved", "modified", "rejected", "dry_run_ok", "executed", "failed", "expired", "revoked",
     }),
     "identity_reviews": frozenset({"confirmed", "rejected"}),
     "quarantine_documents": frozenset({"released", "rejected"}),
@@ -93,7 +94,11 @@ def revoke_inbox_decision(
     company_id: str | None,
     reason: str,
 ) -> dict:
-    """Append revoked on the inbox log. The recommendation status stays."""
+    """Append revoked and close the recommendation in the same transaction.
+
+    The recommendation moves to ``revoked``. It does not go back to the
+    queue, and a later execute is refused while this decision is the latest.
+    """
     _require_role(role, {"admin", "approver"}, "Serve un approvatore")
     company_id = _require_company(company_id)
     motive = clean_reason(reason)
@@ -113,10 +118,12 @@ def revoke_inbox_decision(
     if row is None or row["decision"] not in ("approve", "reject", "modify"):
         raise AppError(404, "Decisione assente")
     recommendation = conn.execute(
-        "SELECT status FROM app.recommendations WHERE id = %s::uuid",
+        "SELECT status FROM app.recommendations WHERE id = %s::uuid FOR UPDATE",
         (row["recommendation_id"],),
     ).fetchone()
-    if recommendation is not None and recommendation["status"] == "executed":
+    if recommendation is None:
+        raise AppError(404, "Decisione assente")
+    if recommendation["status"] == "executed":
         raise AppError(409, EXECUTED_MESSAGE)
     already = conn.execute(
         """
@@ -179,6 +186,20 @@ def revoke_inbox_decision(
         """,
         (revoked_id, decision_id),
     )
+    if recommendation["status"] != "revoked":
+        from services.workflow.engine import _transition
+
+        conn.execute(
+            "UPDATE app.recommendations SET status = 'revoked' WHERE id = %s::uuid",
+            (row["recommendation_id"],),
+        )
+        _transition(
+            conn,
+            row["recommendation_id"],
+            recommendation["status"],
+            "revoked",
+            actor,
+        )
     record(
         conn,
         action="human_decision",

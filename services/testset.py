@@ -242,18 +242,27 @@ def _human_recommendation_cases(conn: psycopg.Connection) -> list[dict[str, Any]
 
 
 def _latest_mapping_decisions(conn: psycopg.Connection) -> list[dict[str, Any]]:
+    """Latest decision of any type. A revoked mapping leaves the measure."""
     return list(conn.execute(
         """
-        SELECT DISTINCT ON (d.mapping_id)
-               d.id::text AS decision_id, d.mapping_id::text AS mapping_id, d.decision,
-               d.confidence_method, d.actor, d.decided_at, d.source_name, d.source_field,
-               d.target_property, d.target_property_corrected, d.score, d.confidence_rule,
-               d.origin, d.batch_id::text AS batch_id,
-               m.company_id::text AS mapping_company_id, m.source_name AS mapping_source
-        FROM app.mapping_decisions d
-        JOIN app.field_mappings m ON m.id = d.mapping_id
-        WHERE d.decision IN ('confirm', 'reject')
-        ORDER BY d.mapping_id, d.decided_at DESC, d.id DESC
+        SELECT latest.decision_id, latest.mapping_id, latest.decision,
+               latest.confidence_method, latest.actor, latest.decided_at,
+               latest.source_name, latest.source_field, latest.target_property,
+               latest.target_property_corrected, latest.score, latest.confidence_rule,
+               latest.origin, latest.batch_id, latest.mapping_company_id,
+               latest.mapping_source
+        FROM (
+          SELECT DISTINCT ON (d.mapping_id)
+                 d.id::text AS decision_id, d.mapping_id::text AS mapping_id, d.decision,
+                 d.confidence_method, d.actor, d.decided_at, d.source_name, d.source_field,
+                 d.target_property, d.target_property_corrected, d.score, d.confidence_rule,
+                 d.origin, d.batch_id::text AS batch_id,
+                 m.company_id::text AS mapping_company_id, m.source_name AS mapping_source
+          FROM app.mapping_decisions d
+          JOIN app.field_mappings m ON m.id = d.mapping_id
+          ORDER BY d.mapping_id, d.decided_at DESC, d.id DESC
+        ) latest
+        WHERE latest.decision IN ('confirm', 'reject')
         """
     ).fetchall())
 

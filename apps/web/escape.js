@@ -136,6 +136,24 @@
     return open.map((entry) => revokeFields(entry.id, kind)).join(" ");
   }
 
+  function keptEffect(item, kind) {
+    const revoked = (item && item.history || []).some((entry) => entry && entry.revoked);
+    if (!revoked) return "";
+    if (kind === "quarantine" && item.status === "released") {
+      return `<p class="executed-note">Il documento resta rilasciato.</p>`;
+    }
+    if (kind === "identity" && item.status === "confirmed") {
+      return `<p class="executed-note">I clienti restano uniti.</p>`;
+    }
+    return "";
+  }
+
+  function confirmRevokedNotice(item) {
+    const hit = (item && item.history || []).some((entry) => entry && entry.revoked && entry.decision === "confirm");
+    if (!hit) return "";
+    return `<p class="executed-note">Al prossimo caricamento la colonna torna da decidere; i dati già caricati restano.</p>`;
+  }
+
   function driftCard(item, canWrite) {
     const queued = !item.status || item.status === "open";
     const button = canWrite !== false && queued
@@ -145,14 +163,16 @@
   }
 
   function quarantineCard(item, canWrite) {
-    const reasons = (item.reasons || []).join("; ");
-    const note = reasons || "In attesa di conferma, nessuna scrittura ERP.";
+    const reasons = (item.reasons || []).filter((reason) => reason != null && String(reason) !== "").join("; ");
+    let note = "In attesa di conferma, nessuna scrittura ERP.";
+    if (reasons) note = reasons;
+    else if (item.status === "released") note = "Documento rilasciato.";
     const title = item.order_key || item.source_name;
     const queued = !item.status || item.status === "open";
     const button = canWrite !== false && queued
       ? `<button type="button" data-release="${escapeHtml(item.id)}">Rilascia</button>`
       : "";
-    return `<article class="card"><strong>Quarantena ${escapeHtml(title)}</strong><p>${escapeHtml(note)}</p>${decisionHistory(item.history)}${button}${revokeBar(item, canWrite, "quarantine")}</article>`;
+    return `<article class="card"><strong>Quarantena ${escapeHtml(title)}</strong><p>${escapeHtml(note)}</p>${decisionHistory(item.history)}${keptEffect(item, "quarantine")}${button}${revokeBar(item, canWrite, "quarantine")}</article>`;
   }
 
   function identityCard(item, canWrite) {
@@ -160,7 +180,7 @@
     const buttons = canWrite !== false && queued
       ? `<button type="button" data-merge="${escapeHtml(item.id)}">Conferma fusione</button> <button type="button" class="ghost" data-split="${escapeHtml(item.id)}">Tieni separati</button>`
       : "";
-    return `<article class="card"><strong>Identità ${escapeHtml(item.entity_type)}</strong><p>${escapeHtml(item.reason)} (${escapeHtml(item.score)})</p>${decisionHistory(item.history)}${buttons}${revokeBar(item, canWrite, "identity")}</article>`;
+    return `<article class="card"><strong>Identità ${escapeHtml(item.entity_type)}</strong><p>${escapeHtml(item.reason)} (${escapeHtml(item.score)})</p>${decisionHistory(item.history)}${keptEffect(item, "identity")}${buttons}${revokeBar(item, canWrite, "identity")}</article>`;
   }
 
   const PROVENANCE_LABELS = {
@@ -289,7 +309,7 @@
         <td class="mapping-column" data-label="${MAPPING_HEADERS.column}"><code>${escapeHtml(item.source_field)}</code></td>
         <td class="mapping-destination" data-label="${MAPPING_HEADERS.destination}">${escapeHtml(item.target_type)}.${escapeHtml(item.target_property)}</td>
         <td class="mapping-confidence" data-label="${MAPPING_HEADERS.suggestion}"><p class="origin-line">${escapeHtml(originText(item))}</p><p class="suggestion-band">${escapeHtml(shown.band)}</p>${note}</td>
-        <td class="mapping-status" data-label="${MAPPING_HEADERS.status}">${pill(item.status)}${decisionHistory(item.history)}</td>
+        <td class="mapping-status" data-label="${MAPPING_HEADERS.status}">${pill(item.status)}${decisionHistory(item.history)}${confirmRevokedNotice(item)}</td>
         <td class="mapping-actions">${actions}</td>
       </tr>`;
   }
@@ -363,7 +383,9 @@
       .join("");
     const cfo = item.requires_cfo ? '<span class="pill high">CFO</span>' : "";
     const blocked = item.blocked_reason ? String(item.blocked_reason) : "";
-    const executeButton = item.status === "dry_run_ok" || item.status === "executed"
+    const pending = item.status === "proposed" || item.status === "detected";
+    const approvalRevoked = (item.history || []).some((entry) => entry && entry.revoked);
+    const executeButton = !approvalRevoked && (item.status === "dry_run_ok" || item.status === "executed")
       ? '<button type="button" data-act="execute">Esegui</button>'
       : "";
     const approveButton = blocked
@@ -372,15 +394,20 @@
     let buttons;
     if (canWrite === false) {
       buttons = `<p>${escapeHtml(companyUploadNotice())}</p>`;
+    } else if (role === "operator") {
+      buttons = "<p>Sola lettura: l'operatore non approva.</p>";
     } else if (role === "approver" || role === "admin") {
-      buttons = `<label>Quantità acquisto <input data-qty value="${escapeHtml(qty)}" /></label>
+      const decide = pending
+        ? `<label>Quantità acquisto <input data-qty value="${escapeHtml(qty)}" /></label>
       <label>Motivo del rifiuto <input data-reason required minlength="5" maxlength="500" /></label>
       <div class="decision-bar">
         ${approveButton}
         <button type="button" class="ghost" data-act="modify">Modifica</button>
         <button type="button" class="ghost" data-act="reject">Rifiuta</button>
-        ${executeButton}
-      </div>`;
+      </div>`
+        : "";
+      const run = executeButton ? `<div class="decision-bar">${executeButton}</div>` : "";
+      buttons = `${decide}${run}`;
     } else {
       buttons = "<p>Sola lettura: l'operatore non approva.</p>";
     }

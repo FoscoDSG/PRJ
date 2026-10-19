@@ -13,6 +13,7 @@ from services.audit import record
 from services.errors import AppError
 from services.pii import MASK
 from services.graph.projection import record_trigger
+from services.revocation import REVOKED_EXECUTE_MESSAGE
 from services.workflow.engine import expire_stale, mark_dry_run, mark_executed, mark_failed
 
 
@@ -70,6 +71,8 @@ def execute(
         raise AppError(409, "Le evidenze sono cambiate: la raccomandazione è scaduta")
     if row["status"] == "executed":
         return _existing_result(conn, recommendation_id)
+    if _latest_decision(conn, recommendation_id) == "revoked":
+        raise AppError(409, REVOKED_EXECUTE_MESSAGE)
     if row["status"] != "dry_run_ok":
         raise AppError(409, "Esegui solo dopo il dry-run")
     stored = _latest_dry_run(conn, recommendation_id)
@@ -157,6 +160,22 @@ def compensate(conn: psycopg.Connection, document_id: str, *, actor: str, role: 
         "SELECT * FROM app.sandbox_documents WHERE id = %s",
         (document_id,),
     ).fetchone()
+
+
+def _latest_decision(conn: psycopg.Connection, recommendation_id: str) -> str | None:
+    found = conn.execute(
+        """
+        SELECT decision
+        FROM app.decisions_log
+        WHERE recommendation_id = %s
+        ORDER BY decided_at DESC, id DESC
+        LIMIT 1
+        """,
+        (recommendation_id,),
+    ).fetchone()
+    if found is None:
+        return None
+    return found["decision"]
 
 
 def _payload(conn: psycopg.Connection, action: dict, recommendation: dict) -> dict[str, Any]:
