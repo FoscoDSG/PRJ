@@ -710,8 +710,17 @@ def approve(
     actor: str,
     role: str,
     evidence_hash: str,
+    *,
+    allow_missing_company: bool = False,
 ) -> dict:
-    mark_approved(conn, recommendation_id, actor=actor, role=role, evidence_hash=evidence_hash)
+    mark_approved(
+        conn,
+        recommendation_id,
+        actor=actor,
+        role=role,
+        evidence_hash=evidence_hash,
+        allow_missing_company=allow_missing_company,
+    )
     payloads = dry_run(conn, recommendation_id, actor=actor, role=role)
     return {"id": recommendation_id, "status": "dry_run_ok", "dry_run": payloads}
 

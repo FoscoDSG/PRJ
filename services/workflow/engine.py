@@ -10,6 +10,7 @@ from psycopg.types.json import Json
 
 from services.agent.order_agent import AGENT_VERSION, build_context
 from services.audit import record
+from services.companies import NO_COMPANY_UPLOAD
 from services.errors import AppError
 from services.mapping.threshold import active_threshold
 from services.rules.engine import CFO_THRESHOLD, RULES_VERSION
@@ -106,6 +107,7 @@ def modify(
             updated = True
     if not updated:
         raise AppError(400, "Nessuna azione di acquisto da modificare")
+    _record_decision(conn, row, decision="modify", actor=actor, role=role)
     conn.execute(
         """
         INSERT INTO app.agent_overrides (
@@ -115,7 +117,6 @@ def modify(
         """,
         (str(uuid.uuid4()), recommendation_id, Json(previous), Json(quantity), actor),
     )
-    _record_decision(conn, row, decision="modify", actor=actor, role=role)
     conn.execute(
         "UPDATE app.recommendations SET actions = %s, status = 'modified' WHERE id = %s",
         (Json(actions), recommendation_id),
@@ -146,12 +147,12 @@ def reject(
     _require_presented_hash(conn, row, evidence_hash)
     if row["status"] in ("executed", "rejected", "expired", "failed"):
         raise AppError(409, "La raccomandazione non è rifiutabile")
+    _record_decision(conn, row, decision="reject", actor=actor, role=role)
     conn.execute(
         "UPDATE app.recommendations SET status = 'rejected' WHERE id = %s",
         (recommendation_id,),
     )
     _transition(conn, recommendation_id, row["status"], "rejected", actor)
-    _record_decision(conn, row, decision="reject", actor=actor, role=role)
     record(
         conn,
         action="human_decision",
@@ -170,6 +171,7 @@ def mark_approved(
     actor: str,
     role: str,
     evidence_hash: str,
+    allow_missing_company: bool = False,
 ) -> dict:
     _require_role(role)
     row = _lock(conn, recommendation_id)
@@ -180,12 +182,19 @@ def mark_approved(
     if row["status"] not in ("proposed", "modified"):
         raise AppError(409, "La raccomandazione non è approvabile")
     _refuse_unknown_provenance(conn, row)
+    _record_decision(
+        conn,
+        row,
+        decision="approve",
+        actor=actor,
+        role=role,
+        allow_missing_company=allow_missing_company,
+    )
     conn.execute(
         "UPDATE app.recommendations SET status = 'approved' WHERE id = %s",
         (recommendation_id,),
     )
     _transition(conn, recommendation_id, row["status"], "approved", actor)
-    _record_decision(conn, row, decision="approve", actor=actor, role=role)
     record(
         conn,
         action="human_decision",
@@ -329,11 +338,13 @@ def _record_decision(
     decision: str,
     actor: str,
     role: str,
+    allow_missing_company: bool = False,
 ) -> None:
     """Persist who decided and when. Recommendation and confidence come from the row.
 
-    A new row needs the actor's company. ``ieol demo`` approves without one
-    and still returns the dry-run: that path does not write the log row.
+    Callers invoke this before they change the recommendation. Without a
+    company the write is refused and nothing else is stored. ``ieol demo``
+    is the only caller that opts in and then skips the log row.
     """
     actor_row = conn.execute(
         "SELECT company_id::text AS company_id FROM app.users WHERE username = %s",
@@ -341,7 +352,9 @@ def _record_decision(
     ).fetchone()
     company_id = actor_row["company_id"] if actor_row else None
     if not company_id:
-        return
+        if allow_missing_company:
+            return
+        raise AppError(403, NO_COMPANY_UPLOAD)
     header = _source_row(conn, str(row["order_entity_id"]))
     sources = _source_rows(conn, str(row["order_entity_id"]))
     confidence, method, rule = _score(

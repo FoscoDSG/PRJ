@@ -575,6 +575,93 @@ def test_api_blocks_the_remaining_decisions_without_a_company(client: TestClient
     assert rendered.stdout == "ok\n"
 
 
+def test_decision_without_a_company_leaves_the_proposal_unchanged():
+    from services.errors import AppError
+    from services.pipeline import approve
+    from services.workflow.engine import modify, reject
+
+    load_demo()
+    with connect() as conn:
+        row = conn.execute(
+            """
+            SELECT id::text AS id, evidence_hash, status
+            FROM app.recommendations
+            WHERE status = 'proposed'
+            LIMIT 1
+            """
+        ).fetchone()
+        before_logs = conn.execute("SELECT count(*) AS n FROM app.decisions_log").fetchone()["n"]
+        before_overrides = conn.execute("SELECT count(*) AS n FROM app.agent_overrides").fetchone()["n"]
+        with pytest.raises(AppError, match="non è ancora collegato") as caught:
+            approve(
+                conn,
+                row["id"],
+                "approver",
+                "approver",
+                row["evidence_hash"],
+            )
+        assert caught.value.status == 403
+        assert caught.value.message == NO_COMPANY_UPLOAD
+        with pytest.raises(AppError, match=NO_COMPANY_UPLOAD):
+            modify(
+                conn,
+                row["id"],
+                quantity=4,
+                actor="approver",
+                role="approver",
+                evidence_hash=row["evidence_hash"],
+            )
+        with pytest.raises(AppError, match=NO_COMPANY_UPLOAD):
+            reject(
+                conn,
+                row["id"],
+                reason="non procede",
+                actor="approver",
+                role="approver",
+                evidence_hash=row["evidence_hash"],
+            )
+        status = conn.execute(
+            "SELECT status FROM app.recommendations WHERE id = %s",
+            (row["id"],),
+        ).fetchone()["status"]
+        logs = conn.execute("SELECT count(*) AS n FROM app.decisions_log").fetchone()["n"]
+        overrides = conn.execute("SELECT count(*) AS n FROM app.agent_overrides").fetchone()["n"]
+        assert status == row["status"]
+        assert logs == before_logs
+        assert overrides == before_overrides
+        conn.rollback()
+
+
+def test_ieol_demo_still_runs_without_a_company(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]):
+    import json
+
+    from apps.cli import main
+    from services.db import database_url
+    from services.migrate import demo_database_url, ensure_database
+
+    monkeypatch.setenv("IEOL_DEMO_DATABASE", "ieol_test_demo_guard")
+    demo_url = demo_database_url(database_url())
+    ensure_database(demo_url)
+    with connect(demo_url) as conn:
+        migrate(conn)
+        conn.commit()
+    main(["demo"])
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["shortage_order"]
+    assert payload["dry_run"]
+    with connect(demo_url) as conn:
+        status = conn.execute(
+            """
+            SELECT status FROM app.recommendations
+            WHERE status = 'dry_run_ok'
+            LIMIT 1
+            """
+        ).fetchone()
+        logs = conn.execute("SELECT count(*) AS n FROM app.decisions_log").fetchone()["n"]
+    assert status is not None
+    assert logs == 0
+
+
 def test_api_blocks_execute_stock_unmask_and_compensate(client: TestClient):
     load_demo()
     login(client, "approver")
