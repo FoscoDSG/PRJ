@@ -265,6 +265,7 @@ def test_excel_and_sql_connectors(client: TestClient, tmp_path: Path):
 def test_evidence_expiry_and_audit_is_append_only(client: TestClient):
     login(client, "mapper")
     load_demo()
+    give_company("mapper", "Giacenza")
     expired = client.post("/api/stock/ART-X", json={"on_hand": 500})
     assert expired.status_code == 200, expired.text
     with connect() as conn:

@@ -2,8 +2,9 @@
 -- presenti: nessuna istruzione UPDATE. I company_id NULL già scritti
 -- restano NULL e la migrazione non li controlla.
 --
--- Vale per quattro tabelle: decisioni di colonna/mapping, fusioni di
--- clienti, rilasci dalla quarantena, cambi di colonna segnati come visti.
+-- Vale per le decisioni di colonna/mapping, le fusioni di clienti, i
+-- rilasci dalla quarantena, i cambi di colonna segnati come visti e il
+-- registro delle decisioni in inbox (app.decisions_log).
 -- Una riga nuova che registra la decisione ha company_id non nullo e
 -- uguale all'azienda di chi decide. Una riga ancora aperta (in coda, non
 -- ancora decisa) può nascere senza azienda. Il controllo è un trigger
@@ -194,5 +195,69 @@ BEGIN
     CREATE TRIGGER drift_reviews_decision_company
     BEFORE INSERT OR UPDATE ON app.drift_reviews
     FOR EACH ROW EXECUTE FUNCTION app.enforce_recorded_decision_company();
+  END IF;
+END $$;
+
+-- Il registro inbox è append-only: la decisione è l'INSERT. Le righe già
+-- scritte restano con company_id NULL. Il CHECK NOT VALID non le rilegge.
+
+ALTER TABLE app.decisions_log
+  ADD COLUMN IF NOT EXISTS company_id uuid;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conname = 'decisions_log_company_fkey'
+      AND conrelid = 'app.decisions_log'::regclass
+  ) THEN
+    ALTER TABLE app.decisions_log
+      ADD CONSTRAINT decisions_log_company_fkey
+      FOREIGN KEY (company_id) REFERENCES app.companies (id);
+  END IF;
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conname = 'decisions_log_company_present_check'
+      AND conrelid = 'app.decisions_log'::regclass
+  ) THEN
+    ALTER TABLE app.decisions_log
+      ADD CONSTRAINT decisions_log_company_present_check
+      CHECK (company_id IS NOT NULL) NOT VALID;
+  END IF;
+END $$;
+
+COMMENT ON COLUMN app.decisions_log.company_id IS
+  'Azienda di chi approva, modifica o rifiuta. NULL sulle righe scritte prima della 0012.';
+
+CREATE OR REPLACE FUNCTION app.enforce_decision_log_company()
+RETURNS trigger
+LANGUAGE plpgsql
+SET search_path = app, public
+AS $$
+DECLARE
+  actor_company uuid;
+BEGIN
+  IF NEW.company_id IS NULL THEN
+    RAISE EXCEPTION 'decisione senza azienda';
+  END IF;
+  SELECT company_id INTO actor_company FROM app.users WHERE username = NEW.actor;
+  IF actor_company IS NULL OR actor_company IS DISTINCT FROM NEW.company_id THEN
+    RAISE EXCEPTION 'decisione di un''altra azienda';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_trigger
+    WHERE tgname = 'decisions_log_decision_company'
+      AND tgrelid = 'app.decisions_log'::regclass
+      AND NOT tgisinternal
+  ) THEN
+    CREATE TRIGGER decisions_log_decision_company
+    BEFORE INSERT ON app.decisions_log
+    FOR EACH ROW EXECUTE FUNCTION app.enforce_decision_log_company();
   END IF;
 END $$;

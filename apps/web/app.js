@@ -361,7 +361,7 @@ async function openCustomer(id) {
   const detail = document.querySelector("#order-detail");
   document.querySelector("#order-list").hidden = true;
   detail.hidden = false;
-  detail.innerHTML = customerDetail(customer, state.role);
+  detail.innerHTML = customerDetail(customer, state.role, canWriteDecisions(state.hasCompany));
   detail.querySelector("#back-orders").addEventListener("click", loadOrders);
   const unmask = detail.querySelector("#unmask-pii");
   if (unmask) {

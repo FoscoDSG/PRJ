@@ -330,7 +330,18 @@ def _record_decision(
     actor: str,
     role: str,
 ) -> None:
-    """Persist who decided and when. Recommendation and confidence come from the row."""
+    """Persist who decided and when. Recommendation and confidence come from the row.
+
+    A new row needs the actor's company. ``ieol demo`` approves without one
+    and still returns the dry-run: that path does not write the log row.
+    """
+    actor_row = conn.execute(
+        "SELECT company_id::text AS company_id FROM app.users WHERE username = %s",
+        (actor,),
+    ).fetchone()
+    company_id = actor_row["company_id"] if actor_row else None
+    if not company_id:
+        return
     header = _source_row(conn, str(row["order_entity_id"]))
     sources = _source_rows(conn, str(row["order_entity_id"]))
     confidence, method, rule = _score(
@@ -373,9 +384,9 @@ def _record_decision(
           recommendation, confidence, confidence_method, confidence_rule,
           actor, actor_role, agent_version, rules_version,
           confidence_threshold, amount_threshold_eur, action_label, context_snapshot,
-          hash_version
+          hash_version, company_id
         )
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         """,
         (
             decision_id,
@@ -397,6 +408,7 @@ def _record_decision(
             Json(action_label),
             Json(snapshot),
             "hmac-sha256-v1",
+            company_id,
         ),
     )
     for source in sources:

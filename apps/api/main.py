@@ -635,6 +635,9 @@ def reject_route(recommendation_id: str, body: RejectBody, user: dict = Depends(
 
 @app.post("/api/recommendations/{recommendation_id}/execute")
 def execute_route(recommendation_id: str, user: dict = Depends(require_user)) -> dict:
+    if user["role"] not in ("admin", "approver"):
+        raise AppError(403, "Solo un approvatore esegue azioni")
+    _require_company(user["username"])
     with app_connect() as conn:
         result = execute_recommendation(
             conn, recommendation_id, user["username"], user["role"], ontology()
@@ -647,6 +650,7 @@ def execute_route(recommendation_id: str, user: dict = Depends(require_user)) ->
 def compensate_route(document_id: str, user: dict = Depends(require_user)) -> dict:
     if user["role"] not in ("admin", "approver"):
         raise AppError(403, "Solo un approvatore compensa")
+    _require_company(user["username"])
     with app_connect() as conn:
         result = compensate(conn, document_id, actor=user["username"], role=user["role"])
         conn.commit()
@@ -657,6 +661,7 @@ def compensate_route(document_id: str, user: dict = Depends(require_user)) -> di
 def adjust_stock(product_key: str, body: StockBody, user: dict = Depends(require_user)) -> dict:
     if user["role"] not in ("admin", "mapper"):
         raise AppError(403, "Serve il ruolo mapper")
+    _require_company(user["username"])
     with app_connect() as conn:
         expired = adjust_on_hand(conn, ontology(), product_key, body.on_hand)
         conn.commit()
@@ -701,6 +706,7 @@ def audit_readable(
 def pii_unmask(body: UnmaskBody, user: dict = Depends(require_user)) -> JSONResponse:
     if user["role"] != "admin":
         raise AppError(403, "Serve il ruolo admin")
+    _require_company(user["username"])
     with app_connect() as conn:
         result = unmask_entity(
             conn,

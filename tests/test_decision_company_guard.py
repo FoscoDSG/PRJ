@@ -17,7 +17,7 @@ from services.mapping.corrections import learned_metric
 from services.migrate import _ensure_registry, _execute_migration, _record, migrate, migration_files
 from services.testset import _human_mapping_cases, build_testset, evaluate_testset
 from tests.helpers import wipe_test_database
-from tests.test_flow import login
+from tests.test_flow import decide, give_company, load_demo, login
 from tests.test_learning import _batch, _decision, _mapping, _user
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -378,6 +378,67 @@ def test_database_refuses_a_new_decision_without_the_actor_company():
                 (drift_id,),
             ).fetchone(),
         }
+    entity_id = str(uuid.uuid4())
+    batch_id = str(uuid.uuid4())
+    recommendation_id = str(uuid.uuid4())
+    with connect() as conn:
+        conn.execute(
+            "INSERT INTO app.entities (id, type, business_key) VALUES (%s, 'Order', 'ORD-LOG')",
+            (entity_id,),
+        )
+        conn.execute(
+            """
+            INSERT INTO app.landing_batches (id, source_name, watermark, row_count)
+            VALUES (%s, 'inbox', 'w-log', 1)
+            """,
+            (batch_id,),
+        )
+        conn.execute(
+            "INSERT INTO app.landing_rows (batch_id, row_index, data) VALUES (%s, 0, '{}'::jsonb)",
+            (batch_id,),
+        )
+        conn.execute(
+            """
+            INSERT INTO app.recommendations (
+              id, order_entity_id, problem, evidence, evidence_hash, actions,
+              expected_impact, risk, confidence, status, requires_cfo
+            )
+            VALUES (%s, %s, 'manca', '[]'::jsonb, 'abc', '[]'::jsonb, 'niente', 'low', 0.5, 'proposed', false)
+            """,
+            (recommendation_id, entity_id),
+        )
+        log_sql = """
+            INSERT INTO app.decisions_log (
+              id, recommendation_id, batch_id, row_index, decision, evidence_hash,
+              recommendation, confidence, actor, actor_role, agent_version, rules_version,
+              confidence_threshold, amount_threshold_eur, company_id
+            )
+            VALUES (%s, %s, %s, 0, 'approve', 'abc', 'manca', 0.5, %s, 'approver', 'v', 'v', 0.75, 1, %s)
+        """
+        with pytest.raises(psycopg.errors.RaiseException, match="decisione senza azienda"):
+            with conn.transaction():
+                conn.execute(
+                    log_sql,
+                    (str(uuid.uuid4()), recommendation_id, batch_id, "ada", None),
+                )
+        with pytest.raises(psycopg.errors.RaiseException, match="altra azienda"):
+            with conn.transaction():
+                conn.execute(
+                    log_sql,
+                    (str(uuid.uuid4()), recommendation_id, batch_id, "ada", other_id),
+                )
+        written_log = str(uuid.uuid4())
+        conn.execute(
+            log_sql,
+            (written_log, recommendation_id, batch_id, "ada", company_id),
+        )
+        conn.commit()
+        logged_company = conn.execute(
+            "SELECT company_id::text AS company_id FROM app.decisions_log WHERE id = %s",
+            (written_log,),
+        ).fetchone()["company_id"]
+    assert logged_company == company_id
+
     assert stored["company_id"] == company_id
     assert statuses["review"]["status"] == "confirmed"
     assert statuses["review"]["company_id"] == company_id
@@ -514,8 +575,69 @@ def test_api_blocks_the_remaining_decisions_without_a_company(client: TestClient
     assert rendered.stdout == "ok\n"
 
 
+def test_api_blocks_execute_stock_unmask_and_compensate(client: TestClient):
+    load_demo()
+    login(client, "approver")
+    item = client.get("/api/inbox").json()["recommendations"][0]
+    denied_execute = client.post(f"/api/recommendations/{item['id']}/execute")
+    assert denied_execute.status_code == 403
+    assert denied_execute.json()["detail"] == NOTICE
+    give_company("approver", "Esecuzioni")
+    approved = decide(client, item)
+    assert approved.status_code == 200, approved.text
+    executed = client.post(f"/api/recommendations/{item['id']}/execute")
+    assert executed.status_code == 200, executed.text
+    with connect() as conn:
+        document_id = conn.execute(
+            "SELECT id::text AS id FROM app.sandbox_documents WHERE kind = 'purchase_order'"
+        ).fetchone()["id"]
+        conn.execute(
+            """
+            INSERT INTO app.users (username, password_hash, role)
+            VALUES ('senza', %s, 'approver')
+            """,
+            (password_hash("senza-secret"),),
+        )
+        conn.commit()
+    client.post("/api/logout")
+    logged = client.post("/api/login", json={"username": "senza", "password": "senza-secret"})
+    assert logged.status_code == 200, logged.text
+    denied_compensate = client.post(f"/api/sandbox/{document_id}/compensate")
+    assert denied_compensate.status_code == 403
+    assert denied_compensate.json()["detail"] == NOTICE
+    give_company("senza", "Compensazioni")
+    compensated = client.post(f"/api/sandbox/{document_id}/compensate")
+    assert compensated.status_code == 200, compensated.text
+    assert compensated.json()["status"] == "compensated"
+
+    client.post("/api/logout")
+    login(client, "mapper")
+    denied_stock = client.post("/api/stock/ART-X", json={"on_hand": 400})
+    assert denied_stock.status_code == 403
+    assert denied_stock.json()["detail"] == NOTICE
+    give_company("mapper", "Giacenza api")
+    allowed_stock = client.post("/api/stock/ART-X", json={"on_hand": 400})
+    assert allowed_stock.status_code == 200, allowed_stock.text
+
+    client.post("/api/logout")
+    login(client, "admin")
+    order = next(row for row in client.get("/api/orders").json()["orders"] if row["business_key"] == "1024")
+    denied_unmask = client.post(
+        "/api/pii/unmask",
+        json={"entity_id": order["customer_id"], "reason": "verifica del cliente"},
+    )
+    assert denied_unmask.status_code == 403
+    assert denied_unmask.json()["detail"] == NOTICE
+    give_company("admin", "Dati personali")
+    opened = client.post(
+        "/api/pii/unmask",
+        json={"entity_id": order["customer_id"], "reason": "verifica del cliente"},
+    )
+    assert opened.status_code == 200, opened.text
+
+
 _CARD_BUTTONS = r"""
-const { driftCard, quarantineCard, identityCard, inboxCard } = require("./apps/web/escape.js");
+const { driftCard, quarantineCard, identityCard, inboxCard, customerDetail, escapeHtml } = require("./apps/web/escape.js");
 const drift = { id: "d1", source_name: "ordini", diff: { added: ["x"] } };
 const held = { id: "q1", order_key: "1099", source_name: "mail", reasons: [] };
 const review = { id: "r1", entity_type: "Customer", reason: "Nomi vicini", score: 0.72 };
@@ -537,9 +659,24 @@ const item = {
   id: "i1", status: "proposed", risk: "low", order_key: "1024", problem: "manca",
   evidence_hash: "abc", actions: [], evidence: [],
 };
+const notice = "Il tuo utente non è ancora collegato a un'azienda: chiedi all'amministratore";
 const hiddenInbox = inboxCard(item, "approver", false);
 if (hiddenInbox.includes("data-act") || hiddenInbox.includes("decision-bar")) process.exit(6);
-if (!hiddenInbox.includes("1024")) process.exit(7);
+if (!hiddenInbox.includes("1024") || !hiddenInbox.includes(escapeHtml(notice))) process.exit(7);
+if (hiddenInbox.includes("Sola lettura")) process.exit(9);
+const operatorInbox = inboxCard(item, "operator", true);
+if (!operatorInbox.includes("Sola lettura: l'operatore non approva.")) process.exit(10);
+if (operatorInbox.includes(notice)) process.exit(11);
+const ready = Object.assign({}, item, { status: "dry_run_ok" });
+if (!inboxCard(ready, "approver").includes("Esegui")) process.exit(12);
+if (inboxCard(ready, "approver", false).includes("Esegui") || inboxCard(ready, "admin", false).includes("data-act")) {
+  process.exit(13);
+}
+const customer = { id: "c1", company_name: "ACME", business_key: "C1", orders: [], edges: [], facts: [] };
+if (!customerDetail(customer, "admin").includes("Mostra dati personali")) process.exit(14);
+if (customerDetail(customer, "admin", false).includes("Mostra dati personali") || customerDetail(customer, "admin", false).includes("unmask-pii")) {
+  process.exit(15);
+}
 if (!inboxCard(item, "approver").includes("decision-bar")) process.exit(8);
 console.log("ok");
 """

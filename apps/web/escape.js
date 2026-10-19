@@ -275,7 +275,7 @@
   `;
   }
 
-  function customerDetail(customer, role) {
+  function customerDetail(customer, role, canWrite) {
     const orders = customer.orders
       .map((order) => `<li><button type="button" data-order="${escapeHtml(order.id)}">Ordine ${escapeHtml(order.business_key)}</button></li>`)
       .join("");
@@ -290,7 +290,7 @@
     <ul class="edges">${edges}</ul>
     <h3>Fatti</h3>
     ${factList(customer.facts)}
-    ${role === "admin" ? `<label>Motivo dello smascheramento <input data-reason required minlength="5" maxlength="500" /></label><p><button type="button" id="unmask-pii" data-entity="${escapeHtml(customer.id)}">Mostra dati personali</button></p><pre id="unmask-result"></pre>` : ""}
+    ${role === "admin" && canWrite !== false ? `<label>Motivo dello smascheramento <input data-reason required minlength="5" maxlength="500" /></label><p><button type="button" id="unmask-pii" data-entity="${escapeHtml(customer.id)}">Mostra dati personali</button></p><pre id="unmask-result"></pre>` : ""}
   `;
   }
 
@@ -306,7 +306,6 @@
     const evidence = (item.evidence || [])
       .map((fact) => `<li>${escapeHtml(fact.property)}: ${escapeHtml(fact.value)}<p>${escapeHtml(provenanceLabel(fact.source_class))}</p></li>`)
       .join("");
-    const canDecide = (role === "approver" || role === "admin") && canWrite !== false;
     const cfo = item.requires_cfo ? '<span class="pill high">CFO</span>' : "";
     const blocked = item.blocked_reason ? String(item.blocked_reason) : "";
     const executeButton = item.status === "dry_run_ok" || item.status === "executed"
@@ -315,16 +314,21 @@
     const approveButton = blocked
       ? `<button type="button" data-act="approve" disabled>Approva</button> <span class="blocked-reason">${escapeHtml(blocked)}</span>`
       : `<button type="button" data-act="approve">Approva</button>`;
-    const buttons = canDecide
-      ? `<label>Quantità acquisto <input data-qty value="${escapeHtml(qty)}" /></label>
+    let buttons;
+    if (canWrite === false) {
+      buttons = `<p>${escapeHtml(companyUploadNotice())}</p>`;
+    } else if (role === "approver" || role === "admin") {
+      buttons = `<label>Quantità acquisto <input data-qty value="${escapeHtml(qty)}" /></label>
       <label>Motivo del rifiuto <input data-reason required minlength="5" maxlength="500" /></label>
       <div class="decision-bar">
         ${approveButton}
         <button type="button" class="ghost" data-act="modify">Modifica</button>
         <button type="button" class="ghost" data-act="reject">Rifiuta</button>
         ${executeButton}
-      </div>`
-      : "<p>Sola lettura: l'operatore non approva.</p>";
+      </div>`;
+    } else {
+      buttons = "<p>Sola lettura: l'operatore non approva.</p>";
+    }
     return `<article class="card" data-id="${escapeHtml(item.id)}" data-hash="${escapeHtml(item.evidence_hash)}">
       <div class="meta">${pill(item.status)}${cfo}<span class="pill">${escapeHtml(item.risk)}</span></div>
       <h3 class="card-title">Ordine ${escapeHtml(item.order_key)}</h3>

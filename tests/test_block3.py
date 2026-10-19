@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import uuid
 from pathlib import Path
 
 import psycopg
@@ -89,6 +90,7 @@ def test_api_hides_cleartext_and_unmask_is_audited(client: TestClient):
     )
     assert denied.status_code == 403
     login(client, "admin")
+    give_company("admin", "Smascheramento")
     opened = client.post(
         "/api/pii/unmask",
         json={"entity_id": order["customer_id"], "reason": "verifica del cliente"},
@@ -761,20 +763,34 @@ def test_unknown_sources_and_agent_recommendations_are_not_labels(tmp_path: Path
             )
         conn.rollback()
         version = build_testset(conn)["version"]
+        intruso_company = str(uuid.uuid4())
+        conn.execute(
+            "INSERT INTO app.companies (id, name) VALUES (%s, 'Intrusi')",
+            (intruso_company,),
+        )
+        conn.execute(
+            """
+            INSERT INTO app.users (username, password_hash, role, company_id)
+            VALUES ('intruso', 'not-a-password', 'approver', %s)
+            """,
+            (intruso_company,),
+        )
         conn.execute(
             """
             INSERT INTO app.decisions_log (
               id, recommendation_id, batch_id, row_index, decision, evidence_hash,
               recommendation, confidence, actor, actor_role, agent_version, rules_version,
-              confidence_threshold, amount_threshold_eur, action_label, context_snapshot
+              confidence_threshold, amount_threshold_eur, action_label, context_snapshot,
+              company_id
             )
             SELECT gen_random_uuid(), r.id, lr.batch_id, lr.row_index, 'approve', r.evidence_hash,
                    'non usare', 0.2, 'intruso', 'approver', 'x', 'y', 0.75, 1,
-                   '[{"type":"notifyCustomer","params":{}}]'::jsonb, '{}'::jsonb
+                   '[{"type":"notifyCustomer","params":{}}]'::jsonb, '{}'::jsonb, %s
             FROM app.recommendations r
             JOIN app.landing_rows lr ON lr.data ->> 'ord_head' = '1024'
             LIMIT 1
-            """
+            """,
+            (intruso_company,),
         )
         decision_id = conn.execute(
             "SELECT id FROM app.decisions_log WHERE actor = 'intruso'"
@@ -936,19 +952,32 @@ def test_hash_version_old_rows_stay_sha256_and_new_rows_use_hmac(client: TestCli
             LIMIT 1
             """
         ).fetchone()["hash_version"]
+        archive_company = str(uuid.uuid4())
+        conn.execute(
+            "INSERT INTO app.companies (id, name) VALUES (%s, 'Archivio')",
+            (archive_company,),
+        )
+        conn.execute(
+            """
+            INSERT INTO app.users (username, password_hash, role, company_id)
+            VALUES ('archivio', 'not-a-password', 'approver', %s)
+            """,
+            (archive_company,),
+        )
         conn.execute(
             """
             INSERT INTO app.decisions_log (
               id, recommendation_id, batch_id, row_index, decision, evidence_hash,
               recommendation, confidence, actor, actor_role, agent_version, rules_version,
-              confidence_threshold, amount_threshold_eur, hash_version
+              confidence_threshold, amount_threshold_eur, hash_version, company_id
             )
             SELECT gen_random_uuid(), r.id, lr.batch_id, lr.row_index, 'reject', r.evidence_hash,
-                   'storico', 0.2, 'archivio', 'approver', 'x', 'y', 0.75, 1, 'sha256'
+                   'storico', 0.2, 'archivio', 'approver', 'x', 'y', 0.75, 1, 'sha256', %s
             FROM app.recommendations r
             JOIN app.landing_rows lr ON lr.data ->> 'ord_head' = '1024'
             LIMIT 1
-            """
+            """,
+            (archive_company,),
         )
         historical = conn.execute(
             "SELECT hash_version FROM app.decisions_log WHERE actor = 'archivio'"
@@ -988,20 +1017,34 @@ def test_hash_version_v2_is_allowed_and_is_not_the_default(client: TestClient):
             WHERE conname = 'decisions_log_hash_version_check'
             """
         ).fetchone()["definition"]
+        rotate_company = str(uuid.uuid4())
+        conn.execute(
+            "INSERT INTO app.companies (id, name) VALUES (%s, 'Rotazione')",
+            (rotate_company,),
+        )
+        conn.execute(
+            """
+            INSERT INTO app.users (username, password_hash, role, company_id)
+            VALUES ('rotazione', 'not-a-password', 'approver', %s),
+                   ('rifiutata', 'not-a-password', 'approver', %s)
+            """,
+            (rotate_company, rotate_company),
+        )
         inserted = conn.execute(
             """
             INSERT INTO app.decisions_log (
               id, recommendation_id, batch_id, row_index, decision, evidence_hash,
               recommendation, confidence, actor, actor_role, agent_version, rules_version,
-              confidence_threshold, amount_threshold_eur, hash_version
+              confidence_threshold, amount_threshold_eur, hash_version, company_id
             )
             SELECT gen_random_uuid(), r.id, lr.batch_id, lr.row_index, 'reject', r.evidence_hash,
-                   'futuro', 0.2, 'rotazione', 'approver', 'x', 'y', 0.75, 1, 'hmac-sha256-v2'
+                   'futuro', 0.2, 'rotazione', 'approver', 'x', 'y', 0.75, 1, 'hmac-sha256-v2', %s
             FROM app.recommendations r
             JOIN app.landing_rows lr ON lr.data ->> 'ord_head' = '1024'
             LIMIT 1
             RETURNING hash_version
-            """
+            """,
+            (rotate_company,),
         ).fetchone()["hash_version"]
         with pytest.raises(psycopg.errors.CheckViolation):
             conn.execute(
@@ -1009,14 +1052,15 @@ def test_hash_version_v2_is_allowed_and_is_not_the_default(client: TestClient):
                 INSERT INTO app.decisions_log (
                   id, recommendation_id, batch_id, row_index, decision, evidence_hash,
                   recommendation, confidence, actor, actor_role, agent_version, rules_version,
-                  confidence_threshold, amount_threshold_eur, hash_version
+                  confidence_threshold, amount_threshold_eur, hash_version, company_id
                 )
                 SELECT gen_random_uuid(), r.id, lr.batch_id, lr.row_index, 'reject', r.evidence_hash,
-                       'futuro', 0.2, 'rifiutata', 'approver', 'x', 'y', 0.75, 1, 'hmac-sha256-v3'
+                       'futuro', 0.2, 'rifiutata', 'approver', 'x', 'y', 0.75, 1, 'hmac-sha256-v3', %s
                 FROM app.recommendations r
                 JOIN app.landing_rows lr ON lr.data ->> 'ord_head' = '1024'
                 LIMIT 1
-                """
+                """,
+                (rotate_company,),
             )
         conn.rollback()
     assert "hmac-sha256-v1" in default

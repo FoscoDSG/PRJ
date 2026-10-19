@@ -131,11 +131,14 @@ def test_decision_log_uses_the_database_and_rejects_a_stale_hash(client: TestCli
                 INSERT INTO app.decisions_log (
                   id, recommendation_id, batch_id, row_index, decision, evidence_hash,
                   recommendation, confidence, confidence_method, actor, actor_role,
-                  agent_version, rules_version, confidence_threshold, amount_threshold_eur
+                  agent_version, rules_version, confidence_threshold, amount_threshold_eur,
+                  company_id
                 )
-                SELECT gen_random_uuid(), id, %s, %s, 'approve', evidence_hash,
-                       problem, NULL, 'rule', 'x', 'approver', 'v', 'v', 0.75, 50000
-                FROM app.recommendations
+                SELECT gen_random_uuid(), r.id, %s, %s, 'approve', r.evidence_hash,
+                       r.problem, NULL, 'rule', 'approver', 'approver', 'v', 'v', 0.75, 50000,
+                       u.company_id
+                FROM app.recommendations r
+                JOIN app.users u ON u.username = 'approver'
                 LIMIT 1
                 """,
                 (landing["batch_id"], landing["row_index"]),
@@ -549,20 +552,33 @@ def test_agent_does_not_read_or_learn_from_the_decisions_log():
         order_id = conn.execute(
             "SELECT id::text FROM app.entities WHERE type = 'Order' AND business_key = '1024'"
         ).fetchone()["id"]
+        intruso_company = str(uuid.uuid4())
+        conn.execute(
+            "INSERT INTO app.companies (id, name) VALUES (%s, 'Intrusi')",
+            (intruso_company,),
+        )
+        conn.execute(
+            """
+            INSERT INTO app.users (username, password_hash, role, company_id)
+            VALUES ('intruso', 'not-a-password', 'approver', %s)
+            """,
+            (intruso_company,),
+        )
         conn.execute(
             """
             INSERT INTO app.decisions_log (
               id, recommendation_id, batch_id, row_index, decision, evidence_hash,
               recommendation, confidence, actor, actor_role, agent_version, rules_version,
-              confidence_threshold, amount_threshold_eur
+              confidence_threshold, amount_threshold_eur, company_id
             )
             SELECT gen_random_uuid(), r.id, lr.batch_id, lr.row_index, 'reject', r.evidence_hash,
                    'train on this', 0.01, 'intruso', 'approver', 'tampered', 'tampered',
-                   0.01, 1
+                   0.01, 1, %s
             FROM app.recommendations r
             JOIN app.landing_rows lr ON lr.data ->> 'ord_head' = '1024'
             LIMIT 1
-            """
+            """,
+            (intruso_company,),
         )
         guard = Guard(conn)
         context = build_context(guard, order_id)
