@@ -117,7 +117,9 @@ const structural = new Set([
   "audit-when", "audit-what", "audit-order", "audit-detail",
   "origin-line", "suggestion-band", "suggestion-note",
   "file-type-actions", "file-type-choice", "mapping-actions",
+  "mapping-source", "mapping-column", "mapping-destination", "mapping-status",
 ]);
+const allowedLabels = new Set(["Fonte", "Colonna", "Destinazione", "Suggerimento", "Stato"]);
 const tagRe = /<\/?([a-zA-Z][a-zA-Z0-9]*)\b([^>]*)>/g;
 const attrRe = /([^\s=/]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+)))?/g;
 const seenClasses = new Set();
@@ -148,6 +150,14 @@ while ((tag = tagRe.exec(html))) {
       console.error(`event handler attribute ${attrName}`);
       process.exit(2);
     }
+    if (attrName === "data-label") {
+      const label = attr[2] ?? attr[3] ?? attr[4] ?? "";
+      if (!allowedLabels.has(label)) {
+        console.error(`data-label not allowed: ${label}`);
+        process.exit(2);
+      }
+      continue;
+    }
     if (attrName !== "class") continue;
     const classValue = attr[2] ?? attr[3] ?? attr[4] ?? "";
     for (const token of classValue.split(/\s+/)) {
@@ -171,6 +181,7 @@ const requiredClasses = [
   "audit-when", "audit-what", "audit-order", "audit-detail",
   "origin-line", "suggestion-band", "suggestion-note", "file-type-actions",
   "file-type-choice", "mapping-actions",
+  "mapping-source", "mapping-column", "mapping-destination", "mapping-status",
 ];
 for (const token of requiredClasses) {
   if (!seenClasses.has(token)) {
