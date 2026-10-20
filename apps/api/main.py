@@ -51,6 +51,7 @@ from services.pipeline import (
     load_fixtures,
     record_table_type_decision,
     release_document,
+    reject_document,
     ontology,
     refresh_canonical,
     reject_mapping,
@@ -334,13 +335,29 @@ def release(quarantine_id: str, user: dict = Depends(require_user)) -> dict:
     return _ok(result)
 
 
+@app.post("/api/quarantine/{quarantine_id}/reject")
+def reject_quarantine(quarantine_id: str, user: dict = Depends(require_user)) -> dict:
+    _require_company(user["username"])
+    with app_connect() as conn:
+        company_id = company_id_for_user(conn, user["username"])
+        result = reject_document(
+            conn,
+            quarantine_id,
+            user["role"],
+            actor=user["username"],
+            company_id=company_id,
+        )
+        conn.commit()
+    return _ok(result)
+
+
 @app.get("/api/identity-reviews")
 def identity_reviews(user: dict = Depends(require_user)) -> dict:
-    del user
     from services.identity.resolve import list_reviews
 
     with app_connect() as conn:
-        return _ok({"reviews": list_reviews(conn)})
+        company_id = company_id_for_user(conn, user["username"])
+        return _ok({"reviews": list_reviews(conn, company_id)})
 
 
 @app.post("/api/identity-reviews/{review_id}/confirm")

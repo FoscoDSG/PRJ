@@ -8,16 +8,21 @@ from contextlib import redirect_stdout
 from io import StringIO
 from pathlib import Path
 
+import pytest
+
 from apps.cli import main
 from ontology.loader import load_merged
 from services.canonical.store import materialize
 from services.db import connect, password_hash
+from services.errors import AppError
+from services.identity.resolve import list_reviews
 from services.pipeline import (
     confirm_confident,
     confirm_mapping,
     ingest_csv,
     ingest_document,
     load_fixtures,
+    reject_document,
     reject_mapping,
     release_document,
     revoke_correction,
@@ -25,7 +30,6 @@ from services.pipeline import (
 from services.queries import list_mappings, list_table_files
 from services.testset import (
     MIN_MEASURED_CASES,
-    MIN_MEASURED_SOURCES,
     _case_source,
     _human_mapping_cases,
     _mapping_report,
@@ -310,15 +314,11 @@ def test_measures_and_folds_count_each_companys_shopify(tmp_path: Path):
             ).fetchone()["id"]
             confirm_mapping(conn, mapping_id, actor, "mapper", model, company_id=company_id)
         labels = [item["label"] for item in _human_mapping_cases(conn)]
-        keys = {_case_source(label) for label in labels}
-        assert keys == {f"{company_a}\x1fshopify", f"{company_b}\x1fshopify"}
+        assert {label["company_id"] for label in labels} == {company_a, company_b}
+        assert {_case_source(label) for label in labels} == {"shopify"}
         method, folds = _source_folds(labels)
-        assert method == "leave_one_source_out"
-        assert len(folds) == 2
-        assert {tuple(fold["test_sources"]) for fold in folds} == {
-            (f"{company_a}\x1fshopify",),
-            (f"{company_b}\x1fshopify",),
-        }
+        assert method == "single_source"
+        assert folds == []
 
         for company_id, actor in (
             (company_a, "mapper_a"),
@@ -364,24 +364,11 @@ def test_measures_and_folds_count_each_companys_shopify(tmp_path: Path):
 
         wide = [item["label"] for item in _human_mapping_cases(conn)]
         assert len(wide) >= MIN_MEASURED_CASES
-        assert len({_case_source(label) for label in wide}) >= MIN_MEASURED_SOURCES
+        assert {label["company_id"] for label in wide} == {company_a, company_b, company_c}
+        assert {_case_source(label) for label in wide} == {"shopify"}
         _report, threshold = _mapping_report(wide)
-        assert threshold["measured"] is True
-        folded = {
-            source
-            for fold in threshold["metrics"]["folds"]
-            for source in fold["test_sources"]
-        }
-        assert len(folded) == 3
-        assert all(source.endswith("\x1fshopify") for source in folded)
-        plain = []
-        for label in wide:
-            copy = dict(label)
-            copy.pop("company_id", None)
-            plain.append(copy)
-        assert len({_case_source(label) for label in plain}) == 1
-        _plain_report, plain_threshold = _mapping_report(plain)
-        assert plain_threshold["measured"] is False
+        assert threshold["measured"] is False
+        assert float(threshold["threshold"]) == 0.75
 
         learned_a = _learn(conn, model, company_a, "mapper_a", tmp_path, "email", "Alice due")
         learned_b = _learn(conn, model, company_b, "mapper_b", tmp_path, "vat", "Bruno due")
@@ -506,4 +493,144 @@ def test_single_company_demo_measure_matches_grouping_by_source_name():
         assert evaluated["threshold"]["threshold"] == threshold["threshold"]
         assert evaluated["threshold"]["measured"] == threshold["measured"]
         assert evaluated["threshold"]["method"] == threshold["method"]
+        conn.commit()
+
+
+def _order_note(order_key: str) -> str:
+    return (
+        "Da: buyer@example.com\n"
+        "Cliente: Alfa Srl\n"
+        "P.IVA: IT12345678901\n"
+        "Codice cliente: C1\n"
+        f"Ordine: {order_key}\n"
+        "Data: 2026-10-12\n"
+        "Importo: 100\n"
+        "\n"
+        "Righe:\n"
+        "ART-X 1 10\n"
+    )
+
+
+def _quarantine_row(conn, quarantine_id: str) -> dict:
+    return conn.execute(
+        """
+        SELECT status, company_id::text AS company_id, actor
+        FROM app.quarantine_documents
+        WHERE id = %s
+        """,
+        (quarantine_id,),
+    ).fetchone()
+
+
+def test_other_company_cannot_release_or_reject_a_shopify_document(tmp_path: Path):
+    company_a = _company("Quarantena A")
+    company_b = _company("Quarantena B")
+    _mapper("mapper_a", company_a)
+    _mapper("mapper_b", company_b)
+    model = load_merged()
+    to_release = tmp_path / "shopify.txt"
+    to_reject = tmp_path / "shopify_due.txt"
+    to_release.write_text(_order_note("5001"), encoding="utf-8")
+    to_reject.write_text(_order_note("5002"), encoding="utf-8")
+    with connect() as conn:
+        released = ingest_document(conn, to_release, "mapper_a", "mapper", model, company_id=company_a)
+        rejected = ingest_document(conn, to_reject, "mapper_a", "mapper", model, company_id=company_a)
+        assert _quarantine_row(conn, released["id"])["company_id"] == company_a
+        assert _quarantine_row(conn, rejected["id"])["company_id"] == company_a
+        with pytest.raises(AppError) as blocked_release:
+            release_document(
+                conn,
+                released["id"],
+                "mapper",
+                model,
+                actor="mapper_b",
+                company_id=company_b,
+            )
+        assert blocked_release.value.status == 404
+        with pytest.raises(AppError) as blocked_reject:
+            reject_document(
+                conn,
+                rejected["id"],
+                "mapper",
+                actor="mapper_b",
+                company_id=company_b,
+            )
+        assert blocked_reject.value.status == 404
+        assert _quarantine_row(conn, released["id"]) == {
+            "status": "open",
+            "company_id": company_a,
+            "actor": None,
+        }
+        assert _quarantine_row(conn, rejected["id"]) == {
+            "status": "open",
+            "company_id": company_a,
+            "actor": None,
+        }
+        proposed = conn.execute(
+            """
+            SELECT status FROM app.field_mappings
+            WHERE company_id = %s AND source_name LIKE 'shopify%%' AND valid_to IS NULL
+            """,
+            (company_a,),
+        ).fetchall()
+        assert proposed
+        assert {row["status"] for row in proposed} == {"proposed"}
+        opened = release_document(
+            conn,
+            released["id"],
+            "mapper",
+            model,
+            actor="mapper_a",
+            company_id=company_a,
+        )
+        refused = reject_document(
+            conn,
+            rejected["id"],
+            "mapper",
+            actor="mapper_a",
+            company_id=company_a,
+        )
+        assert opened["status"] == "released"
+        assert refused["status"] == "rejected"
+        assert _quarantine_row(conn, released["id"])["company_id"] == company_a
+        assert _quarantine_row(conn, released["id"])["actor"] == "mapper_a"
+        assert _quarantine_row(conn, rejected["id"])["company_id"] == company_a
+        assert _quarantine_row(conn, rejected["id"])["actor"] == "mapper_a"
+        conn.commit()
+
+
+def test_each_company_gets_its_own_name_review_for_the_same_codes(tmp_path: Path):
+    company_a = _company("Nomi A")
+    company_b = _company("Nomi B")
+    _mapper("mapper_a", company_a)
+    _mapper("mapper_b", company_b)
+    model = load_merged()
+    text = "ANAG_CLI,RAGIONE_SOCIALE\nC1,Mario Rossi Srl\nC2,M. Rossi SRL\n"
+    with connect() as conn:
+        for company_id, actor in ((company_a, "mapper_a"), (company_b, "mapper_b")):
+            path = _csv(tmp_path, f"{actor}.csv", text)
+            ingest_csv(conn, path, "shopify", actor, "mapper", "external", company_id=company_id)
+            confirm_confident(conn, "mapper", model, actor=actor, company_id=company_id)
+        materialize(conn, model)
+        stored = conn.execute(
+            """
+            SELECT id::text AS id, company_id::text AS company_id, left_key, right_key, status
+            FROM app.identity_reviews
+            WHERE status = 'open'
+            ORDER BY company_id::text, left_key
+            """
+        ).fetchall()
+        by_company = {}
+        for row in stored:
+            by_company.setdefault(row["company_id"], []).append(row)
+        assert set(by_company) == {company_a, company_b}
+        for company_id in (company_a, company_b):
+            pair = by_company[company_id]
+            assert len(pair) == 1
+            assert {pair[0]["left_key"], pair[0]["right_key"]} == {"C1", "C2"}
+        visible_a = {item["id"] for item in list_reviews(conn, company_a)}
+        visible_b = {item["id"] for item in list_reviews(conn, company_b)}
+        assert visible_a == {by_company[company_a][0]["id"]}
+        assert visible_b == {by_company[company_b][0]["id"]}
+        assert visible_a.isdisjoint(visible_b)
         conn.commit()

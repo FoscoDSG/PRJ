@@ -20,9 +20,10 @@ counted apart, from the origin column, as the latest decision of that
 mapping. not_sure on a file type is an error of that suggestion and is not
 a learning example. File-type measurement keeps the latest decision on the
 first batch only.
-Mapping folds are split by company and source. The same source name in
-two companies is two sources, both for the three-source minimum and for
-the folds. A source is never in both threshold selection and evaluation.
+Mapping folds are split by source name. Two companies that share a name
+count as one source for the threshold and for the folds. The cases
+themselves stay tied to their company. A source is never in both
+threshold selection and evaluation.
 The agent is not a source of labels. Evaluation
 reads the labelled cases, not the decisions log. The running agent is the
 rules baseline, so the report does not compare the two.
@@ -417,22 +418,18 @@ def _best_threshold(cases: list[dict[str, Any]]) -> float:
 
 
 def _case_source(label: dict[str, Any]) -> str:
-    """Fold key. An empty source stays empty.
+    """Fold key: the source name. An empty source stays empty.
 
-    Otherwise the key is the company and the source name, so two companies
-    that both use ``shopify`` are two sources. A missing company is the
-    empty string and does not merge with another company.
+    The company stays on the case. It does not split the threshold.
     """
     name = label.get("source_name")
     if name is None or str(name).strip() == "":
         return ""
-    company = label.get("company_id")
-    company_text = "" if company is None or str(company).strip() == "" else str(company)
-    return f"{company_text}\x1f{name}"
+    return str(name)
 
 
 def _source_folds(cases: list[dict[str, Any]]) -> tuple[str, list[dict[str, Any]]]:
-    """Group by company and source. Fewer than five sources: leave one source out."""
+    """Group by source name. Fewer than five sources: leave one source out."""
     grouped: dict[str, list[int]] = {}
     for index, label in enumerate(cases):
         grouped.setdefault(_case_source(label), []).append(index)
@@ -523,14 +520,14 @@ def _mapping_report(cases: list[dict[str, Any]]) -> tuple[dict[str, Any], dict[s
                 "minimum": MIN_MEASURED_CASES,
                 "fold_thresholds": chosen,
                 "folds": fold_reports,
-                "why": "mediana delle soglie scelte sui fold di training, per azienda e fonte",
+                "why": "mediana delle soglie scelte sui fold di training, per fonte",
             },
         }
     else:
         why = None
         if count >= MIN_MEASURED_CASES and source_count < MIN_MEASURED_SOURCES:
             why = (
-                f"meno di {MIN_MEASURED_SOURCES} fonti distinte (azienda e nome): "
+                f"meno di {MIN_MEASURED_SOURCES} fonti distinte: "
                 "fallback 0,75, non misurato"
             )
         threshold_row = _fallback_threshold(count, method, chosen, why=why)

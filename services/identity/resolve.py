@@ -50,6 +50,7 @@ def confirm_review(
     if not company_id:
         raise AppError(403, NO_COMPANY_UPLOAD)
     review = _lock_review(conn, review_id)
+    _refuse_other_company(review, company_id)
     if review["status"] != "open":
         raise AppError(409, QUEUE_MESSAGE)
     pair = _same_company_pair(
@@ -101,6 +102,7 @@ def reject_review(
     if not company_id:
         raise AppError(403, NO_COMPANY_UPLOAD)
     review = _lock_review(conn, review_id)
+    _refuse_other_company(review, company_id)
     if review["status"] != "open":
         raise AppError(409, QUEUE_MESSAGE)
     conn.execute(
@@ -114,7 +116,8 @@ def reject_review(
     return {"id": review_id, "status": "rejected"}
 
 
-def list_reviews(conn: psycopg.Connection) -> list[dict]:
+def list_reviews(conn: psycopg.Connection, company_id: str | None = None) -> list[dict]:
+    """This company's queue, plus rows written before a company was stored."""
     from services.revocation import state_histories
 
     rows = list(
@@ -122,8 +125,11 @@ def list_reviews(conn: psycopg.Connection) -> list[dict]:
             """
             SELECT id::text, entity_type, left_key, right_key, score, reason, status
             FROM app.identity_reviews
+            WHERE company_id IS NULL
+               OR (%s::uuid IS NOT NULL AND company_id = %s::uuid)
             ORDER BY created_at DESC
-            """
+            """,
+            (company_id, company_id),
         ).fetchall()
     )
     histories = state_histories(
@@ -164,6 +170,12 @@ def _same_company_pair(lefts: list[dict], rights: list[dict]) -> tuple[dict, dic
     if len(pairs) != 1:
         return None
     return pairs[0]
+
+
+def _refuse_other_company(review: dict, company_id: str) -> None:
+    stored = review.get("company_id")
+    if stored is not None and str(stored) != company_id:
+        raise AppError(404, "Revisione identità assente")
 
 
 def _lock_review(conn: psycopg.Connection, review_id: str) -> dict:
