@@ -60,7 +60,8 @@ class ModelProvider(Protocol):
 def build_context(conn: psycopg.Connection, order_id: str) -> dict[str, Any]:
     order = conn.execute(
         """
-        SELECT id::text, business_key FROM app.entities
+        SELECT id::text, business_key, company_id::text AS company_id
+        FROM app.entities
         WHERE id = %s AND type = 'Order' AND valid_to IS NULL
         """,
         (order_id,),
@@ -69,7 +70,8 @@ def build_context(conn: psycopg.Connection, order_id: str) -> dict[str, Any]:
         raise ValueError("Ordine assente")
     order_facts = _fact_rows(conn, order["id"])
     customer_key = _value(order_facts, "customer_source_key")
-    customer_id = _alias(conn, "Customer", str(customer_key)) if customer_key else None
+    company_id = order["company_id"]
+    customer_id = _alias(conn, "Customer", str(customer_key), company_id) if customer_key else None
     customer_facts = _fact_rows(conn, customer_id) if customer_id else []
     lines = []
     evidence: list[dict[str, Any]] = []
@@ -81,16 +83,17 @@ def build_context(conn: psycopg.Connection, order_id: str) -> dict[str, Any]:
         FROM app.entities e
         JOIN app.facts f ON f.entity_id = e.id AND f.valid_to IS NULL
         WHERE e.type = 'OrderLine' AND e.valid_to IS NULL
+          AND e.company_id IS NOT DISTINCT FROM %s::uuid
           AND f.property = 'order_source_key' AND f.value = %s::jsonb
         """,
-        (json.dumps(order["business_key"]),),
+        (company_id, json.dumps(order["business_key"])),
     ).fetchall()
     product_keys: list[str] = []
     for line in line_rows:
         facts = _fact_rows(conn, line["id"])
         product_key = str(_value(facts, "product_source_key") or "")
         product_keys.append(product_key)
-        product_id = _alias(conn, "Product", product_key)
+        product_id = _alias(conn, "Product", product_key, company_id)
         product_facts = _fact_rows(conn, product_id) if product_id else []
         lines.append(
             {
@@ -104,13 +107,13 @@ def build_context(conn: psycopg.Connection, order_id: str) -> dict[str, Any]:
         )
         _collect(evidence, "OrderLine", f"{order['business_key']}|{product_key}", facts, ("quantity", "shortage", "unit_price"))
         _collect(evidence, "Product", product_key, product_facts, ("cost", "name"))
-        stock_id = _stock_for_product(conn, product_key)
+        stock_id = _stock_for_product(conn, product_key, company_id)
         if stock_id:
             stock_facts = _fact_rows(conn, stock_id)
             _collect(evidence, "StockPosition", product_key, stock_facts, ("on_hand", "reserved", "available"))
     suppliers = []
     for product_key in product_keys:
-        for supplier in _suppliers_for_product(conn, product_key):
+        for supplier in _suppliers_for_product(conn, product_key, company_id):
             facts = _fact_rows(conn, supplier["id"])
             suppliers.append(
                 {
@@ -195,36 +198,51 @@ def _collect(evidence: list[dict], entity_type: str, entity_key: str, facts: lis
         )
 
 
-def _alias(conn: psycopg.Connection, entity_type: str, alias: str) -> str | None:
+def _alias(
+    conn: psycopg.Connection,
+    entity_type: str,
+    alias: str,
+    company_id: str | None,
+) -> str | None:
     if not alias:
         return None
     row = conn.execute(
         """
         SELECT entity_id::text FROM app.identity_aliases
         WHERE entity_type = %s AND alias = %s
+          AND company_id IS NOT DISTINCT FROM %s::uuid
         """,
-        (entity_type, alias),
+        (entity_type, alias, company_id),
     ).fetchone()
     return row["entity_id"] if row else None
 
 
-def _stock_for_product(conn: psycopg.Connection, product_key: str) -> str | None:
+def _stock_for_product(
+    conn: psycopg.Connection,
+    product_key: str,
+    company_id: str | None,
+) -> str | None:
     row = conn.execute(
         """
         SELECT e.id::text AS entity_id
         FROM app.entities e
         JOIN app.facts f ON f.entity_id = e.id AND f.valid_to IS NULL
         WHERE e.type = 'StockPosition' AND e.valid_to IS NULL
+          AND e.company_id IS NOT DISTINCT FROM %s::uuid
           AND f.property = 'product_source_key' AND f.value = %s::jsonb
         ORDER BY e.business_key
         LIMIT 1
         """,
-        (json.dumps(product_key),),
+        (company_id, json.dumps(product_key)),
     ).fetchone()
     return row["entity_id"] if row else None
 
 
-def _suppliers_for_product(conn: psycopg.Connection, product_key: str) -> list[dict]:
+def _suppliers_for_product(
+    conn: psycopg.Connection,
+    product_key: str,
+    company_id: str | None,
+) -> list[dict]:
     return list(
         conn.execute(
             """
@@ -232,9 +250,10 @@ def _suppliers_for_product(conn: psycopg.Connection, product_key: str) -> list[d
             FROM app.entities e
             JOIN app.facts f ON f.entity_id = e.id AND f.valid_to IS NULL
             WHERE e.type = 'Supplier' AND e.valid_to IS NULL
+              AND e.company_id IS NOT DISTINCT FROM %s::uuid
               AND f.property = 'product_source_key' AND f.value = %s::jsonb
             ORDER BY e.business_key
             """,
-            (json.dumps(product_key),),
+            (company_id, json.dumps(product_key)),
         ).fetchall()
     )

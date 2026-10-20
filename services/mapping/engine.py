@@ -222,7 +222,12 @@ def _samples(rows: list[dict[str, Any]], column: str) -> list[Any]:
     return values
 
 
-def _revoked_confirmation_only(conn: psycopg.Connection, source_name: str, column: str) -> bool:
+def _revoked_confirmation_only(
+    conn: psycopg.Connection,
+    source_name: str,
+    column: str,
+    company_id: str | None,
+) -> bool:
     """True when every open row is a confirmation whose latest decision is revoked.
 
     The next upload can then propose the column again. The old row stays
@@ -240,8 +245,9 @@ def _revoked_confirmation_only(conn: psycopg.Connection, source_name: str, colum
                ) AS latest
         FROM app.field_mappings fm
         WHERE fm.source_name = %s AND fm.source_field = %s AND fm.valid_to IS NULL
+          AND fm.company_id IS NOT DISTINCT FROM %s::uuid
         """,
-        (source_name, column),
+        (source_name, column, company_id),
     ).fetchall()
     if not rows:
         return False
@@ -272,17 +278,18 @@ def propose_mappings(
         SELECT column_hash, columns
         FROM app.schema_snapshots
         WHERE source_name = %s
+          AND company_id IS NOT DISTINCT FROM %s::uuid
         ORDER BY captured_at DESC
         LIMIT 1
         """,
-        (source_name,),
+        (source_name, company_id),
     ).fetchone()
     conn.execute(
         """
-        INSERT INTO app.schema_snapshots (id, source_name, column_hash, columns)
-        VALUES (%s, %s, %s, %s)
+        INSERT INTO app.schema_snapshots (id, source_name, column_hash, columns, company_id)
+        VALUES (%s, %s, %s, %s, %s)
         """,
-        (str(uuid.uuid4()), source_name, column_hash, Json(columns)),
+        (str(uuid.uuid4()), source_name, column_hash, Json(columns), company_id),
     )
     drift = None
     if previous and previous["column_hash"] != column_hash:
@@ -294,10 +301,10 @@ def propose_mappings(
         drift_id = str(uuid.uuid4())
         conn.execute(
             """
-            INSERT INTO app.drift_reviews (id, source_name, previous_hash, new_hash, diff, status)
-            VALUES (%s, %s, %s, %s, %s, 'open')
+            INSERT INTO app.drift_reviews (id, source_name, previous_hash, new_hash, diff, status, company_id)
+            VALUES (%s, %s, %s, %s, %s, 'open', %s)
             """,
-            (drift_id, source_name, previous["column_hash"], column_hash, Json(diff)),
+            (drift_id, source_name, previous["column_hash"], column_hash, Json(diff), company_id),
         )
         drift = {"id": drift_id, "diff": diff}
         for removed in diff["removed"]:
@@ -306,8 +313,9 @@ def propose_mappings(
                 UPDATE app.field_mappings
                 SET valid_to = now()
                 WHERE source_name = %s AND source_field = %s AND valid_to IS NULL
+                  AND company_id IS NOT DISTINCT FROM %s::uuid
                 """,
-                (source_name, removed),
+                (source_name, removed, company_id),
             )
     created = []
     for column in columns:
@@ -317,8 +325,9 @@ def propose_mappings(
                    source_decision_id::text AS source_decision_id
             FROM app.field_mappings
             WHERE source_name = %s AND source_field = %s AND valid_to IS NULL
+              AND company_id IS NOT DISTINCT FROM %s::uuid
             """,
-            (source_name, column),
+            (source_name, column, company_id),
         ).fetchall()
         target_type, target_property, confidence, _rule = assigned_mapping(profile, column)
         origin = "rule"
@@ -347,7 +356,7 @@ def propose_mappings(
             target_property = correction["target_property_corrected"]
             origin = "learned"
             source_decision_id = correction["id"]
-        elif open_rows and not _revoked_confirmation_only(conn, source_name, column):
+        elif open_rows and not _revoked_confirmation_only(conn, source_name, column, company_id):
             continue
         mapping_id = str(uuid.uuid4())
         conn.execute(

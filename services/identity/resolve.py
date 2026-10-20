@@ -52,26 +52,34 @@ def confirm_review(
     review = _lock_review(conn, review_id)
     if review["status"] != "open":
         raise AppError(409, QUEUE_MESSAGE)
-    left = _entity_by_key(conn, review["entity_type"], review["left_key"])
-    right = _entity_by_key(conn, review["entity_type"], review["right_key"])
-    if left and right and left != right:
+    pair = _same_company_pair(
+        _entities_by_key(conn, review["entity_type"], review["left_key"]),
+        _entities_by_key(conn, review["entity_type"], review["right_key"]),
+    )
+    if pair is not None:
+        left, right = pair
         conn.execute(
             """
             UPDATE app.identity_aliases
             SET entity_id = %s
             WHERE entity_id = %s
             """,
-            (left, right),
+            (left["id"], right["id"]),
         )
         conn.execute(
             """
-            INSERT INTO app.identity_aliases (entity_type, alias, entity_id)
-            VALUES (%s, %s, %s)
-            ON CONFLICT (entity_type, alias) DO UPDATE SET entity_id = EXCLUDED.entity_id
+            INSERT INTO app.identity_aliases (entity_type, alias, entity_id, company_id)
+            VALUES (%s, %s, %s, %s)
+            ON CONFLICT (company_id, entity_type, alias) DO UPDATE SET entity_id = EXCLUDED.entity_id
             """,
-            (review["entity_type"], review["right_key"], left),
+            (
+                review["entity_type"],
+                review["right_key"],
+                left["id"],
+                left["company_id"],
+            ),
         )
-        conn.execute("UPDATE app.entities SET valid_to = now() WHERE id = %s", (right,))
+        conn.execute("UPDATE app.entities SET valid_to = now() WHERE id = %s", (right["id"],))
     conn.execute(
         """
         UPDATE app.identity_reviews
@@ -131,15 +139,31 @@ def list_reviews(conn: psycopg.Connection) -> list[dict]:
     return rows
 
 
-def _entity_by_key(conn: psycopg.Connection, entity_type: str, business_key: str) -> str | None:
-    row = conn.execute(
-        """
-        SELECT id::text FROM app.entities
-        WHERE type = %s AND business_key = %s AND valid_to IS NULL
-        """,
-        (entity_type, business_key),
-    ).fetchone()
-    return row["id"] if row else None
+def _entities_by_key(conn: psycopg.Connection, entity_type: str, business_key: str) -> list[dict]:
+    return list(
+        conn.execute(
+            """
+            SELECT id::text, company_id::text AS company_id
+            FROM app.entities
+            WHERE type = %s AND business_key = %s AND valid_to IS NULL
+            """,
+            (entity_type, business_key),
+        ).fetchall()
+    )
+
+
+def _same_company_pair(lefts: list[dict], rights: list[dict]) -> tuple[dict, dict] | None:
+    """Merge only when one company owns both keys. Two companies stay apart."""
+    pairs = []
+    for left in lefts:
+        for right in rights:
+            if left["id"] == right["id"]:
+                continue
+            if left["company_id"] == right["company_id"]:
+                pairs.append((left, right))
+    if len(pairs) != 1:
+        return None
+    return pairs[0]
 
 
 def _lock_review(conn: psycopg.Connection, review_id: str) -> dict:

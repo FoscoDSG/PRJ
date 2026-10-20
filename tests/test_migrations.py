@@ -39,6 +39,8 @@ def _rows(conn, query: str, params: tuple | None = None) -> list[tuple]:
 _REPLACED_INDEXES = frozenset({
     "app.landing_batches_source_name_watermark_key",
     "app.ingest_watermarks_pkey",
+    "app.entities_type_business_key_key",
+    "app.identity_aliases_pkey",
 })
 
 
@@ -209,12 +211,13 @@ _FRESH = [
     {"version": "0012", "name": "decision_company_guard", "baselined": False},
     {"version": "0013", "name": "decided_row_revocation", "baselined": False},
     {"version": "0014", "name": "revoked_outcome_guard", "baselined": False},
+    {"version": "0015", "name": "company_source_reads", "baselined": False},
 ]
 
 
 def test_migration_files_do_not_drop_or_truncate():
     files = migration_files()
-    assert [item.version for item in files] == ["0001", "0002", "0003", "0004", "0005", "0006", "0007", "0008", "0009", "0010", "0011", "0012", "0013", "0014"]
+    assert [item.version for item in files] == ["0001", "0002", "0003", "0004", "0005", "0006", "0007", "0008", "0009", "0010", "0011", "0012", "0013", "0014", "0015"]
     assert [item.name for item in files] == [
         "initial",
         "provenance_audit_quality",
@@ -230,6 +233,7 @@ def test_migration_files_do_not_drop_or_truncate():
         "decision_company_guard",
         "decided_row_revocation",
         "revoked_outcome_guard",
+        "company_source_reads",
     ]
     for item in files:
         text = item.path.read_text(encoding="utf-8")
@@ -435,6 +439,7 @@ def test_legacy_database_is_baselined_without_touching_data_or_audit():
         {"version": "0012", "name": "decision_company_guard", "baselined": False},
         {"version": "0013", "name": "decided_row_revocation", "baselined": False},
         {"version": "0014", "name": "revoked_outcome_guard", "baselined": False},
+        {"version": "0015", "name": "company_source_reads", "baselined": False},
     ]
     assert again == []
     assert third == []
@@ -463,6 +468,7 @@ def test_legacy_database_is_baselined_without_touching_data_or_audit():
         ("0012", "decision_company_guard", False),
         ("0013", "decided_row_revocation", False),
         ("0014", "revoked_outcome_guard", False),
+        ("0015", "company_source_reads", False),
     ]
 
 
@@ -709,6 +715,7 @@ def test_upgraded_schema_is_baselined_without_touching_audit():
         {"version": "0012", "name": "decision_company_guard", "baselined": False},
         {"version": "0013", "name": "decided_row_revocation", "baselined": False},
         {"version": "0014", "name": "revoked_outcome_guard", "baselined": False},
+        {"version": "0015", "name": "company_source_reads", "baselined": False},
     ]
     assert again == []
     assert fact == [("0.42", "system_of_record", "unknown", None)]
@@ -728,6 +735,7 @@ def test_upgraded_schema_is_baselined_without_touching_audit():
         ("0012", "decision_company_guard", False),
         ("0013", "decided_row_revocation", False),
         ("0014", "revoked_outcome_guard", False),
+        ("0015", "company_source_reads", False),
     ]
 
 

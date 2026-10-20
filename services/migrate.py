@@ -95,6 +95,10 @@ _MIGRATION_ALLOWLIST: dict[str, frozenset[str]] = {
     "0014_revoked_outcome_guard.sql": frozenset({
         "ALTER TABLE app.recommendations DROP CONSTRAINT IF EXISTS recommendations_status_check",
     }),
+    "0015_company_source_reads.sql": frozenset({
+        "ALTER TABLE app.entities DROP CONSTRAINT IF EXISTS entities_type_business_key_key",
+        "ALTER TABLE app.identity_aliases DROP CONSTRAINT IF EXISTS identity_aliases_pkey",
+    }),
 }
 
 # Columns created by db/schema.sql. Extra columns still count as the legacy

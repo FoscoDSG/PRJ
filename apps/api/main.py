@@ -397,7 +397,7 @@ def mappings(user: dict = Depends(require_user)) -> dict:
         company_id = company_id_for_user(conn, user["username"])
         return _ok({
             "mappings": list_mappings(conn, user["role"], ontology(), company_id),
-            "drift": list_drift(conn),
+            "drift": list_drift(conn, company_id),
             "files": list_table_files(conn, company_id),
         })
 
@@ -769,7 +769,8 @@ def adjust_stock(product_key: str, body: StockBody, user: dict = Depends(require
         raise AppError(403, "Serve il ruolo mapper")
     _require_company(user["username"])
     with app_connect() as conn:
-        expired = adjust_on_hand(conn, ontology(), product_key, body.on_hand)
+        company_id = company_id_for_user(conn, user["username"])
+        expired = adjust_on_hand(conn, ontology(), product_key, body.on_hand, company_id=company_id)
         conn.commit()
     return {"expired": expired}
 

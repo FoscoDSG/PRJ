@@ -118,14 +118,18 @@ def _learned_decisions(
     return {row["id"]: dict(row) for row in found}
 
 
-def list_drift(conn: psycopg.Connection) -> list[dict]:
+def list_drift(conn: psycopg.Connection, company_id: str | None = None) -> list[dict]:
+    """Open and closed column changes of this company. A legacy row has no company."""
     rows = list(
         conn.execute(
             """
             SELECT id::text, source_name, previous_hash, new_hash, diff, status, created_at
             FROM app.drift_reviews
+            WHERE company_id IS NULL
+               OR (%s::uuid IS NOT NULL AND company_id = %s::uuid)
             ORDER BY created_at DESC
-            """
+            """,
+            (company_id, company_id),
         ).fetchall()
     )
     histories = state_histories(
@@ -145,7 +149,8 @@ def list_orders(conn: psycopg.Connection, role: str) -> list[dict]:
     _threshold, measured, support = active_threshold(conn)
     rows = conn.execute(
         """
-        SELECT id::text, business_key FROM app.entities
+        SELECT id::text, business_key, company_id::text AS company_id
+        FROM app.entities
         WHERE type = 'Order' AND valid_to IS NULL
         ORDER BY business_key
         """
@@ -157,7 +162,8 @@ def get_order(conn: psycopg.Connection, order_id: str, role: str) -> dict | None
     _threshold, measured, support = active_threshold(conn)
     row = conn.execute(
         """
-        SELECT id::text, type, business_key FROM app.entities
+        SELECT id::text, type, business_key, company_id::text AS company_id
+        FROM app.entities
         WHERE id = %s AND type = 'Order' AND valid_to IS NULL
         """,
         (order_id,),
@@ -166,12 +172,12 @@ def get_order(conn: psycopg.Connection, order_id: str, role: str) -> dict | None
         return None
     summary = _order_summary(conn, row, role, measured, support)
     summary["facts"] = _facts(conn, order_id, role, measured, support, "Order")
-    summary["lines"] = _lines(conn, row["business_key"], role, measured, support)
+    summary["lines"] = _lines(conn, row["business_key"], role, measured, support, row["company_id"])
     summary["edges"] = _edges(conn, order_id)
     summary["stock_formula"] = STOCK_FORMULA
     customer_key = next((fact["value"] for fact in summary["facts"] if fact["property"] == "customer_source_key"), None)
     if customer_key and customer_key != MASK:
-        customer_id = _alias(conn, "Customer", str(customer_key))
+        customer_id = _alias(conn, "Customer", str(customer_key), row["company_id"])
         summary["customer_id"] = customer_id
     return summary
 
@@ -369,7 +375,7 @@ def _order_summary(conn: psycopg.Connection, row: dict, role: str, measured: boo
     customer_name = None
     customer_id = None
     if customer_key:
-        customer_id = _alias(conn, "Customer", str(customer_key))
+        customer_id = _alias(conn, "Customer", str(customer_key), row.get("company_id"))
         if customer_id:
             customer_name = MASK if _raw_fact(conn, customer_id, "company_name") is not None else None
     return {
@@ -385,7 +391,14 @@ def _order_summary(conn: psycopg.Connection, row: dict, role: str, measured: boo
     }
 
 
-def _lines(conn: psycopg.Connection, order_key: str, role: str, measured: bool, support: int) -> list[dict]:
+def _lines(
+    conn: psycopg.Connection,
+    order_key: str,
+    role: str,
+    measured: bool,
+    support: int,
+    company_id: str | None,
+) -> list[dict]:
     import json
 
     rows = conn.execute(
@@ -394,10 +407,11 @@ def _lines(conn: psycopg.Connection, order_key: str, role: str, measured: bool, 
         FROM app.entities e
         JOIN app.facts f ON f.entity_id = e.id AND f.valid_to IS NULL
         WHERE e.type = 'OrderLine' AND e.valid_to IS NULL
+          AND e.company_id IS NOT DISTINCT FROM %s::uuid
           AND f.property = 'order_source_key' AND f.value = %s::jsonb
         ORDER BY e.business_key
         """,
-        (json.dumps(order_key),),
+        (company_id, json.dumps(order_key)),
     ).fetchall()
     lines = []
     for row in rows:
@@ -411,10 +425,11 @@ def _lines(conn: psycopg.Connection, order_key: str, role: str, measured: bool, 
                 FROM app.entities e
                 JOIN app.facts f ON f.entity_id = e.id AND f.valid_to IS NULL
                 WHERE e.type = 'StockPosition'
+                  AND e.company_id IS NOT DISTINCT FROM %s::uuid
                   AND f.property = 'product_source_key' AND f.value = %s::jsonb
                 LIMIT 1
                 """,
-                (json.dumps(str(product_key)),),
+                (company_id, json.dumps(str(product_key))),
             ).fetchone()
             if stock_row:
                 stock_facts = _facts(conn, stock_row["id"], role, measured, support, "StockPosition")
@@ -511,12 +526,18 @@ def _raw_fact(conn: psycopg.Connection, entity_id: str, name: str) -> Any:
     return None if row is None else stable(row["value"])
 
 
-def _alias(conn: psycopg.Connection, entity_type: str, alias: str) -> str | None:
+def _alias(
+    conn: psycopg.Connection,
+    entity_type: str,
+    alias: str,
+    company_id: str | None,
+) -> str | None:
     row = conn.execute(
         """
         SELECT entity_id::text FROM app.identity_aliases
         WHERE entity_type = %s AND alias = %s
+          AND company_id IS NOT DISTINCT FROM %s::uuid
         """,
-        (entity_type, alias),
+        (entity_type, alias, company_id),
     ).fetchone()
     return row["entity_id"] if row else None
