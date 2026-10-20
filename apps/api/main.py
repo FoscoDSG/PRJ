@@ -292,17 +292,20 @@ async def ingest_document_route(file: UploadFile = File(...), user: dict = Depen
 
 @app.get("/api/quarantine")
 def quarantine(user: dict = Depends(require_user)) -> dict:
-    del user
     from services.revocation import state_histories
 
     with app_connect() as conn:
+        company_id = company_id_for_user(conn, user["username"])
         rows = list(
             conn.execute(
                 """
                 SELECT id::text, source_name, order_key, reasons, status
                 FROM app.quarantine_documents
+                WHERE company_id IS NULL
+                   OR (%s::uuid IS NOT NULL AND company_id = %s::uuid)
                 ORDER BY created_at DESC
-                """
+                """,
+                (company_id, company_id),
             ).fetchall()
         )
         histories = state_histories(

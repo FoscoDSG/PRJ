@@ -634,3 +634,85 @@ def test_each_company_gets_its_own_name_review_for_the_same_codes(tmp_path: Path
         assert visible_b == {by_company[company_b][0]["id"]}
         assert visible_a.isdisjoint(visible_b)
         conn.commit()
+
+
+_QUARANTINE_FIELDS = {
+    "id",
+    "source_name",
+    "order_key",
+    "reasons",
+    "status",
+    "history",
+    "executed",
+}
+
+
+def test_each_company_sees_only_its_own_quarantine_documents(tmp_path: Path):
+    from fastapi.testclient import TestClient
+
+    from apps.api.main import app
+
+    company_a = _company("Quarantena lista A")
+    company_b = _company("Quarantena lista B")
+    _mapper("mapper_lista_a", company_a)
+    _mapper("mapper_lista_b", company_b)
+    model = load_merged()
+    folder_a = tmp_path / "a"
+    folder_b = tmp_path / "b"
+    folder_a.mkdir()
+    folder_b.mkdir()
+    (folder_a / "shopify.txt").write_text(_order_note("5101"), encoding="utf-8")
+    (folder_b / "shopify.txt").write_text(_order_note("5102"), encoding="utf-8")
+    legacy_id = str(uuid.uuid4())
+    with connect() as conn:
+        held_a = ingest_document(
+            conn, folder_a / "shopify.txt", "mapper_lista_a", "mapper", model, company_id=company_a
+        )
+        held_b = ingest_document(
+            conn, folder_b / "shopify.txt", "mapper_lista_b", "mapper", model, company_id=company_b
+        )
+        conn.execute(
+            """
+            INSERT INTO app.quarantine_documents (id, source_name, order_key, reasons, status)
+            VALUES (%s, 'shopify', '5099', '[]'::jsonb, 'open')
+            """,
+            (legacy_id,),
+        )
+        conn.commit()
+    with TestClient(app) as client:
+        first = client.post(
+            "/api/login",
+            json={"username": "mapper_lista_a", "password": "secret-mapper-1"},
+        )
+        assert first.status_code == 200, first.text
+        seen_a = client.get("/api/quarantine").json()["documents"]
+        second = client.post(
+            "/api/login",
+            json={"username": "mapper_lista_b", "password": "secret-mapper-1"},
+        )
+        assert second.status_code == 200, second.text
+        seen_b = client.get("/api/quarantine").json()["documents"]
+    for documents in (seen_a, seen_b):
+        assert documents
+        assert all(set(item) == _QUARANTINE_FIELDS for item in documents)
+    ids_a = {item["id"] for item in seen_a}
+    ids_b = {item["id"] for item in seen_b}
+    orders_a = {item["order_key"] for item in seen_a}
+    orders_b = {item["order_key"] for item in seen_b}
+    assert held_a["id"] in ids_a and "5101" in orders_a
+    assert held_b["id"] in ids_b and "5102" in orders_b
+    assert legacy_id in ids_a and legacy_id in ids_b and "5099" in orders_a and "5099" in orders_b
+    assert held_b["id"] not in ids_a and "5102" not in orders_a
+    assert held_a["id"] not in ids_b and "5101" not in orders_b
+    with connect() as conn:
+        owners = conn.execute(
+            """
+            SELECT id::text AS id, company_id::text AS company_id
+            FROM app.quarantine_documents
+            WHERE id = ANY(%s::uuid[])
+            """,
+            (list(ids_a | ids_b),),
+        ).fetchall()
+    by_id = {row["id"]: row["company_id"] for row in owners}
+    assert all(by_id[item_id] in (None, company_a) for item_id in ids_a)
+    assert all(by_id[item_id] in (None, company_b) for item_id in ids_b)
