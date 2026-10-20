@@ -738,6 +738,8 @@ def run_agents(conn: psycopg.Connection, *, actor: str, role: str, model: Any | 
         result = run_order_agent(conn, order["id"], provider)
         if not result["actions"]:
             continue
+        from services.cash.catalog import ORDER_PROCESS_ID, ORDER_STEP_ID
+
         recommendation_id = propose(
             conn,
             order_id=order["id"],
@@ -753,6 +755,8 @@ def run_agents(conn: psycopg.Connection, *, actor: str, role: str, model: Any | 
             requires_cfo=requires_cfo(result["amount"]),
             actor=actor,
             role=role,
+            process_id=ORDER_PROCESS_ID,
+            step_id=ORDER_STEP_ID,
         )
         created.append(recommendation_id)
     return created

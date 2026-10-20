@@ -69,3 +69,8 @@ relations:
   - {name: suppliedBy, from: Product, to: Supplier}
   - {name: storedAt, from: StockPosition, to: Warehouse}
   - {name: triggered, from: Order, to: Event}
+processes:
+  - id: order_exception
+    label: Eccezione d'ordine
+    steps:
+      - {id: shortage, label: Disponibilità insufficiente}

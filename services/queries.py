@@ -214,13 +214,13 @@ def get_customer(conn: psycopg.Connection, customer_id: str, role: str) -> dict 
     }
 
 
-def list_inbox(conn: psycopg.Connection, role: str) -> list[dict]:
+def list_inbox(conn: psycopg.Connection, role: str, company_id: str | None = None) -> list[dict]:
     rows = conn.execute(
         """
         SELECT r.id::text, r.order_entity_id::text, e.business_key AS order_key,
                r.problem, r.evidence, r.evidence_hash, r.actions, r.expected_impact,
                r.risk, r.confidence, r.confidence_method, r.confidence_rule,
-               r.status, r.requires_cfo, r.created_at
+               r.status, r.requires_cfo, r.created_at, r.process_id, r.step_id
         FROM app.recommendations r
         JOIN app.entities e ON e.id = r.order_entity_id
         ORDER BY r.created_at DESC
@@ -257,7 +257,277 @@ def list_inbox(conn: psycopg.Connection, role: str) -> list[dict]:
         item["history"] = histories.get(item["id"], [])
         item["executed"] = item["status"] == "executed"
         item["executed_message"] = EXECUTED_MESSAGE if item["executed"] else ""
+    from ontology.loader import load_merged
+    from services.cash.catalog import ORDER_PROCESS_ID, ORDER_STEP_ID
+    from services.ontology_view import catalog_pair
+
+    model = load_merged()
+    for item in inbox:
+        process_id = item.get("process_id") or ORDER_PROCESS_ID
+        step_id = item.get("step_id") or ORDER_STEP_ID
+        process, step = catalog_pair(model, process_id, step_id)
+        item["process"] = process
+        item["step"] = step
+        item["kind"] = "order_exception"
+        item["headline"] = f"Ordine {item.get('order_key') or ''}"
+        item.pop("process_id", None)
+        item.pop("step_id", None)
+    if company_id:
+        inbox.extend(_payment_inbox(conn, role, company_id, model))
     return inbox
+
+
+def _payment_inbox(conn: psycopg.Connection, role: str, company_id: str, model) -> list[dict]:
+    """Proposals of this company. Another company is not in the result."""
+    from services.ontology_view import catalog_pair
+
+    rows = conn.execute(
+        """
+        SELECT p.id::text, p.payment_entity_id::text, e.business_key,
+               p.problem_amount AS allocated_amount, p.criteria, p.score,
+               p.confidence_rule, p.evidence, p.evidence_hash, p.source_name,
+               p.process_id, p.step_id, p.created_at, p.invoice_entity_id::text,
+               inv.business_key AS invoice_number
+        FROM (
+          SELECT id, payment_entity_id, invoice_entity_id, allocated_amount AS problem_amount,
+                 criteria, score, confidence_rule, evidence, evidence_hash, source_name,
+                 process_id, step_id, created_at, company_id
+          FROM app.payment_proposals
+        ) p
+        JOIN app.entities e ON e.id = p.payment_entity_id
+        JOIN app.entities inv ON inv.id = p.invoice_entity_id
+        WHERE p.company_id = %s::uuid
+        ORDER BY p.created_at DESC
+        """,
+        (company_id,),
+    ).fetchall()
+    if not rows:
+        return []
+    decisions = conn.execute(
+        """
+        SELECT id::text, proposal_id::text, decision, actor, decided_at,
+               failed_criteria, reason, revokes_decision_id::text
+        FROM app.payment_decisions
+        WHERE company_id = %s::uuid
+        ORDER BY decided_at, id
+        """,
+        (company_id,),
+    ).fetchall()
+    by_proposal: dict[str, list[dict]] = {}
+    for row in decisions:
+        if row["proposal_id"]:
+            by_proposal.setdefault(row["proposal_id"], []).append(dict(row))
+    revoked = {row["revokes_decision_id"] for row in decisions if row["revokes_decision_id"]}
+    items = []
+    for row in rows:
+        process, step = catalog_pair(model, row["process_id"], row["step_id"])
+        history = []
+        latest = None
+        for decision in by_proposal.get(row["id"], []):
+            if decision["decision"] == "revoked":
+                continue
+            history.append(
+                {
+                    "id": decision["id"],
+                    "decision": decision["decision"],
+                    "actor": decision["actor"],
+                    "decided_at": _when(decision["decided_at"]),
+                    "revoked": decision["id"] in revoked,
+                    "failed_criteria": decision.get("failed_criteria") or [],
+                }
+            )
+            if decision["id"] not in revoked:
+                latest = decision
+        status = "proposed"
+        failed: list[str] = []
+        if latest is not None:
+            status = {"confirm": "confirmed", "correct": "corrected", "reject": "rejected"}.get(
+                latest["decision"], "proposed"
+            )
+            failed = list(latest.get("failed_criteria") or [])
+        amount = stable(row["allocated_amount"])
+        if role not in PRIVILEGED:
+            amount = MASK
+        evidence = _mask_evidence(row["evidence"], role)
+        evidence = redact(evidence)
+        items.append(
+            {
+                "id": row["id"],
+                "kind": "payment_match",
+                "order_entity_id": row["payment_entity_id"],
+                "order_key": row["business_key"],
+                "headline": f"Incasso {row['business_key']}",
+                "problem": (
+                    f"Proposta di abbinamento sulla fattura {row['invoice_number']}. "
+                    "La fattura non viene chiusa."
+                ),
+                "evidence": evidence,
+                "evidence_hash": row["evidence_hash"],
+                "actions": [
+                    {
+                        "type": "allocatePayment",
+                        "params": {
+                            "invoice": row["invoice_number"],
+                            "allocated_amount": amount,
+                        },
+                    }
+                ],
+                "expected_impact": "La fattura resta aperta finché una persona non decide.",
+                "risk": "low",
+                "confidence": stable(row["score"]),
+                "confidence_method": "rule",
+                "confidence_rule": row["confidence_rule"],
+                "status": status,
+                "requires_cfo": False,
+                "created_at": row["created_at"],
+                "blocked_reason": None,
+                "preview": {"formula": "La regola non chiude la fattura.", "payloads": []},
+                "dry_run": None,
+                "history": history,
+                "executed": False,
+                "executed_message": "",
+                "process": process,
+                "step": step,
+                "criteria": row["criteria"],
+                "failed_criteria": failed,
+                "invoice_id": row["invoice_entity_id"],
+                "payment_id": row["payment_entity_id"],
+                "allocated_amount": amount,
+            }
+        )
+    return items
+
+
+def _when(value) -> str:
+    if value is None:
+        return ""
+    return value.isoformat() if hasattr(value, "isoformat") else str(value)
+
+
+def get_cash_document(
+    conn: psycopg.Connection,
+    entity_id: str,
+    type_name: str,
+    role: str,
+    company_id: str | None,
+) -> dict | None:
+    """One invoice or payment of this company. Another company, or none, is absent."""
+    if not company_id:
+        return None
+    import uuid
+
+    try:
+        uuid.UUID(str(entity_id))
+    except ValueError:
+        return None
+    row = conn.execute(
+        """
+        SELECT id::text, type, business_key, company_id::text AS company_id
+        FROM app.entities
+        WHERE id = %s AND type = %s AND valid_to IS NULL
+        """,
+        (entity_id, type_name),
+    ).fetchone()
+    if row is None or row["company_id"] != company_id:
+        return None
+    _threshold, measured, support = active_threshold(conn)
+    facts = _facts(conn, row["id"], role, measured, support, type_name)
+    process, step = _cash_step(conn, row["id"], type_name)
+    detail = {
+        "id": row["id"],
+        "type": type_name,
+        "business_key": row["business_key"],
+        "status": _visible(facts, "status"),
+        "facts": facts,
+        "process": process,
+        "step": step,
+        "edges": _edges(conn, row["id"]),
+    }
+    if type_name == "Invoice":
+        detail["lines"] = _invoice_lines(conn, row["business_key"], role, measured, support, company_id)
+    return detail
+
+
+def _cash_step(conn: psycopg.Connection, entity_id: str, type_name: str):
+    """Latest dated event on this object, copied from the ontology catalog."""
+    from ontology.loader import load_merged
+    from services.cash.catalog import CASH_PROCESS_ID, STEP_INVOICED, STEP_PAYMENT
+    from services.ontology_view import catalog_pair
+
+    events = conn.execute(
+        """
+        SELECT e.id::text
+        FROM app.graph_edges g
+        JOIN app.entities e ON e.id = g.to_id
+        WHERE g.from_id = %s AND g.rel = 'triggered' AND g.valid_to IS NULL
+          AND e.type = 'Event' AND e.valid_to IS NULL
+        """,
+        (entity_id,),
+    ).fetchall()
+    chosen_process = ""
+    chosen_step = ""
+    chosen_at = ""
+    for event in events:
+        facts = conn.execute(
+            """
+            SELECT property, value
+            FROM app.facts
+            WHERE entity_id = %s AND valid_to IS NULL
+              AND property IN ('process_id', 'step_id', 'occurred_at')
+            """,
+            (event["id"],),
+        ).fetchall()
+        found = {item["property"]: stable(item["value"]) for item in facts}
+        occurred = str(found.get("occurred_at") or "")
+        if chosen_process and occurred < chosen_at:
+            continue
+        chosen_process = str(found.get("process_id") or "")
+        chosen_step = str(found.get("step_id") or "")
+        chosen_at = occurred
+    model = load_merged()
+    if chosen_process and chosen_step:
+        try:
+            return catalog_pair(model, chosen_process, chosen_step)
+        except KeyError:
+            pass
+    fallback = STEP_INVOICED if type_name == "Invoice" else STEP_PAYMENT
+    return catalog_pair(model, CASH_PROCESS_ID, fallback)
+
+
+def _invoice_lines(
+    conn: psycopg.Connection,
+    invoice_key: str,
+    role: str,
+    measured: bool,
+    support: int,
+    company_id: str,
+) -> list[dict]:
+    import json
+
+    rows = conn.execute(
+        """
+        SELECT e.id::text
+        FROM app.entities e
+        JOIN app.facts f ON f.entity_id = e.id AND f.valid_to IS NULL
+        WHERE e.type = 'InvoiceLine' AND e.valid_to IS NULL
+          AND e.company_id = %s::uuid
+          AND f.property = 'invoice_source_key' AND f.value = %s::jsonb
+        ORDER BY e.business_key
+        """,
+        (company_id, json.dumps(invoice_key)),
+    ).fetchall()
+    lines = []
+    for row in rows:
+        facts = _facts(conn, row["id"], role, measured, support, "InvoiceLine")
+        lines.append(
+            {
+                "id": row["id"],
+                "description": _visible(facts, "description"),
+                "quantity": _visible(facts, "quantity"),
+                "line_amount": _visible(facts, "line_amount"),
+            }
+        )
+    return lines
 
 
 def list_audit(conn: psycopg.Connection, role: str) -> list[dict]:

@@ -36,6 +36,26 @@ class TypeDef:
 
 
 @dataclass
+class ProcessStep:
+    id: str
+    label: str
+
+
+@dataclass
+class ProcessDef:
+    id: str
+    label: str
+    package: str
+    steps: list[ProcessStep] = field(default_factory=list)
+
+    def step(self, step_id: str) -> ProcessStep | None:
+        for item in self.steps:
+            if item.id == step_id:
+                return item
+        return None
+
+
+@dataclass
 class Package:
     name: str
     version: str
@@ -49,6 +69,10 @@ class Ontology:
     packages: list[Package]
     types: dict[str, TypeDef]
     relations: list[dict]
+    processes: dict[str, ProcessDef] = field(default_factory=dict)
+
+    def process(self, process_id: str) -> ProcessDef | None:
+        return self.processes.get(process_id)
 
     def prop(self, type_name: str, property_name: str) -> PropertyDef | None:
         type_def = self.types.get(type_name)
@@ -93,15 +117,87 @@ def _inherit(types: dict[str, TypeDef], type_def: TypeDef) -> None:
         type_def.properties.setdefault(name, copy.deepcopy(prop))
 
 
-def load_packages(directory: Path | None = None) -> list[Package]:
-    folder = directory or ONTOLOGY_DIR
-    paths = [folder / "core.yaml", folder / "manufacturing.yaml"]
+# Dizionari di mapping, non pacchetti. Un file con `package` è un pacchetto.
+_NOT_PACKAGES = frozenset({"synonyms.yaml", "tokens.yaml", "table_shape.yaml"})
+
+
+def _package_paths(folder: Path) -> list[Path]:
+    paths = [path for path in sorted(folder.glob("*.yaml")) if path.name not in _NOT_PACKAGES]
     extension_dir = folder / "extensions"
     if extension_dir.exists():
-        paths.extend(sorted(extension_dir.glob("*.yaml")))
+        paths.extend(path for path in sorted(extension_dir.glob("*.yaml")) if path.name not in _NOT_PACKAGES)
+    return paths
+
+
+def _order_by_depends(packages: list[Package]) -> list[Package]:
+    """Parent packages first. `depends_on` is the only order."""
+    by_name = {item.name: item for item in packages}
+    if len(by_name) != len(packages):
+        raise OntologyError("Due pacchetti hanno lo stesso nome")
+    ordered: list[Package] = []
+    visiting: set[str] = set()
+    visited: set[str] = set()
+
+    def visit(name: str) -> None:
+        if name in visited:
+            return
+        if name in visiting:
+            raise OntologyError(f"Dipendenza ciclica dell'ontologia: {name}")
+        package = by_name.get(name)
+        if package is None:
+            raise OntologyError(f"Dipendenza assente: {name}")
+        visiting.add(name)
+        depends = package.raw.get("depends_on") or []
+        if not isinstance(depends, list):
+            raise OntologyError(f"depends_on non è un elenco: {name}")
+        for dep in depends:
+            if not isinstance(dep, str) or dep.strip() == "":
+                raise OntologyError(f"depends_on non valido in {name}")
+            visit(dep)
+        visiting.remove(name)
+        visited.add(name)
+        ordered.append(package)
+
+    for package in packages:
+        visit(package.name)
+    return ordered
+
+
+def _processes(raw: dict, package: str) -> list[ProcessDef]:
+    found: list[ProcessDef] = []
+    seen: set[str] = set()
+    for item in raw.get("processes") or []:
+        process_id = str(item["id"])
+        if process_id in seen:
+            raise OntologyError(f"Passo di processo duplicato: {package}.{process_id}")
+        seen.add(process_id)
+        steps: list[ProcessStep] = []
+        step_ids: set[str] = set()
+        for step in item.get("steps") or []:
+            step_id = str(step["id"])
+            if step_id in step_ids:
+                raise OntologyError(f"Passo duplicato: {process_id}.{step_id}")
+            step_ids.add(step_id)
+            label = str(step.get("label") or "").strip()
+            if label == "":
+                raise OntologyError(f"Passo senza etichetta: {process_id}.{step_id}")
+            steps.append(ProcessStep(id=step_id, label=label))
+        if not steps:
+            raise OntologyError(f"Processo senza passi: {process_id}")
+        label = str(item.get("label") or "").strip()
+        if label == "":
+            raise OntologyError(f"Processo senza etichetta: {process_id}")
+        found.append(ProcessDef(id=process_id, label=label, package=package, steps=steps))
+    return found
+
+
+def load_packages(directory: Path | None = None) -> list[Package]:
+    folder = directory or ONTOLOGY_DIR
     packages = []
-    for path in paths:
+    for path in _package_paths(folder):
         raw = _read_yaml(path)
+        if "package" not in raw:
+            raise OntologyError(f"Pacchetto senza nome: {path.name}")
         packages.append(
             Package(
                 name=raw["package"],
@@ -111,13 +207,14 @@ def load_packages(directory: Path | None = None) -> list[Package]:
                 raw=raw,
             )
         )
-    return packages
+    return _order_by_depends(packages)
 
 
 def load_merged(directory: Path | None = None) -> Ontology:
     packages = load_packages(directory)
     types: dict[str, TypeDef] = {}
     relations: list[dict] = []
+    processes: dict[str, ProcessDef] = {}
     for package in packages:
         raw = package.raw
         for item in raw.get("types", []):
@@ -133,9 +230,13 @@ def load_merged(directory: Path | None = None) -> Ontology:
         for item in raw.get("extends_types", []):
             _apply_extension(types, item, package.name)
         relations.extend(raw.get("relations", []))
+        for process in _processes(raw, package.name):
+            if process.id in processes:
+                raise OntologyError(f"Processo già dichiarato: {process.id}")
+            processes[process.id] = process
     for type_def in types.values():
         _inherit(types, type_def)
-    return Ontology(packages=packages, types=types, relations=relations)
+    return Ontology(packages=packages, types=types, relations=relations, processes=processes)
 
 
 def _apply_extension(types: dict[str, TypeDef], item: dict, package: str) -> None:

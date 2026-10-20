@@ -191,6 +191,34 @@ const html = [
   }, "approver"),
   inboxCard({
     id: value,
+    kind: "payment_match",
+    status: "proposed",
+    requires_cfo: false,
+    risk: value,
+    order_key: value,
+    headline: value,
+    problem: value,
+    expected_impact: value,
+    confidence: value,
+    confidence_method: "rule",
+    confidence_rule: value,
+    invoice_id: value,
+    allocated_amount: value,
+    criteria: { amount: true, customer: false, reference: true, extra: value },
+    failed_criteria: [value, "amount"],
+    process: { id: value, label: value, package: value },
+    step: { id: value, label: value },
+    actions: [{ type: "allocatePayment", params: { invoice: value, allocated_amount: value } }],
+    history: [{
+      id: value,
+      decision: "correct",
+      actor: value,
+      decided_at: value,
+      revoked: false,
+    }],
+  }, "approver", true),
+  inboxCard({
+    id: value,
     status: value,
     requires_cfo: false,
     risk: value,
@@ -199,6 +227,8 @@ const html = [
     expected_impact: value,
     confidence: value,
     blocked_reason: value,
+    process: { id: value, label: value, package: value },
+    step: { id: value, label: value },
     dry_run: { note: value },
     actions: [{ type: "createPurchaseOrder", params: { quantity: value } }],
     executed: true,
@@ -242,6 +272,7 @@ const structural = new Set([
   "file-type-actions", "file-type-choice", "mapping-actions",
   "mapping-source", "mapping-column", "mapping-destination", "mapping-status",
   "decision-history", "revoked-decision", "revoker-line", "revoke-reason", "executed-note",
+  "process-step", "match-criteria", "failed-criteria",
 ]);
 const allowedLabels = new Set(["Fonte", "Colonna", "Destinazione", "Suggerimento", "Stato"]);
 const tagRe = /<\/?([a-zA-Z][a-zA-Z0-9]*)\b([^>]*)>/g;
@@ -307,6 +338,7 @@ const requiredClasses = [
   "file-type-choice", "mapping-actions",
   "mapping-source", "mapping-column", "mapping-destination", "mapping-status",
   "decision-history", "revoked-decision", "revoker-line", "revoke-reason", "executed-note",
+  "process-step", "match-criteria", "failed-criteria",
 ];
 for (const token of requiredClasses) {
   if (!seenClasses.has(token)) {

@@ -339,6 +339,7 @@ function bindRevokes(root, reload) {
     ["button[data-revoke]", (button) => button.dataset.revoke, (id) => `/api/mapping-decisions/${id}/revoke`],
     ["button[data-revoke-mapping]", (button) => button.dataset.revokeMapping, (id) => `/api/mapping-decisions/${id}/revoke`],
     ["button[data-revoke-inbox]", (button) => button.dataset.revokeInbox, (id) => `/api/decisions/${id}/revoke`],
+    ["button[data-revoke-payment]", (button) => button.dataset.revokePayment, (id) => `/api/payment-decisions/${id}/revoke`],
     ["button[data-revoke-quarantine]", (button) => button.dataset.revokeQuarantine, (id) => `/api/quarantine/${id}/revoke`],
     ["button[data-revoke-identity]", (button) => button.dataset.revokeIdentity, (id) => `/api/identity-reviews/${id}/revoke`],
     ["button[data-revoke-drift]", (button) => button.dataset.revokeDrift, (id) => `/api/drift/${id}/revoke`],
@@ -463,6 +464,39 @@ async function act(id, action, card) {
     } else if (action === "execute") {
       const result = await api(`/api/recommendations/${id}/execute`, { method: "POST" });
       showFlash(result.replayed ? "Esecuzione già presente: nessuna seconda scrittura." : "Azione eseguita sul sandbox e registrata nel grafo.");
+    } else if (action === "confirm-match") {
+      await api(`/api/payment-proposals/${id}/confirm`, {
+        method: "POST",
+        body: JSON.stringify({ decision: "confirm", evidence_hash: evidenceHash }),
+      });
+    } else if (action === "reject-match") {
+      const reason = card.querySelector("[data-reason]").value.trim();
+      if (reason.length < 5) {
+        showFlash("Scrivi un motivo di almeno 5 caratteri.");
+        return;
+      }
+      await api(`/api/payment-proposals/${id}/reject`, {
+        method: "POST",
+        body: JSON.stringify({ decision: "reject", evidence_hash: evidenceHash, reason }),
+      });
+    } else if (action === "correct-match") {
+      const reason = card.querySelector("[data-reason]").value.trim();
+      const invoiceId = card.querySelector("[data-invoice]").value.trim();
+      const amount = Number(card.querySelector("[data-amount]").value);
+      if (reason.length < 5 || invoiceId === "" || !Number.isFinite(amount) || amount <= 0) {
+        showFlash("Indica fattura, importo e un motivo di almeno 5 caratteri.");
+        return;
+      }
+      await api(`/api/payment-proposals/${id}/correct`, {
+        method: "POST",
+        body: JSON.stringify({
+          decision: "correct",
+          evidence_hash: evidenceHash,
+          invoice_id: invoiceId,
+          allocated_amount: amount,
+          reason,
+        }),
+      });
     }
     loadInbox();
   } catch (err) {

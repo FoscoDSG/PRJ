@@ -35,6 +35,8 @@ def propose(
     role: str | None,
     confidence_method: str = "rule",
     confidence_rule: str | None = None,
+    process_id: str | None = None,
+    step_id: str | None = None,
 ) -> str:
     _stored, method, rule = _score(confidence, confidence_method, confidence_rule)
     del _stored
@@ -44,9 +46,9 @@ def propose(
         INSERT INTO app.recommendations (
           id, order_entity_id, problem, evidence, evidence_hash, actions,
           expected_impact, risk, confidence, status, requires_cfo,
-          confidence_method, confidence_rule
+          confidence_method, confidence_rule, process_id, step_id
         )
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, 'detected', %s, %s, %s)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, 'detected', %s, %s, %s, %s, %s)
         """,
         (
             recommendation_id,
@@ -61,6 +63,8 @@ def propose(
             requires_cfo,
             method,
             rule,
+            process_id,
+            step_id,
         ),
     )
     _transition(conn, recommendation_id, None, "detected", actor)

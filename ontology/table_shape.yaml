@@ -14,11 +14,13 @@ version: "1"
 rule: mapping.table_shape@v1
 score_kind: "punteggio di regola, non probabilità"
 rules:
-  - {profile: order_line, requires: [quantity, price, date], absent: [catalog], score: 0.88}
-  - {profile: order_line, requires: [repeating_key, quantity, price], absent: [catalog], score: 0.86}
+  - {profile: order_line, requires: [quantity, price, date], absent: [catalog, invoice_number], score: 0.88}
+  - {profile: order_line, requires: [repeating_key, quantity, price], absent: [catalog, invoice_number], score: 0.86}
   - {profile: customer, at_least: [email, phone, vat], minimum: 2, score: 0.90}
   - {profile: product, requires: [product_code, price], absent: [date, quantity], score: 0.84}
-  - {profile: order, requires: [amount, date], absent: [quantity], score: 0.82}
+  - {profile: order, requires: [amount, date], absent: [quantity, invoice_number, due_date, causale], score: 0.82}
+  - {profile: invoice, requires: [invoice_number, due_date], absent: [quantity, causale], score: 0.84}
+  - {profile: payment, requires: [causale, amount], absent: [quantity, invoice_number], score: 0.82}
   - {profile: stock, requires: [stock_qty, product_code], absent: [price, date], score: 0.80}
   - {profile: supplier, requires: [delay, product_code], score: 0.80}
   - {profile: shipment, requires: [tracking], absent: [quantity, price], score: 0.78}

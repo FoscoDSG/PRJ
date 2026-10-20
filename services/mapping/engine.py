@@ -64,6 +64,19 @@ PROFILES: dict[str, dict[str, tuple[str, str, float]]] = {
         "cod_art": ("Supplier", "product_source_key", 0.90),
         "ritardo_giorni": ("Supplier", "delay_days", 0.92),
     },
+    # Chiavi italiane del modulo ordine-incasso. Non sono intestazioni FatturaPA.
+    "invoice": {
+        "fattura": ("Invoice", "source_key", 0.96),
+        "numero_fattura": ("Invoice", "source_key", 0.94),
+        "scadenza": ("Invoice", "due_at", 0.93),
+        "importo": ("Invoice", "amount", 0.90),
+    },
+    "payment": {
+        "incasso": ("Payment", "source_key", 0.95),
+        "causale": ("Payment", "causale", 0.94),
+        "iban": ("Payment", "iban", 0.96),
+        "importo": ("Payment", "amount", 0.90),
+    },
 }
 
 # Signals are normalized header keys. Italian names stay; English and
@@ -87,6 +100,8 @@ SIGNALS: dict[str, set[str]] = {
         "standard price", "cost",
     },
     "shipment": {"tracking number", "numero di tracciatura spedizione", "transport date time"},
+    "invoice": {"fattura", "numero fattura", "scadenza"},
+    "payment": {"incasso", "causale"},
 }
 
 _ORDER_AMOUNT = {"importo", "amount", "total without tax"}
@@ -116,7 +131,17 @@ class TableDecision:
 
 def _profile_from_headers(columns: list[str]) -> str:
     present = _present_headers(columns)
-    for name in ("supplier", "stock", "order_line", "order", "customer", "product", "shipment"):
+    for name in (
+        "supplier",
+        "stock",
+        "order_line",
+        "payment",
+        "invoice",
+        "order",
+        "customer",
+        "product",
+        "shipment",
+    ):
         if not (SIGNALS[name] & present):
             continue
         if name == "stock" and "giacenza" not in present and (SIGNALS["product"] & present):

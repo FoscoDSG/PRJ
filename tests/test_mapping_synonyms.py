@@ -65,6 +65,14 @@ def test_exact_italian_keys_keep_header_similarity_and_score():
         ("supplier", "nome"): ("Supplier", "name", 0.84),
         ("supplier", "cod_art"): ("Supplier", "product_source_key", 0.90),
         ("supplier", "ritardo_giorni"): ("Supplier", "delay_days", 0.92),
+        ("invoice", "fattura"): ("Invoice", "source_key", 0.96),
+        ("invoice", "numero_fattura"): ("Invoice", "source_key", 0.94),
+        ("invoice", "scadenza"): ("Invoice", "due_at", 0.93),
+        ("invoice", "importo"): ("Invoice", "amount", 0.90),
+        ("payment", "incasso"): ("Payment", "source_key", 0.95),
+        ("payment", "causale"): ("Payment", "causale", 0.94),
+        ("payment", "iban"): ("Payment", "iban", 0.96),
+        ("payment", "importo"): ("Payment", "amount", 0.90),
     }
     assert set(expected) == {
         (profile, column) for profile, columns in PROFILES.items() for column in columns
