@@ -37,17 +37,22 @@ def materialize(conn: psycopg.Connection, ontology: Ontology) -> dict[str, int]:
 def _materialize(conn: psycopg.Connection, ontology: Ontology) -> dict[str, int]:
     sources = conn.execute(
         """
-        SELECT DISTINCT source_name FROM app.field_mappings
+        SELECT DISTINCT company_id::text AS company_id, source_name
+        FROM app.field_mappings
         WHERE valid_to IS NULL AND status = 'confirmed'
         """
     ).fetchall()
     counts = {"entities": 0, "facts": 0}
     ordered = sorted(
-        (row["source_name"] for row in sources),
-        key=lambda name: PROFILE_ORDER.get(_profile(conn, name), 100),
+        sources,
+        key=lambda row: (
+            row["company_id"] or "",
+            PROFILE_ORDER.get(_profile(conn, row["source_name"], row["company_id"]), 100),
+            row["source_name"],
+        ),
     )
-    for source_name in ordered:
-        written = _materialize_source(conn, ontology, source_name)
+    for row in ordered:
+        written = _materialize_source(conn, ontology, row["source_name"], row["company_id"])
         counts["entities"] += written["entities"]
         counts["facts"] += written["facts"]
     counts["calculated"] = _calculate(conn, ontology)
@@ -60,28 +65,35 @@ def _materialize(conn: psycopg.Connection, ontology: Ontology) -> dict[str, int]
     return counts
 
 
-def _profile(conn: psycopg.Connection, source_name: str) -> str:
+def _profile(conn: psycopg.Connection, source_name: str, company_id: str | None) -> str:
     row = conn.execute(
         """
         SELECT profile FROM app.field_mappings
         WHERE source_name = %s AND valid_to IS NULL
+          AND company_id IS NOT DISTINCT FROM %s::uuid
         ORDER BY valid_from DESC
         LIMIT 1
         """,
-        (source_name,),
+        (source_name, company_id),
     ).fetchone()
     return row["profile"] if row else "unknown"
 
 
-def _materialize_source(conn: psycopg.Connection, ontology: Ontology, source_name: str) -> dict[str, int]:
+def _materialize_source(
+    conn: psycopg.Connection,
+    ontology: Ontology,
+    source_name: str,
+    company_id: str | None,
+) -> dict[str, int]:
     batch = conn.execute(
         """
         SELECT id FROM app.landing_batches
         WHERE source_name = %s
+          AND company_id IS NOT DISTINCT FROM %s::uuid
         ORDER BY loaded_at DESC
         LIMIT 1
         """,
-        (source_name,),
+        (source_name, company_id),
     ).fetchone()
     if batch is None:
         return {"entities": 0, "facts": 0}
@@ -90,6 +102,7 @@ def _materialize_source(conn: psycopg.Connection, ontology: Ontology, source_nam
         SELECT source_field, target_type, target_property, confidence, profile
         FROM app.field_mappings fm
         WHERE fm.source_name = %s AND fm.status = 'confirmed' AND fm.valid_to IS NULL
+          AND fm.company_id IS NOT DISTINCT FROM %s::uuid
           AND NOT EXISTS (
             SELECT 1
             FROM (
@@ -102,7 +115,7 @@ def _materialize_source(conn: psycopg.Connection, ontology: Ontology, source_nam
             WHERE latest.decision = 'revoked'
           )
         """,
-        (source_name,),
+        (source_name, company_id),
     ).fetchall()
     from services.pii import landing_rows
 
@@ -148,11 +161,19 @@ def _materialize_source(conn: psycopg.Connection, ontology: Ontology, source_nam
                     source_name,
                     confidence,
                     confidence_rules,
+                    company_id=company_id,
                 )
                 entities += 1
             continue
         written = _write_profile(
-            conn, ontology, profile, values, source_name, confidence, confidence_rules
+            conn,
+            ontology,
+            profile,
+            values,
+            source_name,
+            confidence,
+            confidence_rules,
+            company_id=company_id,
         )
         entities += written[0]
         facts += written[1]
@@ -167,6 +188,7 @@ def _write_profile(
     source: str,
     confidence: dict[str, float],
     confidence_rules: dict[str, str] | None = None,
+    company_id: str | None = None,
 ) -> tuple[int, int]:
     if profile == "customer":
         source_key = _text(values.get("source_key"))
@@ -174,7 +196,7 @@ def _write_profile(
         business_key = _identity_key(vat) or source_key
         if not business_key:
             return 0, 0
-        entity_id = _ensure_entity(conn, "Customer", business_key)
+        entity_id = _ensure_entity(conn, "Customer", business_key, company_id)
         _alias(conn, "Customer", source_key, entity_id)
         payload = dict(values)
         if vat:
@@ -190,7 +212,7 @@ def _write_profile(
         source_key = _text(values.get("source_key"))
         if not source_key:
             return 0, 0
-        entity_id = _ensure_entity(conn, "Product", source_key)
+        entity_id = _ensure_entity(conn, "Product", source_key, company_id)
         _alias(conn, "Product", source_key, entity_id)
         return 1, _write_facts(
             conn, ontology, entity_id, "Product", values, source, confidence, confidence_rules=confidence_rules
@@ -199,11 +221,11 @@ def _write_profile(
         source_key = _text(values.get("source_key"))
         if not source_key:
             return 0, 0
-        entity_id = _ensure_entity(conn, "Supplier", source_key)
+        entity_id = _ensure_entity(conn, "Supplier", source_key, company_id)
         _alias(conn, "Supplier", source_key, entity_id)
         product_key = _text(values.get("product_source_key"))
         if product_key:
-            _ensure_shell(conn, ontology, "Product", product_key, source)
+            _ensure_shell(conn, ontology, "Product", product_key, source, company_id)
         return 1, _write_facts(
             conn, ontology, entity_id, "Supplier", values, source, confidence, confidence_rules=confidence_rules
         )
@@ -211,7 +233,7 @@ def _write_profile(
         source_key = _text(values.get("source_key"))
         if not source_key:
             return 0, 0
-        entity_id = _ensure_entity(conn, "Order", source_key)
+        entity_id = _ensure_entity(conn, "Order", source_key, company_id)
         _alias(conn, "Order", source_key, entity_id)
         return 1, _write_facts(
             conn, ontology, entity_id, "Order", values, source, confidence, confidence_rules=confidence_rules
@@ -223,10 +245,10 @@ def _write_profile(
             return 0, 0
         business_key = f"{order_key}|{product_key}"
         values["source_key"] = business_key
-        entity_id = _ensure_entity(conn, "OrderLine", business_key)
+        entity_id = _ensure_entity(conn, "OrderLine", business_key, company_id)
         _alias(conn, "OrderLine", business_key, entity_id)
-        _ensure_shell(conn, ontology, "Order", order_key, source)
-        _ensure_shell(conn, ontology, "Product", product_key, source)
+        _ensure_shell(conn, ontology, "Order", order_key, source, company_id)
+        _ensure_shell(conn, ontology, "Product", product_key, source, company_id)
         return 1, _write_facts(
             conn, ontology, entity_id, "OrderLine", values, source, confidence, confidence_rules=confidence_rules
         )
@@ -238,10 +260,10 @@ def _write_profile(
         values["warehouse_source_key"] = warehouse_key
         business_key = f"{product_key}|{warehouse_key}"
         values["source_key"] = business_key
-        entity_id = _ensure_entity(conn, "StockPosition", business_key)
+        entity_id = _ensure_entity(conn, "StockPosition", business_key, company_id)
         _alias(conn, "StockPosition", business_key, entity_id)
-        _ensure_shell(conn, ontology, "Product", product_key, source)
-        warehouse_id = _ensure_entity(conn, "Warehouse", warehouse_key)
+        _ensure_shell(conn, ontology, "Product", product_key, source, company_id)
+        warehouse_id = _ensure_entity(conn, "Warehouse", warehouse_key, company_id)
         _alias(conn, "Warehouse", warehouse_key, warehouse_id)
         _write_facts(
             conn,
@@ -345,7 +367,7 @@ def _calculate(conn: psycopg.Connection, ontology: Ontology) -> int:
         shortage_classes.setdefault(order_key, []).append(shortage_class)
         price_fact = facts.get("unit_price")
         price = _num(price_fact["value"]) if price_fact else None
-        product_id = _resolve(conn, "Product", product_key)
+        product_id = _resolve(conn, "Product", product_key, _entity_company(conn, line["id"]))
         cost_fact = _open_facts(conn, product_id).get("cost") if product_id else None
         cost = _num(cost_fact["value"]) if cost_fact else None
         if price is not None and cost is not None:
@@ -390,8 +412,9 @@ def _write_entity(
     source: str,
     confidence: dict[str, float],
     confidence_rules: dict[str, str] | None = None,
+    company_id: str | None = None,
 ) -> int:
-    entity_id = _ensure_entity(conn, type_name, business_key)
+    entity_id = _ensure_entity(conn, type_name, business_key, company_id)
     _alias(conn, type_name, business_key, entity_id)
     return _write_facts(
         conn, ontology, entity_id, type_name, values, source, confidence, confidence_rules=confidence_rules
@@ -399,9 +422,14 @@ def _write_entity(
 
 
 def _ensure_shell(
-    conn: psycopg.Connection, ontology: Ontology, type_name: str, business_key: str, source: str
+    conn: psycopg.Connection,
+    ontology: Ontology,
+    type_name: str,
+    business_key: str,
+    source: str,
+    company_id: str | None = None,
 ) -> str:
-    entity_id = _ensure_entity(conn, type_name, business_key)
+    entity_id = _ensure_entity(conn, type_name, business_key, company_id)
     _alias(conn, type_name, business_key, entity_id)
     if not _has_fact(conn, entity_id, "source_key"):
         _write_facts(
@@ -417,34 +445,49 @@ def _ensure_shell(
     return entity_id
 
 
-def _ensure_entity(conn: psycopg.Connection, type_name: str, business_key: str) -> str:
+def _ensure_entity(
+    conn: psycopg.Connection,
+    type_name: str,
+    business_key: str,
+    company_id: str | None = None,
+) -> str:
     found = conn.execute(
         """
         SELECT id FROM app.entities
         WHERE type = %s AND business_key = %s AND valid_to IS NULL
+          AND company_id IS NOT DISTINCT FROM %s::uuid
         """,
-        (type_name, business_key),
+        (type_name, business_key, company_id),
     ).fetchone()
     if found:
         return str(found["id"])
     entity_id = str(uuid.uuid4())
     conn.execute(
-        "INSERT INTO app.entities (id, type, business_key) VALUES (%s, %s, %s)",
-        (entity_id, type_name, business_key),
+        "INSERT INTO app.entities (id, type, business_key, company_id) VALUES (%s, %s, %s, %s)",
+        (entity_id, type_name, business_key, company_id),
     )
     return entity_id
+
+
+def _entity_company(conn: psycopg.Connection, entity_id: str) -> str | None:
+    row = conn.execute(
+        "SELECT company_id::text AS company_id FROM app.entities WHERE id = %s",
+        (entity_id,),
+    ).fetchone()
+    return None if row is None else row["company_id"]
 
 
 def _alias(conn: psycopg.Connection, entity_type: str, alias: str | None, entity_id: str) -> None:
     if not alias:
         return
+    company_id = _entity_company(conn, entity_id)
     conn.execute(
         """
-        INSERT INTO app.identity_aliases (entity_type, alias, entity_id)
-        VALUES (%s, %s, %s)
-        ON CONFLICT (entity_type, alias) DO UPDATE SET entity_id = EXCLUDED.entity_id
+        INSERT INTO app.identity_aliases (entity_type, alias, entity_id, company_id)
+        VALUES (%s, %s, %s, %s)
+        ON CONFLICT (company_id, entity_type, alias) DO UPDATE SET entity_id = EXCLUDED.entity_id
         """,
-        (entity_type, alias, entity_id),
+        (entity_type, alias, entity_id, company_id),
     )
 
 
@@ -460,6 +503,7 @@ def _write_facts(
     confidence_rules: dict[str, str] | None = None,
     source_classes: dict[str, str] | None = None,
 ) -> int:
+    company_id = _entity_company(conn, entity_id)
     written = 0
     for name, value in values.items():
         prop = ontology.prop(type_name, name)
@@ -478,7 +522,7 @@ def _write_facts(
         if source_classes and name in source_classes:
             fact_class = source_classes[name]
         else:
-            fact_class = _source_class(conn, source, fact_origin)
+            fact_class = _source_class(conn, source, fact_origin, company_id)
         if _put_fact(
             conn,
             entity_id=entity_id,
@@ -491,6 +535,7 @@ def _write_facts(
             source_class=fact_class,
             confidence_method=method,
             confidence_rule=rule,
+            company_id=company_id,
         ):
             written += 1
     return written
@@ -509,10 +554,13 @@ def _put_fact(
     source_class: str | None = None,
     confidence_method: str = "unknown",
     confidence_rule: str | None = None,
+    company_id: str | None = None,
 ) -> bool:
     if origin == "inferred" and source_class not in (None, "unknown"):
         raise ValueError("origin inferred è riservata a un modello")
-    fact_class = source_class or _source_class(conn, source or "", origin)
+    if company_id is None:
+        company_id = _entity_company(conn, entity_id)
+    fact_class = source_class or _source_class(conn, source or "", origin, company_id)
     if origin == "inferred":
         fact_class = "unknown"
     declared_rule = confidence_rule.strip() if isinstance(confidence_rule, str) else ""
@@ -561,9 +609,9 @@ def _put_fact(
         """
         INSERT INTO app.facts (
           id, entity_id, property, value, classification, origin, source,
-          confidence, source_class, confidence_method, confidence_rule
+          confidence, source_class, confidence_method, confidence_rule, company_id
         )
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         """,
         (
             str(uuid.uuid4()),
@@ -577,6 +625,7 @@ def _put_fact(
             fact_class,
             method,
             rule,
+            company_id,
         ),
     )
     return True
@@ -601,31 +650,34 @@ def _calculated_meta_matches(
     return float(left) == float(confidence)
 
 
-def _source_class(conn: psycopg.Connection, source: str, origin: str) -> str:
-    """Provenance comes from the registered source, not from its name.
+def _source_class(
+    conn: psycopg.Connection,
+    source: str,
+    origin: str,
+    company_id: str | None = None,
+) -> str:
+    """Provenance comes from the registered source of this company, not from its name.
 
     The class is one of system_of_record, operational, external, manual,
     unknown. A calculated origin without declared inputs is unknown: the
     writer passes the weakest input class instead. An inferred origin is
-    unknown. A connector that was never registered stays unknown.
+    unknown. A connector that was never registered for this company stays
+    unknown. Another company's registration of the same name is not used.
     """
     if origin == "calculated":
         return "unknown"
     if origin == "inferred":
         return "unknown"
-    rows = conn.execute(
-        "SELECT company_id::text AS company_id, source_class FROM app.sources WHERE name = %s",
-        (source,),
-    ).fetchall()
-    if not rows:
+    row = conn.execute(
+        """
+        SELECT source_class FROM app.sources
+        WHERE name = %s AND company_id IS NOT DISTINCT FROM %s::uuid
+        """,
+        (source, company_id),
+    ).fetchone()
+    if row is None:
         return "unknown"
-    legacy = [row for row in rows if row["company_id"] is None]
-    if legacy:
-        return legacy[0]["source_class"]
-    classes = {row["source_class"] for row in rows}
-    if len(classes) == 1:
-        return rows[0]["source_class"]
-    return "unknown"
+    return row["source_class"]
 
 
 def _has_fact(conn: psycopg.Connection, entity_id: str, name: str) -> bool:
@@ -673,13 +725,19 @@ def _entities_of_type(conn: psycopg.Connection, type_name: str) -> list[dict]:
     )
 
 
-def _resolve(conn: psycopg.Connection, entity_type: str, alias: str) -> str | None:
+def _resolve(
+    conn: psycopg.Connection,
+    entity_type: str,
+    alias: str,
+    company_id: str | None = None,
+) -> str | None:
     row = conn.execute(
         """
         SELECT entity_id::text FROM app.identity_aliases
         WHERE entity_type = %s AND alias = %s
+          AND company_id IS NOT DISTINCT FROM %s::uuid
         """,
-        (entity_type, alias),
+        (entity_type, alias, company_id),
     ).fetchone()
     return row["entity_id"] if row else None
 

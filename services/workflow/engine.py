@@ -455,11 +455,13 @@ def _source_confidence_method(conn: psycopg.Connection, batch_id: str, row_index
         JOIN app.landing_batches lb ON lb.id = lr.batch_id
         JOIN app.field_mappings fm
           ON fm.source_name = lb.source_name
+         AND fm.company_id IS NOT DISTINCT FROM lb.company_id
          AND fm.valid_to IS NULL
          AND fm.status = 'confirmed'
          AND jsonb_exists(lr.data, fm.source_field)
         JOIN app.facts f
           ON f.source = lb.source_name
+         AND f.company_id IS NOT DISTINCT FROM lb.company_id
          AND f.property = fm.target_property
          AND f.valid_to IS NULL
          AND f.origin IS DISTINCT FROM 'calculated'
@@ -478,7 +480,7 @@ def _source_confidence_method(conn: psycopg.Connection, batch_id: str, row_index
 def _source_rows(conn: psycopg.Connection, order_entity_id: str) -> list[dict]:
     """Every landing row of the order header and of its lines."""
     order = conn.execute(
-        "SELECT business_key FROM app.entities WHERE id = %s",
+        "SELECT business_key, company_id::text AS company_id FROM app.entities WHERE id = %s",
         (order_entity_id,),
     ).fetchone()
     if order is None:
@@ -490,16 +492,18 @@ def _source_rows(conn: psycopg.Connection, order_entity_id: str) -> list[dict]:
         JOIN app.landing_batches lb ON lb.id = lr.batch_id
         JOIN app.field_mappings fm
           ON fm.source_name = lb.source_name
+         AND fm.company_id IS NOT DISTINCT FROM lb.company_id
          AND fm.valid_to IS NULL
          AND (
               (fm.target_type = 'Order' AND fm.target_property = 'source_key')
            OR (fm.target_type = 'OrderLine' AND fm.target_property = 'order_source_key')
          )
         WHERE lr.data ->> fm.source_field = %s
+          AND lb.company_id IS NOT DISTINCT FROM %s::uuid
         GROUP BY lr.batch_id, lr.row_index
         ORDER BY lr.batch_id, lr.row_index
         """,
-        (str(order["business_key"]),),
+        (str(order["business_key"]), order["company_id"]),
     ).fetchall()
     if not rows:
         raise AppError(422, "Decisione rifiutata: riga di origine assente")
@@ -508,7 +512,7 @@ def _source_rows(conn: psycopg.Connection, order_entity_id: str) -> list[dict]:
 
 def _source_row(conn: psycopg.Connection, order_entity_id: str) -> dict:
     order = conn.execute(
-        "SELECT business_key FROM app.entities WHERE id = %s",
+        "SELECT business_key, company_id::text AS company_id FROM app.entities WHERE id = %s",
         (order_entity_id,),
     ).fetchone()
     if order is None:
@@ -520,14 +524,16 @@ def _source_row(conn: psycopg.Connection, order_entity_id: str) -> dict:
         JOIN app.landing_batches lb ON lb.id = lr.batch_id
         JOIN app.field_mappings fm
           ON fm.source_name = lb.source_name
+         AND fm.company_id IS NOT DISTINCT FROM lb.company_id
          AND fm.target_type = 'Order'
          AND fm.target_property = 'source_key'
          AND fm.valid_to IS NULL
         WHERE lr.data ->> fm.source_field = %s
+          AND lb.company_id IS NOT DISTINCT FROM %s::uuid
         ORDER BY lb.loaded_at DESC, lr.row_index
         LIMIT 1
         """,
-        (str(order["business_key"]),),
+        (str(order["business_key"]), order["company_id"]),
     ).fetchone()
     if found is None:
         raise AppError(422, "Decisione rifiutata: riga di origine assente")

@@ -112,7 +112,9 @@ def test_correction_applies_only_for_the_same_company_source_and_header():
             profile="order_line",
         )
         created = {item["source_field"]: item for item in other["mappings"]}
-        assert "Cod Art" not in created
+        assert created["Cod Art"]["origin"] == "rule"
+        assert created["Cod Art"]["target_property"] == "product_source_key"
+        assert created["Cod Art"]["decision_id"] is None
         assert created["COD ART"]["origin"] == "rule"
         assert created["COD ART"]["target_property"] == "product_source_key"
         assert created["COD ART"]["decision_id"] is None

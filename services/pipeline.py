@@ -147,16 +147,19 @@ def ingest_document(
             UPDATE app.field_mappings
             SET confidence = 0.55
             WHERE source_name = %s AND valid_to IS NULL AND status = 'proposed'
+              AND company_id IS NOT DISTINCT FROM %s::uuid
             """,
-            (source_name,),
+            (source_name, company_id),
         )
     quarantine_id = str(uuid.uuid4())
     conn.execute(
         """
-        INSERT INTO app.quarantine_documents (id, source_name, order_key, reasons, status)
-        VALUES (%s, %s, %s, %s, 'open')
+        INSERT INTO app.quarantine_documents (
+          id, source_name, order_key, reasons, status, company_id
+        )
+        VALUES (%s, %s, %s, %s, 'open', %s)
         """,
-        (quarantine_id, document["stem"], document["order_key"], Json(reasons)),
+        (quarantine_id, document["stem"], document["order_key"], Json(reasons), company_id),
     )
     return {
         "id": quarantine_id,
@@ -180,12 +183,7 @@ def release_document(
     _require_mapper(role)
     if not company_id:
         raise AppError(403, NO_COMPANY_UPLOAD)
-    row = conn.execute(
-        "SELECT * FROM app.quarantine_documents WHERE id = %s FOR UPDATE",
-        (quarantine_id,),
-    ).fetchone()
-    if row is None:
-        raise AppError(404, "Documento in quarantena assente")
+    row = _lock_quarantine(conn, quarantine_id, company_id)
     if row["reasons"]:
         raise AppError(409, "Il documento ha controlli aperti: " + "; ".join(row["reasons"]))
     if row["status"] != "open":
@@ -195,8 +193,9 @@ def release_document(
         UPDATE app.field_mappings
         SET status = 'confirmed'
         WHERE source_name LIKE %s AND status = 'proposed' AND valid_to IS NULL
+          AND company_id IS NOT DISTINCT FROM %s::uuid
         """,
-        (row["source_name"] + "%",),
+        (row["source_name"] + "%", company_id),
     )
     counts = refresh_canonical(conn, model)
     recommendations = run_agents(conn, actor=actor, role=role)
@@ -209,6 +208,43 @@ def release_document(
         (company_id, actor, quarantine_id),
     )
     return {"id": quarantine_id, "status": "released", "canonical": counts, "recommendations": recommendations}
+
+
+def reject_document(
+    conn: psycopg.Connection,
+    quarantine_id: str,
+    role: str,
+    *,
+    actor: str,
+    company_id: str | None,
+) -> dict:
+    """Refuse a quarantined document. Another company's document is absent."""
+    _require_mapper(role)
+    if not company_id:
+        raise AppError(403, NO_COMPANY_UPLOAD)
+    row = _lock_quarantine(conn, quarantine_id, company_id)
+    if row["status"] != "open":
+        raise AppError(409, "Il documento non è in quarantena")
+    conn.execute(
+        """
+        UPDATE app.quarantine_documents
+        SET status = 'rejected', company_id = %s, actor = %s
+        WHERE id = %s
+        """,
+        (company_id, actor, quarantine_id),
+    )
+    return {"id": quarantine_id, "status": "rejected"}
+
+
+def _lock_quarantine(conn: psycopg.Connection, quarantine_id: str, company_id: str) -> dict:
+    row = conn.execute(
+        "SELECT * FROM app.quarantine_documents WHERE id = %s FOR UPDATE",
+        (quarantine_id,),
+    ).fetchone()
+    stored = None if row is None or row["company_id"] is None else str(row["company_id"])
+    if row is None or (stored is not None and stored != company_id):
+        raise AppError(404, "Documento in quarantena assente")
+    return row
 
 
 def ingest_sql(
@@ -821,9 +857,17 @@ def seed_src(conn: psycopg.Connection) -> None:
                 )
 
 
-def adjust_on_hand(conn: psycopg.Connection, model: Ontology, product_key: str, on_hand: int) -> list[str]:
+def adjust_on_hand(
+    conn: psycopg.Connection,
+    model: Ontology,
+    product_key: str,
+    on_hand: int,
+    company_id: str | None = None,
+) -> list[str]:
     import json
 
+    # Prefer this company's stock. A row written before companies existed
+    # has company_id NULL and stays adjustable. Another company's row does not.
     row = conn.execute(
         """
         SELECT e.id::text
@@ -831,9 +875,14 @@ def adjust_on_hand(conn: psycopg.Connection, model: Ontology, product_key: str, 
         JOIN app.facts f ON f.entity_id = e.id AND f.valid_to IS NULL
         WHERE e.type = 'StockPosition'
           AND f.property = 'product_source_key' AND f.value = %s::jsonb
+          AND (
+            e.company_id IS NOT DISTINCT FROM %s::uuid
+            OR e.company_id IS NULL
+          )
+        ORDER BY (e.company_id IS NOT DISTINCT FROM %s::uuid) DESC, e.business_key
         LIMIT 1
         """,
-        (json.dumps(product_key),),
+        (json.dumps(product_key), company_id, company_id),
     ).fetchone()
     if row is None:
         raise AppError(404, "Giacenza assente")
@@ -872,14 +921,14 @@ def acknowledge_drift(
         raise AppError(403, NO_COMPANY_UPLOAD)
     row = conn.execute(
         """
-        SELECT id::text, status
+        SELECT id::text, status, company_id::text AS company_id
         FROM app.drift_reviews
         WHERE id = %s
         FOR UPDATE
         """,
         (drift_id,),
     ).fetchone()
-    if row is None:
+    if row is None or (row["company_id"] is not None and row["company_id"] != company_id):
         raise AppError(404, "Drift assente")
     if row["status"] != "open":
         raise AppError(409, QUEUE_MESSAGE)

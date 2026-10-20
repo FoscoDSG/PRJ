@@ -51,6 +51,7 @@ from services.pipeline import (
     load_fixtures,
     record_table_type_decision,
     release_document,
+    reject_document,
     ontology,
     refresh_canonical,
     reject_mapping,
@@ -291,17 +292,20 @@ async def ingest_document_route(file: UploadFile = File(...), user: dict = Depen
 
 @app.get("/api/quarantine")
 def quarantine(user: dict = Depends(require_user)) -> dict:
-    del user
     from services.revocation import state_histories
 
     with app_connect() as conn:
+        company_id = company_id_for_user(conn, user["username"])
         rows = list(
             conn.execute(
                 """
                 SELECT id::text, source_name, order_key, reasons, status
                 FROM app.quarantine_documents
+                WHERE company_id IS NULL
+                   OR (%s::uuid IS NOT NULL AND company_id = %s::uuid)
                 ORDER BY created_at DESC
-                """
+                """,
+                (company_id, company_id),
             ).fetchall()
         )
         histories = state_histories(
@@ -334,13 +338,29 @@ def release(quarantine_id: str, user: dict = Depends(require_user)) -> dict:
     return _ok(result)
 
 
+@app.post("/api/quarantine/{quarantine_id}/reject")
+def reject_quarantine(quarantine_id: str, user: dict = Depends(require_user)) -> dict:
+    _require_company(user["username"])
+    with app_connect() as conn:
+        company_id = company_id_for_user(conn, user["username"])
+        result = reject_document(
+            conn,
+            quarantine_id,
+            user["role"],
+            actor=user["username"],
+            company_id=company_id,
+        )
+        conn.commit()
+    return _ok(result)
+
+
 @app.get("/api/identity-reviews")
 def identity_reviews(user: dict = Depends(require_user)) -> dict:
-    del user
     from services.identity.resolve import list_reviews
 
     with app_connect() as conn:
-        return _ok({"reviews": list_reviews(conn)})
+        company_id = company_id_for_user(conn, user["username"])
+        return _ok({"reviews": list_reviews(conn, company_id)})
 
 
 @app.post("/api/identity-reviews/{review_id}/confirm")
@@ -397,7 +417,7 @@ def mappings(user: dict = Depends(require_user)) -> dict:
         company_id = company_id_for_user(conn, user["username"])
         return _ok({
             "mappings": list_mappings(conn, user["role"], ontology(), company_id),
-            "drift": list_drift(conn),
+            "drift": list_drift(conn, company_id),
             "files": list_table_files(conn, company_id),
         })
 
@@ -769,7 +789,8 @@ def adjust_stock(product_key: str, body: StockBody, user: dict = Depends(require
         raise AppError(403, "Serve il ruolo mapper")
     _require_company(user["username"])
     with app_connect() as conn:
-        expired = adjust_on_hand(conn, ontology(), product_key, body.on_hand)
+        company_id = company_id_for_user(conn, user["username"])
+        expired = adjust_on_hand(conn, ontology(), product_key, body.on_hand, company_id=company_id)
         conn.commit()
     return {"expired": expired}
 

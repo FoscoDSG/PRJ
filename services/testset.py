@@ -20,8 +20,11 @@ counted apart, from the origin column, as the latest decision of that
 mapping. not_sure on a file type is an error of that suggestion and is not
 a learning example. File-type measurement keeps the latest decision on the
 first batch only.
-Mapping folds are split by source. A source is never in both threshold
-selection and evaluation. The agent is not a source of labels. Evaluation
+Mapping folds are split by source name. Two companies that share a name
+count as one source for the threshold and for the folds. The cases
+themselves stay tied to their company. A source is never in both
+threshold selection and evaluation.
+The agent is not a source of labels. Evaluation
 reads the labelled cases, not the decisions log. The running agent is the
 rules baseline, so the report does not compare the two.
 """
@@ -340,6 +343,11 @@ def _mapping_label(item: dict[str, Any]) -> dict[str, Any]:
         label["score"] = float(item["score"])
         label["confidence_rule"] = item.get("confidence_rule")
         label["correct"] = _snapshot_correct(item)
+    company = item.get("mapping_company_id")
+    if company is None:
+        company = item.get("company_id")
+    if company:
+        label["company_id"] = str(company)
     return label
 
 
@@ -410,6 +418,10 @@ def _best_threshold(cases: list[dict[str, Any]]) -> float:
 
 
 def _case_source(label: dict[str, Any]) -> str:
+    """Fold key: the source name. An empty source stays empty.
+
+    The company stays on the case. It does not split the threshold.
+    """
     name = label.get("source_name")
     if name is None or str(name).strip() == "":
         return ""
@@ -417,7 +429,7 @@ def _case_source(label: dict[str, Any]) -> str:
 
 
 def _source_folds(cases: list[dict[str, Any]]) -> tuple[str, list[dict[str, Any]]]:
-    """Group by source. Fewer than five sources: leave one source out."""
+    """Group by source name. Fewer than five sources: leave one source out."""
     grouped: dict[str, list[int]] = {}
     for index, label in enumerate(cases):
         grouped.setdefault(_case_source(label), []).append(index)
