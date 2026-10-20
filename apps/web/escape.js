@@ -408,7 +408,8 @@
     if (item.status !== "proposed") return "";
     return `<label>Fattura <input data-invoice value="${escapeHtml(item.invoice_id || "")}" /></label>
       <label>Importo assegnato <input data-amount value="${escapeHtml(item.allocated_amount ?? "")}" /></label>
-      <label>Motivo della correzione <input data-reason required minlength="5" maxlength="500" /></label>
+      <label>Motivo della correzione <input data-correct-reason required minlength="5" maxlength="500" /></label>
+      <label>Motivo del rifiuto <input data-reject-reason required minlength="5" maxlength="500" /></label>
       <div class="decision-bar">
         <button type="button" data-act="confirm-match">Conferma</button>
         <button type="button" class="ghost" data-act="correct-match">Correggi</button>
@@ -462,10 +463,14 @@
       : `Ordine ${item.order_key ?? ""}`;
     const processLabel = item && item.process && typeof item.process === "object" ? item.process.label : "";
     const stepLabel = item && item.step && typeof item.step === "object" ? item.step.label : "";
+    const processBits = [processLabel, stepLabel].filter((part) => typeof part === "string" && part !== "");
+    const processLine = processBits.length
+      ? `<p class="process-step">${escapeHtml(processBits.join(" · "))}</p>`
+      : "";
     return `<article class="card" data-id="${escapeHtml(item.id)}" data-hash="${escapeHtml(item.evidence_hash)}">
       <div class="meta">${pill(item.status)}${cfo}<span class="pill">${escapeHtml(item.risk)}</span></div>
       <h3 class="card-title">${escapeHtml(title)}</h3>
-      <p class="process-step">${escapeHtml(processLabel)} · ${escapeHtml(stepLabel)}</p>
+      ${processLine}
       ${criteriaMarkup(item.criteria)}
       ${failedMarkup(item.failed_criteria)}
       <h3 class="section-heading">Anteprima di approvazione</h3>
@@ -479,6 +484,18 @@
       ${revokeBar(item, canWrite, payment ? "payment" : "inbox")}
       ${buttons}
     </article>`;
+  }
+
+  function plainRatio(value) {
+    const number = Number(value);
+    if (!Number.isFinite(number)) return "n/d";
+    return String(number).replace(".", ",");
+  }
+
+  function measureText(report) {
+    const recall = plainRatio(report && report.recall);
+    const share = plainRatio(report && report.unmatched_share);
+    return `richiamo sui casi controllati: ${recall}. quota di incassi lasciati senza abbinamento: ${share}`;
   }
 
   function auditCard(event) {
@@ -508,6 +525,7 @@
     orderDetail,
     customerDetail,
     inboxCard,
+    measureText,
     auditCard,
     readableCard,
   };

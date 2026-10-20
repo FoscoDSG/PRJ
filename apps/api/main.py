@@ -657,11 +657,12 @@ def customer_detail(customer_id: str, user: dict = Depends(require_user)) -> dic
 @app.get("/api/ontology")
 def ontology_route(user: dict = Depends(require_user)) -> dict:
     """Types, relations, process steps and extensions. The page does not invent them."""
-    from services.ontology_view import describe_ontology
+    from services.ontology_view import describe_ontology, extension_for_company
 
     with app_connect() as conn:
         company_id = company_id_for_user(conn, user["username"])
-    return _ok(describe_ontology(ontology(), company_id))
+        package = extension_for_company(conn, company_id)
+    return _ok(describe_ontology(ontology(), company_id, package))
 
 
 @app.get("/api/invoices/{invoice_id}")
@@ -785,10 +786,12 @@ def match_payments(user: dict = Depends(require_user)) -> dict:
 
 @app.get("/api/payment-match/measure")
 def payment_measure(user: dict = Depends(require_user)) -> dict:
-    from services.agent.payment_measure import measure_payment_matches
+    """Admin reads the cross-company measure. A company user reads only their own."""
+    from services.agent.payment_measure import measure_for_viewer
 
     with app_connect() as conn:
-        return _ok(measure_payment_matches(conn))
+        company_id = company_id_for_user(conn, user["username"])
+        return _ok(measure_for_viewer(conn, role=user["role"], company_id=company_id))
 
 
 @app.get("/api/inbox")

@@ -13,6 +13,7 @@ const {
   orderDetail,
   customerDetail,
   inboxCard,
+  measureText,
   auditCard,
   readableCard,
 } = require("../apps/web/escape.js");
@@ -396,6 +397,77 @@ if (!html.includes("Documento rilasciato.")) {
 }
 if (html.includes("In attesa di conferma")) {
   console.error("released document still looks pending");
+  process.exit(2);
+}
+const bareProcess = inboxCard({
+  id: "bare-process",
+  status: "detected",
+  risk: "low",
+  order_key: "9",
+  problem: "manca",
+  expected_impact: "",
+  confidence: null,
+}, "operator");
+if (bareProcess.includes(" · ") || bareProcess.includes("process-step")) {
+  console.error("missing process rendered a lone separator");
+  process.exit(2);
+}
+const stepOnly = inboxCard({
+  id: "step-only",
+  status: "detected",
+  risk: "low",
+  order_key: "9",
+  problem: "manca",
+  expected_impact: "",
+  confidence: null,
+  step: { id: "shortage", label: "Disponibilità insufficiente" },
+}, "operator");
+if (!stepOnly.includes("process-step") || stepOnly.includes(" · ") || !stepOnly.includes("Disponibilità insufficiente")) {
+  console.error("a step without a process still printed a separator");
+  process.exit(2);
+}
+const paymentCard = inboxCard({
+  id: "pay-card",
+  kind: "payment_match",
+  status: "proposed",
+  risk: "low",
+  headline: "Incasso",
+  problem: "abbina",
+  confidence: 1,
+  confidence_method: "rule",
+  invoice_id: "inv",
+  allocated_amount: "10",
+  criteria: { amount: true, customer: true, reference: true },
+  process: { id: "order_to_cash", label: "Ordine e incasso" },
+  step: { id: "match_proposed", label: "Proposta" },
+  evidence_hash: "abc",
+}, "approver", true);
+if (!paymentCard.includes("data-correct-reason") || !paymentCard.includes("data-reject-reason")) {
+  console.error("correct and reject need separate reason fields");
+  process.exit(2);
+}
+if (paymentCard.includes(" data-reason")) {
+  console.error("confirm still shares one reason field");
+  process.exit(2);
+}
+const measuredLine = measureText({
+  recall: value,
+  unmatched_share: value,
+  recall_label: value,
+  unmatched_label: value,
+});
+if (
+  measuredLine.includes("<") ||
+  measuredLine.includes(value) ||
+  !measuredLine.includes("richiamo sui casi controllati") ||
+  !measuredLine.includes("quota di incassi lasciati senza abbinamento")
+) {
+  console.error("measure line echoed a server string");
+  process.exit(2);
+}
+const shownLine = measureText({ recall: 1, unmatched_share: 0.5 });
+if (shownLine !== "richiamo sui casi controllati: 1. quota di incassi lasciati senza abbinamento: 0,5") {
+  console.error("recall is not shown next to the unmatched share");
   process.exit(2);
 }
 const revokedCard = html.split('id="revoked-approval"').pop();

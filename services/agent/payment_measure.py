@@ -15,13 +15,52 @@ from typing import Any
 import psycopg
 
 from services.agent.payment_match import RULE, SCORE_KIND, money
+from services.mapping.corrections import demo_company_ids
 
 MIN_MEASURED_CASES = 30
 MIN_MEASURED_SOURCES = 3
 UNMEASURED = "non misurata"
+RECALL_LABEL = "richiamo sui casi controllati"
+UNMATCHED_LABEL = "quota di incassi lasciati senza abbinamento"
 
 
-def measure_payment_matches(conn: psycopg.Connection) -> dict[str, Any]:
+def measure_for_viewer(
+    conn: psycopg.Connection,
+    *,
+    role: str,
+    company_id: str | None,
+) -> dict[str, Any]:
+    """IEOL admin sees every non-demo company. That view decides ``misurata``.
+
+    Any other role sees only their company. A caller without a company
+    sees an empty measure. Demo companies are absent in both cases, so
+    names and counts of other companies are not in the payload.
+    """
+    if role == "admin":
+        result = measure_payment_matches(conn)
+        result["scope"] = "all"
+        result["decides_rule"] = True
+        return result
+    if company_id:
+        result = measure_payment_matches(conn, company_id=company_id)
+    else:
+        result = score_cases([], [], [])
+    result["scope"] = "company"
+    result["decides_rule"] = False
+    return result
+
+
+def measure_payment_matches(
+    conn: psycopg.Connection,
+    company_id: str | None = None,
+) -> dict[str, Any]:
+    """Score proposals, decisions and payments outside demo companies.
+
+    ``company_id`` keeps one company. Rows of a company with ``is_demo``
+    are dropped before scoring, for the cases and for the unmatched share.
+    The company name is not the signal.
+    """
+    hidden = demo_company_ids(conn)
     proposals = [
         dict(row)
         for row in conn.execute(
@@ -58,7 +97,27 @@ def measure_payment_matches(conn: psycopg.Connection) -> dict[str, Any]:
             """
         ).fetchall()
     ]
-    return score_cases(proposals, decisions, payments)
+    return score_cases(
+        _kept(proposals, hidden, company_id),
+        _kept(decisions, hidden, company_id),
+        _kept(payments, hidden, company_id),
+    )
+
+
+def _kept(
+    rows: list[dict[str, Any]],
+    demo_ids: set[str],
+    company_id: str | None,
+) -> list[dict[str, Any]]:
+    kept = []
+    for row in rows:
+        owner = row.get("company_id")
+        if not owner or owner in demo_ids:
+            continue
+        if company_id is not None and owner != company_id:
+            continue
+        kept.append(row)
+    return kept
 
 
 def score_cases(
@@ -154,7 +213,9 @@ def score_cases(
         "false_negative": false_negative,
         "precision": precision,
         "recall": recall,
+        "recall_label": RECALL_LABEL,
         "unmatched_share": unmatched_share,
+        "unmatched_label": UNMATCHED_LABEL,
         "unmatched_payments": len(unmatched),
         "payments": total_payments,
     }

@@ -21,13 +21,33 @@ NO_COMPANY_UPLOAD = (
 _MAX_NAME = 200
 
 
-def create_company(conn: psycopg.Connection, name: str, *, demo: bool) -> dict:
-    """Insert one company. ``demo`` is the flag, not a guess from the name."""
+def create_company(
+    conn: psycopg.Connection,
+    name: str,
+    *,
+    demo: bool,
+    extension: str | None = None,
+) -> dict:
+    """Insert one company. ``demo`` is the flag, not a guess from the name.
+
+    ``extension`` is an ontology package that only adds fields. Existing
+    companies stay without one: this insert does not rewrite them.
+    """
     cleaned = _clean_name(name)
+    package = (extension or "").strip() or None
+    if package is not None:
+        from ontology.loader import load_merged
+        from services.ontology_view import extension_package_names
+
+        if package not in extension_package_names(load_merged()):
+            raise RuntimeError("Estensione sconosciuta")
     company_id = str(uuid.uuid4())
     conn.execute(
-        "INSERT INTO app.companies (id, name, is_demo) VALUES (%s, %s, %s)",
-        (company_id, cleaned, bool(demo)),
+        """
+        INSERT INTO app.companies (id, name, is_demo, extension_package)
+        VALUES (%s, %s, %s, %s)
+        """,
+        (company_id, cleaned, bool(demo), package),
     )
     actor = _actor(conn)
     record(
@@ -36,9 +56,19 @@ def create_company(conn: psycopg.Connection, name: str, *, demo: bool) -> dict:
         actor=actor,
         role="admin",
         entity_ref=company_id,
-        payload={"company_id": company_id, "name": cleaned, "is_demo": bool(demo)},
+        payload={
+            "company_id": company_id,
+            "name": cleaned,
+            "is_demo": bool(demo),
+            "extension_package": package,
+        },
     )
-    return {"company_id": company_id, "name": cleaned, "is_demo": bool(demo)}
+    return {
+        "company_id": company_id,
+        "name": cleaned,
+        "is_demo": bool(demo),
+        "extension_package": package,
+    }
 
 
 def assign_user_company(conn: psycopg.Connection, username: str, company_id: str) -> dict:

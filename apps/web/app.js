@@ -31,6 +31,7 @@ const {
   orderDetail,
   customerDetail,
   inboxCard,
+  measureText,
   readableCard,
   showFixtureButton,
   companyUploadNotice,
@@ -416,6 +417,14 @@ async function openCustomer(id) {
 
 async function loadInbox() {
   const data = await api("/api/inbox");
+  const measure = document.querySelector("#match-measure");
+  if (measure) {
+    try {
+      measure.textContent = measureText(await api("/api/payment-match/measure"));
+    } catch (err) {
+      measure.textContent = measureText(null);
+    }
+  }
   const root = document.querySelector("#inbox");
   const canWrite = canWriteDecisions(state.hasCompany);
   root.innerHTML = data.recommendations.map((item) => inboxCard(item, state.role, canWrite)).join("") || "<p>Nessuna eccezione in inbox.</p>";
@@ -470,7 +479,7 @@ async function act(id, action, card) {
         body: JSON.stringify({ decision: "confirm", evidence_hash: evidenceHash }),
       });
     } else if (action === "reject-match") {
-      const reason = card.querySelector("[data-reason]").value.trim();
+      const reason = card.querySelector("[data-reject-reason]").value.trim();
       if (reason.length < 5) {
         showFlash("Scrivi un motivo di almeno 5 caratteri.");
         return;
@@ -480,7 +489,7 @@ async function act(id, action, card) {
         body: JSON.stringify({ decision: "reject", evidence_hash: evidenceHash, reason }),
       });
     } else if (action === "correct-match") {
-      const reason = card.querySelector("[data-reason]").value.trim();
+      const reason = card.querySelector("[data-correct-reason]").value.trim();
       const invoiceId = card.querySelector("[data-invoice]").value.trim();
       const amount = Number(card.querySelector("[data-amount]").value);
       if (reason.length < 5 || invoiceId === "" || !Number.isFinite(amount) || amount <= 0) {

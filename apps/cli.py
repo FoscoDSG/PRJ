@@ -75,11 +75,17 @@ def main(argv: list[str] | None = None) -> None:
         help="Crea un'azienda. Un'azienda pilota si crea solo dopo la firma dell'accordo sui dati: il comando non verifica la firma.",
     )
     create.add_argument("--name", required=True)
+    create.add_argument(
+        "--extension",
+        default=None,
+        help="Pacchetto di estensione di questa azienda. Senza questo argomento l'azienda non ne ha.",
+    )
     create_demo = company_commands.add_parser(
         "create-demo",
         help="Crea l'azienda demo e imposta is_demo. Il nome non decide l'esclusione dalle misure.",
     )
     create_demo.add_argument("--name", required=True)
+    create_demo.add_argument("--extension", default=None)
     assign = company_commands.add_parser(
         "assign",
         help="Assegna l'azienda a un utente che non ne ha una. Un secondo assegnamento è rifiutato.",
@@ -136,9 +142,9 @@ def main(argv: list[str] | None = None) -> None:
             with connect() as conn:
                 require_migrated(conn)
                 if args.company_command == "create":
-                    result = create_company(conn, args.name, demo=False)
+                    result = create_company(conn, args.name, demo=False, extension=args.extension)
                 elif args.company_command == "create-demo":
-                    result = create_company(conn, args.name, demo=True)
+                    result = create_company(conn, args.name, demo=True, extension=args.extension)
                 else:
                     result = assign_user_company(conn, args.username, args.company_id)
                 conn.commit()

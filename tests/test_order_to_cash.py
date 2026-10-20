@@ -6,7 +6,12 @@ I casi della misura costruiti in memoria sono etichette di test, non fatture ver
 
 from __future__ import annotations
 
+import json
+import re
+import uuid
+from contextlib import redirect_stdout
 from decimal import Decimal
+from io import StringIO
 from pathlib import Path
 
 import psycopg
@@ -28,11 +33,13 @@ from services.agent.payment_match import (
 from services.agent.payment_measure import (
     MIN_MEASURED_CASES,
     MIN_MEASURED_SOURCES,
+    RECALL_LABEL,
+    UNMATCHED_LABEL,
     UNMEASURED,
     measure_payment_matches,
     score_cases,
 )
-from services.cash.documents import write_supplier
+from services.cash.documents import write_payment, write_supplier
 from services.companies import NO_COMPANY_UPLOAD
 from services.db import app_connect, connect
 from services.graph.projection import project_graph
@@ -307,6 +314,29 @@ def test_measure_stays_provisional_until_cases_and_source_names():
     report = score_cases([], [], [lonely])
     assert report["unmatched_share"] == 1
     assert report["unmatched_payments"] == 1
+    assert report["recall_label"] == RECALL_LABEL
+    assert report["unmatched_label"] == UNMATCHED_LABEL
+
+    reviewed = case(6, "alfa", "c1")
+    proposals, decisions, payments = _unzip([reviewed])
+    payments.append(
+        {
+            "id": "pay-open-2",
+            "company_id": "c1",
+            "source_name": "alfa",
+            "label_origin": "rule",
+        }
+    )
+    report = score_cases(proposals, decisions, payments)
+    assert report["recall"] == 1
+    assert report["unmatched_share"] == 0.5
+    assert report["recall_label"] == RECALL_LABEL
+    assert report["unmatched_label"] == UNMATCHED_LABEL
+    empty = score_cases([], [], [])
+    assert empty["recall"] is None
+    assert empty["unmatched_share"] is None
+    assert empty["recall_label"] == RECALL_LABEL
+    assert empty["unmatched_label"] == UNMATCHED_LABEL
 
 
 def _unzip(rows):
@@ -391,7 +421,7 @@ def test_synthetic_cash_is_proposed_isolated_and_not_measured(client: TestClient
     assert hidden.status_code == 404
     catalog = client.get("/api/ontology").json()
     assert catalog["company_id"] is None
-    assert any(item["package"] == "customer_a" for item in catalog["extensions"])
+    assert catalog["extensions"] == []
     sales = next(item for item in catalog["packages"] if item["name"] == "sales")
     assert sales["depends_on"] == ["manufacturing"]
     blocked = client.post(
@@ -568,6 +598,10 @@ def test_synthetic_cash_is_proposed_isolated_and_not_measured(client: TestClient
     assert measured["provisional"] is True
     assert measured["human_cases"] == 0
     assert measured["revocations"] == 0
+    assert measured["scope"] == "company"
+    assert measured["decides_rule"] is False
+    assert measured["recall_label"] == RECALL_LABEL
+    assert measured["unmatched_label"] == UNMATCHED_LABEL
     with connect() as conn:
         fresh = measure_payment_matches(conn)
     assert fresh["label"] == UNMEASURED
@@ -583,4 +617,190 @@ def test_approver_without_a_company_cannot_decide(client: TestClient):
     assert response.json()["detail"] == NO_COMPANY_UPLOAD
     ontology = client.get("/api/ontology")
     assert ontology.status_code == 200
-    assert ontology.json()["company_id"] is None
+    body = ontology.json()
+    assert body["company_id"] is None
+    assert body["extensions"] == []
+
+
+def _create_company(name: str, *, demo: bool = False, extension: str | None = None) -> str:
+    args = ["company", "create-demo" if demo else "create", "--name", name]
+    if extension:
+        args.extend(["--extension", extension])
+    created = StringIO()
+    with redirect_stdout(created):
+        main(args)
+    return json.loads(created.getvalue().strip().splitlines()[-1])["company_id"]
+
+
+def _code(path: Path) -> str:
+    script = path.read_text(encoding="utf-8")
+    return "\n".join(line.split("--", 1)[0] for line in script.splitlines())
+
+
+def test_ontology_names_transitions_and_one_company_extension(client: TestClient):
+    login(client, "operator")
+    catalog = client.get("/api/ontology").json()
+    assert catalog["extensions"] == []
+    assert "sales@1.0.0" in catalog["version"]
+    invoice = next(item for item in catalog["types"] if item["name"] == "Invoice")
+    assert invoice["label"] == "Fattura"
+    amount = next(field for field in invoice["fields"] if field["name"] == "amount")
+    assert amount["label"] == "Importo fattura"
+    payment = next(item for item in catalog["types"] if item["name"] == "Payment")
+    assert payment["label"] == "Incasso"
+    causale = next(field for field in payment["fields"] if field["name"] == "causale")
+    assert causale["label"] == "Causale"
+    for type_def in catalog["types"]:
+        assert type_def["label"]
+        for field in type_def["fields"]:
+            assert field["label"]
+    cash = _process(catalog, "order_to_cash")
+    step_ids = [step["id"] for step in cash["steps"]]
+    assert step_ids[0] == "order_placed"
+    assert step_ids[1] == "fulfilled"
+    assert cash["transitions"] == [
+        {"from": step_ids[index], "to": step_ids[index + 1]} for index in range(len(step_ids) - 1)
+    ]
+    assert _process(catalog, "order_exception")["transitions"] == []
+    assert {
+        "process": "order_to_cash",
+        "from": "order_placed",
+        "to": "fulfilled",
+    } in catalog["step_transitions"]
+
+    extended = _create_company("Con commessa", extension="customer_a")
+    plain = _create_company("Senza commessa")
+    _assign("operator", extended)
+    _assign("mapper", plain)
+    login(client, "operator")
+    own = client.get("/api/ontology").json()
+    assert own["extensions"] == [{"package": "customer_a", "version": "1.0.0", "types": ["Order"]}]
+    assert own["company_id"] == extended
+    login(client, "mapper")
+    other = client.get("/api/ontology").json()
+    assert other["extensions"] == []
+    assert other["company_id"] == plain
+
+
+def test_measure_is_scoped_and_skips_demo_companies(client: TestClient):
+    real = give_company("mapper", "Reale")
+    other = _create_company("Altra")
+    demo = _create_company("Dimostrazione", demo=True)
+    _assign("approver", demo)
+    model = load_merged()
+    with connect() as conn:
+        payments = {}
+        for company_id, source in (
+            (real, "fonte-reale"),
+            (other, "fonte-altra"),
+            (demo, "fonte-demo"),
+        ):
+            payments[source] = write_payment(
+                conn,
+                model,
+                company_id=company_id,
+                source_key=source,
+                direction="incoming",
+                paid_at="2026-04-01",
+                amount=Decimal("10.00"),
+                iban=IBAN,
+                causale="prova",
+                counterparty_name="Cliente Prova",
+                counterparty_vat="IT00000000001",
+                reference="FT-1",
+                source=source,
+                source_class="external",
+                label_origin="rule",
+            )
+        for source, company_id in (
+            ("fonte-reale", real),
+            ("fonte-altra", other),
+            ("fonte-demo", demo),
+        ):
+            conn.execute(
+                """
+                INSERT INTO app.payment_decisions (
+                  id, proposal_id, payment_entity_id, company_id, decision,
+                  actor, actor_role, failed_criteria, reason, source_name
+                )
+                VALUES (
+                  %s, NULL, %s, %s, 'correct',
+                  'approver', 'approver', '["amount","customer","reference"]'::jsonb,
+                  'controllo di prova', %s
+                )
+                """,
+                (str(uuid.uuid4()), payments[source], company_id, source),
+            )
+        conn.commit()
+
+    login(client, "admin")
+    admin = client.get("/api/payment-match/measure").json()
+    admin_text = json.dumps(admin)
+    assert admin["scope"] == "all"
+    assert admin["decides_rule"] is True
+    assert admin["source_names"] == ["fonte-altra", "fonte-reale"]
+    assert admin["human_cases"] == 2
+    assert admin["payments"] == 2
+    assert admin["unmatched_payments"] == 2
+    assert admin["unmatched_share"] == 1
+    assert "fonte-demo" not in admin_text
+
+    login(client, "mapper")
+    own = client.get("/api/payment-match/measure").json()
+    own_text = json.dumps(own)
+    assert own["scope"] == "company"
+    assert own["decides_rule"] is False
+    assert own["source_names"] == ["fonte-reale"]
+    assert own["human_cases"] == 1
+    assert own["payments"] == 1
+    assert own["unmatched_share"] == 1
+    assert "fonte-altra" not in own_text
+    assert "fonte-demo" not in own_text
+
+    login(client, "approver")
+    hidden = client.get("/api/payment-match/measure").json()
+    hidden_text = json.dumps(hidden)
+    assert hidden["scope"] == "company"
+    assert hidden["decides_rule"] is False
+    assert hidden["human_cases"] == 0
+    assert hidden["payments"] == 0
+    assert hidden["unmatched_share"] is None
+    assert hidden["source_names"] == []
+    assert "fonte-reale" not in hidden_text
+    assert "fonte-altra" not in hidden_text
+    assert "fonte-demo" not in hidden_text
+
+    login(client, "operator")
+    empty = client.get("/api/payment-match/measure").json()
+    assert empty["scope"] == "company"
+    assert empty["decides_rule"] is False
+    assert empty["human_cases"] == 0
+    assert empty["payments"] == 0
+    assert empty["source_names"] == []
+    assert empty["recall_label"] == RECALL_LABEL
+    assert empty["unmatched_label"] == UNMATCHED_LABEL
+
+
+def test_migration_0017_does_not_rewrite_inbox_rows(client: TestClient):
+    code = _code(ROOT / "db/migrations/0017_order_to_cash.sql")
+    assert re.search(r"\bupdate\s+app\.recommendations\b", code, re.I) is None
+    extension = _code(ROOT / "db/migrations/0018_company_extension.sql")
+    assert re.search(r"\bupdate\b", extension, re.I) is None
+    give_company("mapper", "Lettura")
+    login(client, "mapper")
+    load_demo()
+    with connect() as conn:
+        conn.execute("UPDATE app.recommendations SET process_id = NULL, step_id = NULL")
+        conn.commit()
+    catalog = client.get("/api/ontology").json()
+    order_process = _process(catalog, "order_exception")
+    shortage = next(step for step in order_process["steps"] if step["id"] == "shortage")
+    inbox = client.get("/api/inbox").json()["recommendations"]
+    assert len(inbox) == 1
+    assert "80" in inbox[0]["problem"]
+    assert inbox[0]["process"] == {
+        "id": order_process["id"],
+        "label": order_process["label"],
+        "package": order_process["package"],
+    }
+    assert inbox[0]["step"] == {"id": shortage["id"], "label": shortage["label"]}
