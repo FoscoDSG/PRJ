@@ -462,8 +462,26 @@ def test_synthetic_cash_is_proposed_isolated_and_not_measured(client: TestClient
     assert any(fact["property"] == "due_at" and fact["value"] == "2026-04-01" for fact in invoice["facts"])
     assert len(invoice["lines"]) == 1
     payment = client.get(f"/api/payments/{full['payment_id']}").json()
-    assert any(fact["property"] == "iban" and fact["value"] == MASK for fact in payment["facts"])
-    assert any(fact["property"] == "causale" and fact["value"] == MASK for fact in payment["facts"])
+    _assert_personal_cash_masked(invoice, payment)
+    login(client, "mapper")
+    mapper_invoice = client.get(f"/api/invoices/{full['invoice_id']}").json()
+    mapper_payment = client.get(f"/api/payments/{full['payment_id']}").json()
+    mapper_inbox = client.get("/api/inbox").json()
+    _assert_personal_cash_masked(mapper_invoice, mapper_payment)
+    hidden_text = json.dumps(
+        {
+            "approver_invoice": invoice,
+            "approver_payment": payment,
+            "mapper_invoice": mapper_invoice,
+            "mapper_payment": mapper_payment,
+            "inbox": mapper_inbox,
+        },
+        default=str,
+    )
+    assert IBAN not in hidden_text
+    assert "Cliente Prova Alfa" not in hidden_text
+    assert "Saldo FT-TEST-100" not in hidden_text
+    login(client, "approver")
     with connect() as conn:
         stored = conn.execute(
             """
@@ -650,6 +668,19 @@ def test_ontology_names_transitions_and_one_company_extension(client: TestClient
     assert payment["label"] == "Incasso"
     causale = next(field for field in payment["fields"] if field["name"] == "causale")
     assert causale["label"] == "Causale"
+    assert causale["classification"] == "confidential"
+    for type_name, field_name in (
+        ("Payment", "iban"),
+        ("Payment", "causale"),
+        ("Payment", "counterparty_name"),
+        ("Invoice", "customer_name"),
+    ):
+        field = next(
+            item
+            for item in next(entry for entry in catalog["types"] if entry["name"] == type_name)["fields"]
+            if item["name"] == field_name
+        )
+        assert field["classification"] == "confidential"
     for type_def in catalog["types"]:
         assert type_def["label"]
         for field in type_def["fields"]:
@@ -786,6 +817,8 @@ def test_migration_0017_does_not_rewrite_inbox_rows(client: TestClient):
     assert re.search(r"\bupdate\s+app\.recommendations\b", code, re.I) is None
     extension = _code(ROOT / "db/migrations/0018_company_extension.sql")
     assert re.search(r"\bupdate\b", extension, re.I) is None
+    checks = _code(ROOT / "db/migrations/0019_payment_company_checks.sql")
+    assert re.search(r"\bupdate\b", checks, re.I) is None
     give_company("mapper", "Lettura")
     login(client, "mapper")
     load_demo()
@@ -804,3 +837,196 @@ def test_migration_0017_does_not_rewrite_inbox_rows(client: TestClient):
         "package": order_process["package"],
     }
     assert inbox[0]["step"] == {"id": shortage["id"], "label": shortage["label"]}
+
+
+def _assert_personal_cash_masked(invoice: dict, payment: dict) -> None:
+    by_invoice = {fact["property"]: fact for fact in invoice["facts"]}
+    by_payment = {fact["property"]: fact for fact in payment["facts"]}
+    expected = {
+        "customer_name": by_invoice,
+        "iban": by_payment,
+        "causale": by_payment,
+        "counterparty_name": by_payment,
+    }
+    for name, facts in expected.items():
+        fact = facts[name]
+        assert fact["classification"] == "confidential"
+        assert fact["value"] == MASK
+        assert fact.get("masked") is True
+
+
+def _entity(conn, type_name: str, key: str, company_id: str) -> str:
+    entity_id = str(uuid.uuid4())
+    conn.execute(
+        """
+        INSERT INTO app.entities (id, type, business_key, company_id)
+        VALUES (%s, %s, %s, %s)
+        """,
+        (entity_id, type_name, key, company_id),
+    )
+    return entity_id
+
+
+def _insert_proposal(conn, company_id: str, payment_id: str, invoice_id: str, allocation_id: str) -> str:
+    proposal_id = str(uuid.uuid4())
+    conn.execute(
+        """
+        INSERT INTO app.payment_proposals (
+          id, company_id, payment_entity_id, invoice_entity_id, allocation_entity_id,
+          match_group, source_name, label_origin, criteria, score, confidence_method,
+          confidence_rule, allocated_amount, evidence, evidence_hash, process_id, step_id
+        )
+        VALUES (
+          %s, %s, %s, %s, %s,
+          %s, 'fonte-vincolo', 'rule', '{}'::jsonb, 1, 'rule',
+          %s, 10, '[]'::jsonb, %s, 'order_to_cash', 'match_proposed'
+        )
+        """,
+        (
+            proposal_id,
+            company_id,
+            payment_id,
+            invoice_id,
+            allocation_id,
+            str(uuid.uuid4()),
+            RULE,
+            "a" * 64,
+        ),
+    )
+    return proposal_id
+
+
+def _insert_decision(
+    conn,
+    *,
+    company_id: str,
+    proposal_id: str,
+    payment_id: str,
+    invoice_id: str | None,
+    decision: str,
+    reason: str,
+    revokes: str | None = None,
+) -> str:
+    decision_id = str(uuid.uuid4())
+    conn.execute(
+        """
+        INSERT INTO app.payment_decisions (
+          id, proposal_id, payment_entity_id, company_id, decision, actor, actor_role,
+          invoice_entity_id, failed_criteria, reason, source_name, revokes_decision_id
+        )
+        VALUES (%s, %s, %s, %s, %s, 'approver', 'approver', %s, '[]'::jsonb, %s, 'fonte-vincolo', %s)
+        """,
+        (decision_id, proposal_id, payment_id, company_id, decision, invoice_id, reason, revokes),
+    )
+    return decision_id
+
+
+def test_payment_company_and_reason_are_enforced_in_the_database():
+    company_a = _create_company("Vincolo Alfa")
+    company_b = _create_company("Vincolo Beta")
+    with connect() as conn:
+        payment_a = _entity(conn, "Payment", "INC-A", company_a)
+        invoice_a = _entity(conn, "Invoice", "FT-A", company_a)
+        allocation_a = _entity(conn, "PaymentAllocation", "ALL-A", company_a)
+        payment_b = _entity(conn, "Payment", "INC-B", company_b)
+        invoice_b = _entity(conn, "Invoice", "FT-B", company_b)
+        allocation_b = _entity(conn, "PaymentAllocation", "ALL-B", company_b)
+        conn.commit()
+        for payment_id, invoice_id, allocation_id in (
+            (payment_b, invoice_a, allocation_a),
+            (payment_a, invoice_b, allocation_a),
+            (payment_a, invoice_a, allocation_b),
+        ):
+            with pytest.raises(psycopg.errors.ForeignKeyViolation):
+                _insert_proposal(conn, company_a, payment_id, invoice_id, allocation_id)
+            conn.rollback()
+        proposal_id = _insert_proposal(conn, company_a, payment_a, invoice_a, allocation_a)
+        with pytest.raises(psycopg.errors.ForeignKeyViolation):
+            _insert_decision(
+                conn,
+                company_id=company_a,
+                proposal_id=proposal_id,
+                payment_id=payment_a,
+                invoice_id=invoice_b,
+                decision="correct",
+                reason="motivo valido",
+            )
+        conn.rollback()
+        proposal_id = _insert_proposal(conn, company_a, payment_a, invoice_a, allocation_a)
+        with pytest.raises(psycopg.errors.CheckViolation):
+            _insert_decision(
+                conn,
+                company_id=company_a,
+                proposal_id=proposal_id,
+                payment_id=payment_a,
+                invoice_id=invoice_a,
+                decision="reject",
+                reason="no",
+            )
+        conn.rollback()
+        proposal_id = _insert_proposal(conn, company_a, payment_a, invoice_a, allocation_a)
+        with pytest.raises(psycopg.errors.CheckViolation):
+            _insert_decision(
+                conn,
+                company_id=company_a,
+                proposal_id=proposal_id,
+                payment_id=payment_a,
+                invoice_id=None,
+                decision="correct",
+                reason="    a",
+            )
+        conn.rollback()
+        proposal_id = _insert_proposal(conn, company_a, payment_a, invoice_a, allocation_a)
+        confirmed = _insert_decision(
+            conn,
+            company_id=company_a,
+            proposal_id=proposal_id,
+            payment_id=payment_a,
+            invoice_id=invoice_a,
+            decision="confirm",
+            reason="",
+        )
+        _insert_decision(
+            conn,
+            company_id=company_a,
+            proposal_id=proposal_id,
+            payment_id=payment_a,
+            invoice_id=invoice_a,
+            decision="correct",
+            reason="abcde",
+        )
+        conn.execute("SAVEPOINT one_revocation")
+        try:
+            conn.execute("ALTER TABLE app.payment_decisions DISABLE TRIGGER payment_decisions_company")
+            _insert_decision(
+                conn,
+                company_id=company_a,
+                proposal_id=proposal_id,
+                payment_id=payment_a,
+                invoice_id=None,
+                decision="revoked",
+                reason="x",
+                revokes=confirmed,
+            )
+            with pytest.raises(psycopg.errors.UniqueViolation):
+                _insert_decision(
+                    conn,
+                    company_id=company_a,
+                    proposal_id=proposal_id,
+                    payment_id=payment_a,
+                    invoice_id=None,
+                    decision="revoked",
+                    reason="y",
+                    revokes=confirmed,
+                )
+        finally:
+            conn.execute("ROLLBACK TO SAVEPOINT one_revocation")
+        index = conn.execute(
+            """
+            SELECT indexdef
+            FROM pg_indexes
+            WHERE schemaname = 'app' AND indexname = 'payment_decisions_one_revocation_idx'
+            """
+        ).fetchone()
+    assert index is not None
+    assert "UNIQUE" in index["indexdef"].upper()

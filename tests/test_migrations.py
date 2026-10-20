@@ -216,12 +216,13 @@ _FRESH = [
     {"version": "0016", "name": "company_name_reviews", "baselined": False},
     {"version": "0017", "name": "order_to_cash", "baselined": False},
     {"version": "0018", "name": "company_extension", "baselined": False},
+    {"version": "0019", "name": "payment_company_checks", "baselined": False},
 ]
 
 
 def test_migration_files_do_not_drop_or_truncate():
     files = migration_files()
-    assert [item.version for item in files] == ["0001", "0002", "0003", "0004", "0005", "0006", "0007", "0008", "0009", "0010", "0011", "0012", "0013", "0014", "0015", "0016", "0017", "0018"]
+    assert [item.version for item in files] == ["0001", "0002", "0003", "0004", "0005", "0006", "0007", "0008", "0009", "0010", "0011", "0012", "0013", "0014", "0015", "0016", "0017", "0018", "0019"]
     assert [item.name for item in files] == [
         "initial",
         "provenance_audit_quality",
@@ -241,6 +242,7 @@ def test_migration_files_do_not_drop_or_truncate():
         "company_name_reviews",
         "order_to_cash",
         "company_extension",
+        "payment_company_checks",
     ]
     for item in files:
         text = item.path.read_text(encoding="utf-8")
@@ -450,6 +452,7 @@ def test_legacy_database_is_baselined_without_touching_data_or_audit():
         {"version": "0016", "name": "company_name_reviews", "baselined": False},
         {"version": "0017", "name": "order_to_cash", "baselined": False},
         {"version": "0018", "name": "company_extension", "baselined": False},
+        {"version": "0019", "name": "payment_company_checks", "baselined": False},
     ]
     assert again == []
     assert third == []
@@ -482,6 +485,7 @@ def test_legacy_database_is_baselined_without_touching_data_or_audit():
         ("0016", "company_name_reviews", False),
         ("0017", "order_to_cash", False),
         ("0018", "company_extension", False),
+        ("0019", "payment_company_checks", False),
     ]
 
 
@@ -732,6 +736,7 @@ def test_upgraded_schema_is_baselined_without_touching_audit():
         {"version": "0016", "name": "company_name_reviews", "baselined": False},
         {"version": "0017", "name": "order_to_cash", "baselined": False},
         {"version": "0018", "name": "company_extension", "baselined": False},
+        {"version": "0019", "name": "payment_company_checks", "baselined": False},
     ]
     assert again == []
     assert fact == [("0.42", "system_of_record", "unknown", None)]
@@ -755,6 +760,7 @@ def test_upgraded_schema_is_baselined_without_touching_audit():
         ("0016", "company_name_reviews", False),
         ("0017", "order_to_cash", False),
         ("0018", "company_extension", False),
+        ("0019", "payment_company_checks", False),
     ]
 
 

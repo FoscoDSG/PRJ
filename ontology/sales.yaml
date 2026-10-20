@@ -14,7 +14,7 @@ types:
       - {name: amount, type: number, classification: confidential, origin: original}
       - {name: currency, type: string, classification: internal, origin: original}
       - {name: customer_vat, type: string, classification: confidential, origin: original}
-      - {name: customer_name, type: string, classification: internal, origin: original}
+      - {name: customer_name, type: string, classification: confidential, origin: original}
       - {name: order_source_key, type: string, classification: internal, origin: original}
       - {name: status, type: string, classification: internal, origin: original}
   - name: InvoiceLine
@@ -44,9 +44,9 @@ types:
       - {name: source_key, type: string, classification: internal, origin: original, identifier: true}
       - {name: direction, type: string, classification: internal, origin: original}
       - {name: paid_at, type: string, classification: internal, origin: original}
-      - {name: iban, type: string, classification: internal, origin: original}
-      - {name: causale, type: string, classification: internal, origin: original}
-      - {name: counterparty_name, type: string, classification: internal, origin: original}
+      - {name: iban, type: string, classification: confidential, origin: original}
+      - {name: causale, type: string, classification: confidential, origin: original}
+      - {name: counterparty_name, type: string, classification: confidential, origin: original}
       - {name: counterparty_vat, type: string, classification: confidential, origin: original}
       - {name: reference, type: string, classification: internal, origin: original}
       - {name: status, type: string, classification: internal, origin: original}
