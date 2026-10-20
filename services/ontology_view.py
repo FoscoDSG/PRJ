@@ -181,17 +181,17 @@ def describe_ontology(
 
 
 def type_label(name: str) -> str:
-    label = TYPE_LABELS.get(name)
-    if not label:
-        raise KeyError(name)
-    return label
+    """Italian name, or the technical name when a module has not been translated yet."""
+    return TYPE_LABELS.get(name) or name
 
 
 def field_label(type_name: str, prop_name: str) -> str:
-    label = FIELD_LABEL_OVERRIDES.get((type_name, prop_name)) or FIELD_LABELS.get(prop_name)
-    if not label:
-        raise KeyError(f"{type_name}.{prop_name}")
-    return label
+    """Italian name, or the technical name when a module has not been translated yet."""
+    return (
+        FIELD_LABEL_OVERRIDES.get((type_name, prop_name))
+        or FIELD_LABELS.get(prop_name)
+        or prop_name
+    )
 
 
 def extension_package_names(model: Ontology) -> set[str]:

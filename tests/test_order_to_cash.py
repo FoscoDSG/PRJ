@@ -986,6 +986,28 @@ def test_payment_company_and_reason_are_enforced_in_the_database():
             decision="confirm",
             reason="",
         )
+        with pytest.raises(psycopg.errors.CheckViolation):
+            _insert_decision(
+                conn,
+                company_id=company_a,
+                proposal_id=proposal_id,
+                payment_id=payment_a,
+                invoice_id=None,
+                decision="revoked",
+                reason="x",
+                revokes=confirmed,
+            )
+        conn.rollback()
+        proposal_id = _insert_proposal(conn, company_a, payment_a, invoice_a, allocation_a)
+        confirmed = _insert_decision(
+            conn,
+            company_id=company_a,
+            proposal_id=proposal_id,
+            payment_id=payment_a,
+            invoice_id=invoice_a,
+            decision="confirm",
+            reason="",
+        )
         _insert_decision(
             conn,
             company_id=company_a,
@@ -1005,7 +1027,7 @@ def test_payment_company_and_reason_are_enforced_in_the_database():
                 payment_id=payment_a,
                 invoice_id=None,
                 decision="revoked",
-                reason="x",
+                reason="annullo di prova",
                 revokes=confirmed,
             )
             with pytest.raises(psycopg.errors.UniqueViolation):
@@ -1016,7 +1038,7 @@ def test_payment_company_and_reason_are_enforced_in_the_database():
                     payment_id=payment_a,
                     invoice_id=None,
                     decision="revoked",
-                    reason="y",
+                    reason="secondo annullo",
                     revokes=confirmed,
                 )
         finally:
