@@ -40,7 +40,7 @@ from services.agent.payment_measure import (
     score_cases,
 )
 from services.cash.documents import write_payment, write_supplier
-from services.companies import NO_COMPANY_UPLOAD
+from services.companies import USER_WITHOUT_COMPANY
 from services.db import app_connect, connect
 from services.graph.projection import project_graph
 from services.pii import MASK
@@ -632,7 +632,7 @@ def test_approver_without_a_company_cannot_decide(client: TestClient):
         json={"decision": "confirm", "evidence_hash": "a" * 64},
     )
     assert response.status_code == 403
-    assert response.json()["detail"] == NO_COMPANY_UPLOAD
+    assert response.json()["detail"] == USER_WITHOUT_COMPANY
     ontology = client.get("/api/ontology")
     assert ontology.status_code == 200
     body = ontology.json()

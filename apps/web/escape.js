@@ -73,6 +73,10 @@
     return `<p class="profile-label"><span class="profile-label-source">${escapeHtml(source)}</span> <span class="profile-label-text">${escapeHtml(profileLabelText(item))}</span></p><div class="file-type-actions"><button type="button" data-type-ok="${escapeHtml(fileId)}">Corretto</button> <button type="button" class="ghost" data-type-wrong="${escapeHtml(fileId)}">Non è questo tipo</button> <label class="file-type-choice">Tipo corretto <select data-type-choice="${escapeHtml(fileId)}">${options}</select> <button type="button" disabled>Registra tipo</button></label></div>`;
   }
 
+  function withBreaks(value) {
+    return escapeHtml(value).replaceAll(".", ".\u200b").replaceAll("_", "_\u200b");
+  }
+
   function escapeHtml(value) {
     return String(value ?? "")
       .replaceAll("&", "&amp;")
@@ -102,10 +106,14 @@
   };
 
   function formatDay(value) {
-    const text = value == null ? "" : String(value);
-    const match = text.match(/^(\d{4})-(\d{2})-(\d{2})/);
-    if (!match) return text;
-    return `${match[3]}/${match[2]}/${match[1]}`;
+    const text = value == null ? "" : String(value).trim();
+    if (!text) return "";
+    const single = text.match(/^(\d{4})-(\d{2})-(\d{2})(?:[T\s].*)?$/);
+    if (single) return `${single[3]}/${single[2]}/${single[1]}`;
+    if (text.includes(",")) {
+      return text.split(",").map((part) => formatDay(part.trim())).join(", ");
+    }
+    return text;
   }
 
   function euroText(value) {
@@ -134,9 +142,7 @@
       const line = entry && entry.revoked
         ? `<span class="revoked-decision">${escapeHtml(text)}</span>`
         : escapeHtml(text);
-      const revoker = entry && entry.revoked
-        ? `<span class="revoker-line">Annullata da ${escapeHtml(entry.revoker)} il ${escapeHtml(formatDay(entry.revoked_at))}</span>`
-        : "";
+      const revoker = revokerLine(entry);
       const motive = entry && entry.revoke_reason
         ? `<span class="revoke-reason">${escapeHtml(entry.revoke_reason)}</span>`
         : "";
@@ -146,12 +152,25 @@
     return `<ul class="decision-history">${items.join("")}</ul>`;
   }
 
+  function revokerLine(entry) {
+    if (!entry || !entry.revoked) return "";
+    const who = entry.revoker != null ? String(entry.revoker).trim() : "";
+    const whenRaw = entry.revoked_at != null ? String(entry.revoked_at).trim() : "";
+    const when = whenRaw ? formatDay(whenRaw) : "";
+    if (!who && !when) return "";
+    if (who && when) {
+      return `<span class="revoker-line">Annullata da ${escapeHtml(who)} il ${escapeHtml(when)}</span>`;
+    }
+    if (who) return `<span class="revoker-line">Annullata da ${escapeHtml(who)}</span>`;
+    return `<span class="revoker-line">Annullata il ${escapeHtml(when)}</span>`;
+  }
+
   function revokeFields(decisionId, kind) {
     return `<label class="revoke-reason">Motivo dell'annullamento <input data-revoke-reason="${escapeHtml(decisionId)}" data-revoke-kind="${escapeHtml(kind)}" required minlength="5" maxlength="500" /></label> <button type="button" class="ghost" data-revoke-${escapeHtml(kind)}="${escapeHtml(decisionId)}">Annulla</button>`;
   }
 
-  function revokeBar(item, canWrite, kind) {
-    if (canWrite === false) return "";
+  function revokeBar(item, canWrite, kind, role) {
+    if (canWrite === false || role === "operator") return "";
     if (item && item.executed) {
       const message = item.executed_message || "L'azione è già stata eseguita e non si può annullare da qui.";
       return `<p class="executed-note">${escapeHtml(message)}</p>`;
@@ -179,15 +198,15 @@
     return `<p class="executed-note">Al prossimo caricamento la colonna torna da decidere; i dati già caricati restano.</p>`;
   }
 
-  function driftCard(item, canWrite) {
+  function driftCard(item, canWrite, role) {
     const queued = !item.status || item.status === "open";
     const button = canWrite !== false && queued
       ? `<button type="button" data-drift="${escapeHtml(item.id)}">Segna visto</button>`
       : "";
-    return `<article class="card"><strong>Schema drift su ${escapeHtml(item.source_name)}</strong><pre>${escapeHtml(JSON.stringify(item.diff, null, 2))}</pre>${decisionHistory(item.history)}${button}${revokeBar(item, canWrite, "drift")}</article>`;
+    return `<article class="card"><strong>Schema drift su ${escapeHtml(item.source_name)}</strong><pre>${escapeHtml(JSON.stringify(item.diff, null, 2))}</pre>${decisionHistory(item.history)}${button}${revokeBar(item, canWrite, "drift", role)}</article>`;
   }
 
-  function quarantineCard(item, canWrite) {
+  function quarantineCard(item, canWrite, role) {
     const reasons = (item.reasons || []).filter((reason) => reason != null && String(reason) !== "").join("; ");
     let note = "In attesa di conferma, nessuna scrittura ERP.";
     if (reasons) note = reasons;
@@ -195,17 +214,17 @@
     const title = item.order_key || item.source_name;
     const queued = !item.status || item.status === "open";
     const button = canWrite !== false && queued
-      ? `<button type="button" data-release="${escapeHtml(item.id)}">Rilascia</button>`
+      ? `<button type="button" data-release="${escapeHtml(item.id)}">Rilascia</button> <button type="button" class="ghost" data-reject-quarantine="${escapeHtml(item.id)}">Rifiuta</button>`
       : "";
-    return `<article class="card"><strong>Quarantena ${escapeHtml(title)}</strong><p>${escapeHtml(note)}</p>${decisionHistory(item.history)}${keptEffect(item, "quarantine")}${button}${revokeBar(item, canWrite, "quarantine")}</article>`;
+    return `<article class="card"><strong>Quarantena ${escapeHtml(title)}</strong><p>${escapeHtml(note)}</p>${decisionHistory(item.history)}${keptEffect(item, "quarantine")}${button}${revokeBar(item, canWrite, "quarantine", role)}</article>`;
   }
 
-  function identityCard(item, canWrite) {
+  function identityCard(item, canWrite, role) {
     const queued = !item.status || item.status === "open";
     const buttons = canWrite !== false && queued
       ? `<button type="button" data-merge="${escapeHtml(item.id)}">Conferma fusione</button> <button type="button" class="ghost" data-split="${escapeHtml(item.id)}">Tieni separati</button>`
       : "";
-    return `<article class="card"><strong>Identità ${escapeHtml(item.entity_type)}</strong><p>${escapeHtml(item.reason)} (${escapeHtml(item.score)})</p>${decisionHistory(item.history)}${keptEffect(item, "identity")}${buttons}${revokeBar(item, canWrite, "identity")}</article>`;
+    return `<article class="card"><strong>Identità ${escapeHtml(item.entity_type)}</strong><p>${escapeHtml(item.reason)} (${escapeHtml(item.score)})</p>${decisionHistory(item.history)}${keptEffect(item, "identity")}${buttons}${revokeBar(item, canWrite, "identity", role)}</article>`;
   }
 
   const PROVENANCE_LABELS = {
@@ -268,7 +287,7 @@
 
   // Testo fisso. La pagina lo assegna con textContent, non come HTML.
   function companyUploadNotice() {
-    return "Il tuo utente non è ancora collegato a un'azienda: chiedi all'amministratore";
+    return "Non hai ancora un'azienda assegnata. Chiedi all'amministratore di collegarti.";
   }
 
   function measuredThreshold(item) {
@@ -315,7 +334,7 @@
     status: "Stato",
   };
 
-  function mappingRow(item, canWrite) {
+  function mappingRow(item, canWrite, role) {
     const writable = canWrite !== false;
     const confirm = writable && item.status === "proposed"
       ? `<button type="button" data-confirm="${escapeHtml(item.id)}">Conferma</button> <button type="button" class="ghost" data-reject="${escapeHtml(item.id)}">Rifiuta</button>`
@@ -323,7 +342,7 @@
     const revoke = writable && item.origin === "learned" && item.decision_id
       ? `<label class="revoke-reason">Motivo dell'annullamento <input data-revoke-reason="${escapeHtml(item.decision_id)}" required minlength="5" maxlength="500" /></label> <button type="button" class="ghost" data-revoke="${escapeHtml(item.decision_id)}">Annulla correzione</button>`
       : "";
-    const decided = revokeBar({ history: item.history, executed: item.executed, executed_message: item.executed_message }, canWrite, "mapping");
+    const decided = revokeBar({ history: item.history, executed: item.executed, executed_message: item.executed_message }, canWrite, "mapping", role);
     const actions = [confirm, revoke, decided].filter(Boolean).join(" ");
     const shown = suggestionBand(item);
     const note = shown.note
@@ -331,8 +350,8 @@
       : "";
     return `<tr>
         <td class="mapping-source" data-label="${MAPPING_HEADERS.source}">${escapeHtml(item.source_name)}</td>
-        <td class="mapping-column" data-label="${MAPPING_HEADERS.column}"><code>${escapeHtml(item.source_field)}</code></td>
-        <td class="mapping-destination" data-label="${MAPPING_HEADERS.destination}">${escapeHtml(item.target_type)}.${escapeHtml(item.target_property)}</td>
+        <td class="mapping-column" data-label="${MAPPING_HEADERS.column}"><code>${withBreaks(item.source_field)}</code></td>
+        <td class="mapping-destination" data-label="${MAPPING_HEADERS.destination}">${withBreaks(item.target_type)}.\u200b${withBreaks(item.target_property)}</td>
         <td class="mapping-confidence" data-label="${MAPPING_HEADERS.suggestion}"><p class="origin-line">${escapeHtml(originText(item))}</p><p class="suggestion-band">${escapeHtml(shown.band)}</p>${note}</td>
         <td class="mapping-status" data-label="${MAPPING_HEADERS.status}">${pill(item.status)}${decisionHistory(item.history)}${confirmRevokedNotice(item)}</td>
         <td class="mapping-actions">${actions}</td>
@@ -413,9 +432,14 @@
     return `<p class="match-criteria">${escapeHtml(parts.join(" · "))}</p>`;
   }
 
+  function criterionWords(code) {
+    const key = code == null ? "" : String(code);
+    return Object.prototype.hasOwnProperty.call(CRITERION_LABELS, key) ? CRITERION_LABELS[key] : key;
+  }
+
   function failedMarkup(failed) {
     if (!Array.isArray(failed) || !failed.length) return "";
-    const bits = failed.map((item) => escapeHtml(item));
+    const bits = failed.map((item) => escapeHtml(criterionWords(item)));
     return `<p class="failed-criteria">${bits.join(", ")}</p>`;
   }
 
@@ -431,6 +455,60 @@
     return item && item.allocated_amount != null ? item.allocated_amount : "";
   }
 
+  const MONEY_FIELDS = new Set([
+    "amount",
+    "unit_price",
+    "line_amount",
+    "allocated_amount",
+    "cost",
+    "unit_cost",
+    "total_cost",
+    "line_cost",
+    "standard_cost",
+    "price",
+  ]);
+  const DATE_FIELDS = new Set([
+    "issued_at",
+    "due_at",
+    "paid_at",
+    "ordered_at",
+    "occurred_at",
+    "shipped_at",
+    "scadenze",
+  ]);
+
+  function isPlainNumber(value) {
+    if (typeof value === "number") return Number.isFinite(value);
+    return typeof value === "string" && /^-?\d+(\.\d+)?$/.test(value.trim());
+  }
+
+  function displayMoney(value) {
+    if (value == null || value === "") return "";
+    if (!isPlainNumber(value)) return String(value);
+    return euroText(value);
+  }
+
+  function displayDate(value) {
+    if (value == null || value === "") return "";
+    return formatDay(value);
+  }
+
+  function displayField(field) {
+    const name = field && field.name ? String(field.name) : "";
+    const value = field && field.value;
+    if (value == null || value === "") return "";
+    if (field.masked) return String(value);
+    if (MONEY_FIELDS.has(name)) return displayMoney(value);
+    if (DATE_FIELDS.has(name)) return displayDate(value);
+    return String(value);
+  }
+
+  function paymentHeading(payment) {
+    if (payment && typeof payment.label === "string" && payment.label !== "") return payment.label;
+    if (payment && payment.direction === "outgoing") return "Pagamento";
+    return "Incasso";
+  }
+
   function matchLine(label, value) {
     return `<li>${escapeHtml(label)} ${escapeHtml(value ?? "")}</li>`;
   }
@@ -439,21 +517,21 @@
     const payment = item && item.payment && typeof item.payment === "object" ? item.payment : {};
     const invoice = item && item.invoice && typeof item.invoice === "object" ? item.invoice : {};
     const allocation = item && item.allocation && typeof item.allocation === "object" ? item.allocation : {};
-    return `<h3 class="section-heading">Incasso</h3>
+    return `<h3 class="section-heading">${escapeHtml(paymentHeading(payment))}</h3>
       <ul class="fact-list">
         ${matchLine("Numero", payment.number)}
-        ${matchLine("Data", payment.paid_at)}
-        ${matchLine("Importo", payment.amount)}
+        ${matchLine("Data", displayDate(payment.paid_at))}
+        ${matchLine("Importo", displayMoney(payment.amount))}
       </ul>
       <h3 class="section-heading">Fattura proposta</h3>
       <ul class="fact-list">
         ${matchLine("Numero", invoice.number)}
-        ${matchLine("Importo", invoice.amount)}
-        ${matchLine("Scadenza", invoice.due_at)}
+        ${matchLine("Importo", displayMoney(invoice.amount))}
+        ${matchLine("Scadenza", displayDate(invoice.due_at))}
       </ul>
       <h3 class="section-heading">Assegnazione</h3>
       <ul class="fact-list">
-        ${matchLine("Importo assegnato", allocation.amount)}
+        ${matchLine("Importo assegnato", displayMoney(allocation.amount))}
         ${matchLine("Residuo attuale", euroText(allocation.remaining))}
       </ul>
       <h3 class="section-heading">Criteri</h3>
@@ -491,7 +569,8 @@
     const blocked = item.blocked_reason ? String(item.blocked_reason) : "";
     const pending = item.status === "proposed" || item.status === "detected";
     const approvalRevoked = (item.history || []).some((entry) => entry && entry.revoked);
-    const executeButton = !approvalRevoked && (item.status === "dry_run_ok" || item.status === "executed")
+    const alreadyRun = item.status === "executed" || item.executed === true;
+    const executeButton = !approvalRevoked && !alreadyRun && item.status === "dry_run_ok"
       ? '<button type="button" data-act="execute">Esegui</button>'
       : "";
     const approveButton = blocked
@@ -549,7 +628,7 @@
       ${failedMarkup(item.failed_criteria)}
       ${body}
       ${decisionHistory(item.history)}
-      ${revokeBar(item, canWrite, payment ? "payment" : "inbox")}
+      ${revokeBar(item, canWrite, payment ? "payment" : "inbox", role)}
       ${buttons}
     </article>`;
   }
@@ -559,7 +638,40 @@
     return types.find((item) => item && item.name === name) || null;
   }
 
-  function fieldCaption(ontology, typeName, field) {
+  function directionOf(object) {
+    const fields = object && Array.isArray(object.fields) ? object.fields : [];
+    const found = fields.find((field) => field && field.name === "direction" && !field.masked);
+    return found && found.value != null ? String(found.value) : "";
+  }
+
+  function paymentWord(direction, ontology) {
+    const labels = ontology && ontology.payment_labels;
+    const key = direction === "outgoing" ? "outgoing" : "incoming";
+    if (labels && typeof labels[key] === "string" && labels[key] !== "") return labels[key];
+    return key === "outgoing" ? "Pagamento" : "Incasso";
+  }
+
+  function objectTypeLabel(object, ontology) {
+    if (object && object.type === "Payment") return paymentWord(directionOf(object), ontology);
+    const info = ontologyType(ontology, object && object.type);
+    if (info && info.label) return info.label;
+    if (object && typeof object.type_label === "string" && object.type_label !== "") return object.type_label;
+    return (object && object.type) || "";
+  }
+
+  function fieldCaption(ontology, typeName, field, object) {
+    if (typeName === "Payment" && directionOf(object) === "outgoing") {
+      const maps = ontology && ontology.payment_field_labels;
+      const outgoing = maps && maps.outgoing;
+      const name = field && field.name;
+      if (outgoing && name && typeof outgoing[name] === "string" && outgoing[name] !== "") return outgoing[name];
+      const fallback = {
+        amount: "Importo pagamento",
+        source_key: "Numero pagamento",
+        paid_at: "Data pagamento",
+      };
+      if (name && fallback[name]) return fallback[name];
+    }
     const info = ontologyType(ontology, typeName);
     const fields = info && Array.isArray(info.fields) ? info.fields : [];
     const found = fields.find((item) => item && item.name === field.name);
@@ -568,20 +680,35 @@
     return field && field.name ? String(field.name) : "";
   }
 
-  function linkText(ontology, link) {
+  function relationLabel(ontology, name) {
     const rels = ontology && Array.isArray(ontology.relations) ? ontology.relations : [];
-    const known = rels.some((item) => item && item.name === link.rel);
-    const rel = known ? link.rel : (link && link.rel) || "";
+    const found = rels.find((item) => item && item.name === name);
+    if (found && typeof found.label === "string" && found.label !== "") return found.label;
+    return name == null ? "" : String(name);
+  }
+
+  function linkedTypeLabel(ontology, link) {
+    if (link && link.type === "Payment") {
+      if (typeof link.type_label === "string" && link.type_label !== "") return link.type_label;
+      return paymentWord("", ontology);
+    }
     const info = ontologyType(ontology, link && link.type);
-    const typeLabel = info && info.label ? info.label : (link && link.type) || "";
+    if (info && info.label) return info.label;
+    if (link && typeof link.type_label === "string" && link.type_label !== "") return link.type_label;
+    return (link && link.type) || "";
+  }
+
+  function linkText(ontology, link) {
+    const rel = relationLabel(ontology, link && link.rel);
+    const typeLabel = linkedTypeLabel(ontology, link);
     const key = link && link.key != null ? link.key : "";
     return [rel, typeLabel, key].filter((part) => part !== "" && part != null).join(" ");
   }
 
   function objectFields(object, ontology) {
     const rows = (object && object.fields || []).map((field) => {
-      const caption = fieldCaption(ontology, object.type, field);
-      const value = field && field.value != null ? field.value : "";
+      const caption = fieldCaption(ontology, object.type, field, object);
+      const value = displayField(field);
       return `<li>${escapeHtml(caption)}: ${escapeHtml(value)}</li>`;
     }).join("");
     return `${rows}${remainingLine(object)}`;
@@ -595,7 +722,7 @@
   function objectLinks(object, ontology) {
     return (object && object.links || []).map((link) => {
       const text = linkText(ontology, link);
-      return `<li><button type="button" data-object="${escapeHtml(link && link.id)}">${escapeHtml(text)}</button></li>`;
+      return `<li><a href="#" data-object="${escapeHtml(link && link.id)}">${escapeHtml(text)}</a></li>`;
     }).join("");
   }
 
@@ -626,6 +753,7 @@
     if (amount) phrase += ` di ${amount}`;
     if (day) phrase += ` del ${day}`;
     if (who) phrase += ` · ${who}`;
+    if (when) phrase += ` · ${when}`;
     return escapeHtml(phrase);
   }
 
@@ -646,8 +774,7 @@
   }
 
   function objectCard(object, ontology) {
-    const info = ontologyType(ontology, object && object.type);
-    const typeLabel = info && info.label ? info.label : (object && object.type) || "";
+    const typeLabel = objectTypeLabel(object, ontology);
     const links = objectLinks(object, ontology);
     return `<article class="card">
       <h3 class="card-title">${escapeHtml(typeLabel)} ${escapeHtml(object && object.business_key || "")}</h3>
@@ -658,8 +785,7 @@
   }
 
   function objectDetail(object, ontology) {
-    const info = ontologyType(ontology, object && object.type);
-    const typeLabel = info && info.label ? info.label : (object && object.type) || "";
+    const typeLabel = objectTypeLabel(object, ontology);
     const links = objectLinks(object, ontology);
     const entries = (object && object.history) || [];
     const history = entries.map((entry) => {

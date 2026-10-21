@@ -39,7 +39,7 @@ from services.evidence import evidence_key
 from services.pii import install_log_redaction, read_cleartext, unmask_entity
 from services.migrate import require_migrated
 from services.errors import AppError
-from services.companies import NO_COMPANY_UPLOAD
+from services.companies import USER_WITHOUT_COMPANY
 from services.mapping.corrections import company_id_for_user
 from services.pipeline import (
     acknowledge_drift,
@@ -194,7 +194,7 @@ def _require_company(username: str) -> None:
     """A user without a company can read. Uploads and decision writes stop here."""
     with app_connect() as conn:
         if company_id_for_user(conn, username) is None:
-            raise AppError(403, NO_COMPANY_UPLOAD)
+            raise AppError(403, USER_WITHOUT_COMPANY)
 
 
 @app.post("/api/demo/load")
@@ -1094,7 +1094,9 @@ def adjust_stock(product_key: str, body: StockBody, user: dict = Depends(require
     _require_company(user["username"])
     with app_connect() as conn:
         company_id = company_id_for_user(conn, user["username"])
-        expired = adjust_on_hand(conn, ontology(), product_key, body.on_hand, company_id=company_id)
+        expired = adjust_on_hand(
+            conn, ontology(), product_key, body.on_hand, company_id=company_id, role=user["role"]
+        )
         conn.commit()
     return {"expired": expired}
 

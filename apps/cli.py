@@ -218,7 +218,7 @@ def main(argv: list[str] | None = None) -> None:
             )
             return
         if args.command == "expire":
-            expired = adjust_on_hand(conn, model, "ART-X", 500)
+            expired = adjust_on_hand(conn, model, "ART-X", 500, role="admin")
             conn.commit()
             print(json.dumps({"expired": expired}, indent=2))
             return

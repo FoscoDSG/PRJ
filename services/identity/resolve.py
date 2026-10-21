@@ -7,7 +7,7 @@ import unicodedata
 
 import psycopg
 
-from services.companies import NO_COMPANY_UPLOAD
+from services.companies import USER_WITHOUT_COMPANY
 from services.errors import AppError
 from services.revocation import QUEUE_MESSAGE
 
@@ -48,7 +48,7 @@ def confirm_review(
     company_id: str | None,
 ) -> dict:
     if not company_id:
-        raise AppError(403, NO_COMPANY_UPLOAD)
+        raise AppError(403, USER_WITHOUT_COMPANY)
     review = _lock_review(conn, review_id)
     _refuse_other_company(review, company_id)
     if review["status"] != "open":
@@ -100,7 +100,7 @@ def reject_review(
     company_id: str | None,
 ) -> dict:
     if not company_id:
-        raise AppError(403, NO_COMPANY_UPLOAD)
+        raise AppError(403, USER_WITHOUT_COMPANY)
     review = _lock_review(conn, review_id)
     _refuse_other_company(review, company_id)
     if review["status"] != "open":

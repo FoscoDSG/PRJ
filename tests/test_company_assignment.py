@@ -13,7 +13,7 @@ from fastapi.testclient import TestClient
 
 from apps.api.main import app
 from apps.cli import main
-from services.companies import NO_COMPANY_UPLOAD
+from services.companies import USER_WITHOUT_COMPANY
 from services.db import app_connect, connect, password_hash
 from services.mapping.corrections import active_correction, file_type_metric
 from services.migrate import (
@@ -29,7 +29,7 @@ from tests.test_flow import login
 from tests.test_learning import _batch, _decision, _file_decision, _mapping, _user
 
 ROOT = Path(__file__).resolve().parents[1]
-NOTICE = "Il tuo utente non è ancora collegato a un'azienda: chiedi all'amministratore"
+NOTICE = USER_WITHOUT_COMPANY
 
 
 @pytest.fixture
@@ -313,7 +313,7 @@ def test_user_without_a_company_cannot_write_a_decision(client: TestClient):
     for path, body in writes:
         denied = client.post(path) if body is None else client.post(path, json=body)
         assert denied.status_code == 403, path
-        assert denied.json()["detail"] == NO_COMPANY_UPLOAD
+        assert denied.json()["detail"] == USER_WITHOUT_COMPANY
     login(client, "operator")
     operator = client.post("/api/mappings/confirm-confident")
     assert operator.status_code == 403
@@ -349,7 +349,7 @@ def test_user_without_a_company_cannot_write_a_decision(client: TestClient):
     page = (ROOT / "apps" / "web" / "app.js").read_text(encoding="utf-8")
     assert 'querySelector("#confirm-high").hidden = !canWrite' in page
     assert 'querySelector("#materialize").hidden = !canWrite' in page
-    assert "mappingRow(item, canWriteDecisions(state.hasCompany))" in page
+    assert "mappingRow(item, canWriteDecisions(state.hasCompany), state.role)" in page
     assert "canWriteDecisions(state.hasCompany)" in page
     assert "innerHTML" not in page.split("companyNotice")[1].split("show(")[0]
     rendered = subprocess.run(
@@ -398,7 +398,7 @@ def test_upload_without_a_company_is_rejected_and_the_page_hides_the_button(clie
         data={"source_name": "ordini", "source_class": "external", "company_id": str(uuid.uuid4())},
     )
     assert denied.status_code == 403
-    assert denied.json()["detail"] == NO_COMPANY_UPLOAD
+    assert denied.json()["detail"] == USER_WITHOUT_COMPANY
     assert denied.json()["detail"] == NOTICE
     excel = client.post(
         "/api/ingest/excel",
@@ -647,7 +647,7 @@ _NOTICE_CHECK = r"""
 const { companyUploadNotice } = require("./apps/web/escape.js");
 const hostile = '<img src=x onerror="alert(1)">';
 const text = companyUploadNotice(hostile);
-if (text !== "Il tuo utente non è ancora collegato a un'azienda: chiedi all'amministratore") {
+if (text !== "Non hai ancora un'azienda assegnata. Chiedi all'amministratore di collegarti.") {
   console.error(text);
   process.exit(1);
 }

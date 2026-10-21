@@ -16,7 +16,7 @@ import psycopg
 from psycopg.types.json import Json
 
 from services.audit import record
-from services.companies import NO_COMPANY_UPLOAD
+from services.companies import USER_WITHOUT_COMPANY
 from services.errors import AppError
 
 ROME = ZoneInfo("Europe/Rome")
@@ -76,7 +76,7 @@ def rome_stamp(value: datetime | None) -> str | None:
 
 def _require_company(company_id: str | None) -> str:
     if not company_id:
-        raise AppError(403, NO_COMPANY_UPLOAD)
+        raise AppError(403, USER_WITHOUT_COMPANY)
     return company_id
 
 

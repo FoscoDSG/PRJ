@@ -16,10 +16,11 @@ import psycopg
 from ontology.loader import Ontology
 from services.cash.balance import remaining_balance
 from services.errors import AppError
-from services.ontology_view import field_label, type_label
+from services.ontology_view import field_label, payment_label, payment_words, type_label
 from services.pii import (
     MASK,
     RESERVED,
+    ROLE_HIDDEN,
     clear_personal_names,
     hides_margin,
     is_pii_property,
@@ -111,6 +112,7 @@ def document_history(
     entity_id: str,
     type_name: str,
     company_id: str | None,
+    direction: str | None = None,
 ) -> list[dict[str, Any]]:
     """Events on this object, plus payment decisions for an invoice or a payment."""
     if not company_id:
@@ -118,6 +120,9 @@ def document_history(
     items = _event_history(conn, entity_id, company_id)
     if type_name in ("Invoice", "Payment"):
         items.extend(_decision_history(conn, entity_id, company_id))
+    if type_name == "Payment":
+        for item in items:
+            item["label"] = payment_words(str(item.get("label") or ""), direction)
     items.sort(key=lambda item: (str(item.get("at") or ""), item.get("kind") or "", item.get("label") or ""))
     return items
 
@@ -125,6 +130,31 @@ def document_history(
 def _require_type(model: Ontology, type_name: str) -> None:
     if not type_name or type_name not in model.types:
         raise AppError(404, "Tipo assente")
+
+
+def _named(fields: list[dict[str, Any]], name: str) -> str | None:
+    for field in fields:
+        if field.get("name") == name and not field.get("masked"):
+            value = field.get("value")
+            if value not in (None, ""):
+                return str(value)
+    return None
+
+
+def _entity_direction(conn: psycopg.Connection, entity_id: str) -> str | None:
+    row = conn.execute(
+        """
+        SELECT value FROM app.facts
+        WHERE entity_id = %s::uuid AND property = 'direction' AND valid_to IS NULL
+        """,
+        (entity_id,),
+    ).fetchone()
+    if row is None:
+        return None
+    value = stable(row["value"])
+    if value in (None, ""):
+        return None
+    return str(value)
 
 
 def _uuid(value: str) -> bool:
@@ -146,6 +176,7 @@ def _present(
     detail: bool,
 ) -> dict[str, Any]:
     fields = _fields(conn, row["id"], row["type"], role)
+    direction = _named(fields, "direction")
     # The hook is the place a future view log would record a clear personal value.
     note_clear_personal_view(
         conn,
@@ -156,7 +187,7 @@ def _present(
     payload = {
         "id": row["id"],
         "type": row["type"],
-        "type_label": type_label(row["type"]),
+        "type_label": payment_label(direction) if row["type"] == "Payment" else type_label(row["type"]),
         "business_key": row["business_key"],
         "fields": fields,
         "links": _links(conn, row["id"], company_id, model),
@@ -165,7 +196,13 @@ def _present(
         balance = remaining_balance(conn, company_id, row["id"])
         payload["remaining"] = None if balance is None else stable(balance)
     if detail:
-        payload["history"] = document_history(conn, row["id"], row["type"], company_id)
+        payload["history"] = document_history(
+            conn,
+            row["id"],
+            row["type"],
+            company_id,
+            direction if row["type"] == "Payment" else None,
+        )
     return payload
 
 
@@ -187,7 +224,7 @@ def _fields(conn: psycopg.Connection, entity_id: str, type_name: str, role: str)
         if masked:
             value = RESERVED
         elif role not in ("admin", "approver") and hides_margin(row["property"]):
-            value = MASK
+            value = ROLE_HIDDEN
             masked = True
         fields.append(
             {
@@ -233,12 +270,17 @@ def _links(
     for row in list(outbound) + list(inbound):
         if row["rel"] not in known or row["other_type"] not in model.types:
             continue
+        other_direction = _entity_direction(conn, row["other_id"]) if row["other_type"] == "Payment" else None
         links.append(
             {
                 "rel": row["rel"],
                 "direction": row["direction"],
                 "type": row["other_type"],
-                "type_label": type_label(row["other_type"]),
+                "type_label": (
+                    payment_label(other_direction)
+                    if row["other_type"] == "Payment"
+                    else type_label(row["other_type"])
+                ),
                 "id": row["other_id"],
                 "key": row["other_key"],
             }

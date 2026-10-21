@@ -101,6 +101,31 @@ FIELD_LABEL_OVERRIDES = {
     ("OrderLine", "amount"): "Importo ereditato",
 }
 
+# Italian names of relations. A page reads these and falls back to the technical name.
+RELATION_LABELS = {
+    "places": "effettua",
+    "contains": "contiene",
+    "suppliedBy": "fornito da",
+    "storedAt": "depositato in",
+    "triggered": "genera evento",
+    "generates": "genera",
+    "fulfills": "evade",
+    "allocates": "assegna",
+    "settles": "salda",
+    "sameOrganization": "stessa organizzazione",
+}
+
+PAYMENT_DIRECTION_LABELS = {
+    "incoming": "Incasso",
+    "outgoing": "Pagamento",
+}
+
+PAYMENT_OUTGOING_FIELDS = {
+    "amount": "Importo pagamento",
+    "source_key": "Numero pagamento",
+    "paid_at": "Data pagamento",
+}
+
 
 def describe_ontology(
     model: Ontology,
@@ -172,7 +197,12 @@ def describe_ontology(
             for package in model.packages
         ],
         "types": types,
-        "relations": list(model.relations),
+        "relations": [
+            {**dict(item), "label": relation_label(str(item.get("name") or ""))}
+            for item in model.relations
+        ],
+        "payment_labels": dict(PAYMENT_DIRECTION_LABELS),
+        "payment_field_labels": {"outgoing": dict(PAYMENT_OUTGOING_FIELDS)},
         "processes": processes,
         "step_transitions": step_transitions,
         "extensions": extensions,
@@ -192,6 +222,27 @@ def field_label(type_name: str, prop_name: str) -> str:
         or FIELD_LABELS.get(prop_name)
         or prop_name
     )
+
+
+def relation_label(name: str | None) -> str:
+    """Italian name of a link, or the technical name when it has no translation."""
+    if not name:
+        return ""
+    return RELATION_LABELS.get(name) or name
+
+
+def payment_label(direction: str | None) -> str:
+    """Incasso when money comes in, Pagamento when it goes out."""
+    if str(direction or "").strip().lower() == "outgoing":
+        return PAYMENT_DIRECTION_LABELS["outgoing"]
+    return PAYMENT_DIRECTION_LABELS["incoming"]
+
+
+def payment_words(text: str, direction: str | None) -> str:
+    """Rewrite a stored sentence when this payment leaves the company."""
+    if str(direction or "").strip().lower() != "outgoing" or not text:
+        return text
+    return text.replace("Incasso", "Pagamento").replace("incasso", "pagamento")
 
 
 def extension_package_names(model: Ontology) -> set[str]:

@@ -12,7 +12,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from apps.api.main import app
-from services.companies import NO_COMPANY_UPLOAD
+from services.companies import USER_WITHOUT_COMPANY
 from services.db import connect, password_hash
 from services.revocation import (
     EXECUTED_MESSAGE,
@@ -27,7 +27,7 @@ from tests.test_learning import _decision, _mapping
 
 ROOT = Path(__file__).resolve().parents[1]
 
-NOTICE = NO_COMPANY_UPLOAD
+NOTICE = USER_WITHOUT_COMPANY
 MOTIVE = "annullo perché la decisione era sbagliata"
 
 
@@ -285,6 +285,11 @@ def test_revocation_refuses_a_user_without_a_company_and_an_executed_action(clie
     decision_id = decided["history"][0]["id"]
     assert decided["history"][0]["decision"] == "approve"
     assert decided["history"][0]["revoked"] is False
+
+    login(client, "operator")
+    denied_operator = client.post(f"/api/decisions/{decision_id}/revoke", json={"reason": MOTIVE})
+    assert denied_operator.status_code == 403
+    assert denied_operator.json()["detail"] == "Serve un approvatore"
 
     with connect() as conn:
         conn.execute(

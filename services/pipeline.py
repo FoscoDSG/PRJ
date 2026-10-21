@@ -17,7 +17,7 @@ from services.agent.order_agent import build_context, run_order_agent
 from services.agent.stub_model import StubOrderModel
 from services.canonical.store import _put_fact, materialize
 from services.audit import record
-from services.companies import NO_COMPANY_UPLOAD
+from services.companies import USER_WITHOUT_COMPANY
 from services.errors import AppError
 from services.quality import document_reasons
 from services.ingest.csv_connector import read_csv
@@ -182,7 +182,7 @@ def release_document(
 ) -> dict:
     _require_mapper(role)
     if not company_id:
-        raise AppError(403, NO_COMPANY_UPLOAD)
+        raise AppError(403, USER_WITHOUT_COMPANY)
     row = _lock_quarantine(conn, quarantine_id, company_id)
     if row["reasons"]:
         raise AppError(409, "Il documento ha controlli aperti: " + "; ".join(row["reasons"]))
@@ -221,7 +221,7 @@ def reject_document(
     """Refuse a quarantined document. Another company's document is absent."""
     _require_mapper(role)
     if not company_id:
-        raise AppError(403, NO_COMPANY_UPLOAD)
+        raise AppError(403, USER_WITHOUT_COMPANY)
     row = _lock_quarantine(conn, quarantine_id, company_id)
     if row["status"] != "open":
         raise AppError(409, "Il documento non è in quarantena")
@@ -494,7 +494,7 @@ def revoke_correction(
     """
     _require_mapper(role)
     if not company_id:
-        raise AppError(403, NO_COMPANY_UPLOAD)
+        raise AppError(403, USER_WITHOUT_COMPANY)
     motive = clean_reason(reason)
     row = conn.execute(
         """
@@ -625,7 +625,7 @@ def record_table_type_decision(
     """Store a file-type decision. Proposed type and score come from the batch."""
     _require_mapper(role)
     if not company_id:
-        raise AppError(403, NO_COMPANY_UPLOAD)
+        raise AppError(403, USER_WITHOUT_COMPANY)
     if decision not in ("correct", "wrong", "not_sure"):
         raise AppError(422, "Decisione sul tipo non valida")
     if decision == "wrong":
@@ -861,20 +861,25 @@ def seed_src(conn: psycopg.Connection) -> None:
                 )
 
 
+ORPHAN_STOCK = "Solo l'amministratore IEOL può correggere una giacenza senza azienda"
+
+
 def adjust_on_hand(
     conn: psycopg.Connection,
     model: Ontology,
     product_key: str,
     on_hand: int,
     company_id: str | None = None,
+    role: str | None = None,
 ) -> list[str]:
     import json
 
     # Prefer this company's stock. A row written before companies existed
-    # has company_id NULL and stays adjustable. Another company's row does not.
+    # has company_id NULL: only the IEOL administrator may correct it.
+    # Another company's row is not selected.
     row = conn.execute(
         """
-        SELECT e.id::text
+        SELECT e.id::text, e.company_id::text AS owner_id
         FROM app.entities e
         JOIN app.facts f ON f.entity_id = e.id AND f.valid_to IS NULL
         WHERE e.type = 'StockPosition'
@@ -890,6 +895,8 @@ def adjust_on_hand(
     ).fetchone()
     if row is None:
         raise AppError(404, "Giacenza assente")
+    if row["owner_id"] is None and role != "admin":
+        raise AppError(403, ORPHAN_STOCK)
     prop = model.require_prop("StockPosition", "on_hand")
     _put_fact(
         conn,
@@ -922,7 +929,7 @@ def acknowledge_drift(
 ) -> dict:
     _require_mapper(role)
     if not company_id:
-        raise AppError(403, NO_COMPANY_UPLOAD)
+        raise AppError(403, USER_WITHOUT_COMPANY)
     row = conn.execute(
         """
         SELECT id::text, status, company_id::text AS company_id

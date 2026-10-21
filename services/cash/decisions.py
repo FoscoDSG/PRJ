@@ -19,7 +19,8 @@ from services.audit import record
 from services.cash.catalog import CASH_PROCESS_ID, STEP_CONFIRMED
 from services.cash.documents import confirm_allocation_status
 from services.cash.events import record_process_event
-from services.companies import NO_COMPANY_UPLOAD
+from services.companies import USER_WITHOUT_COMPANY
+from services.ontology_view import payment_label
 from services.errors import AppError
 from services.mapping.corrections import company_id_for_user
 
@@ -146,7 +147,7 @@ def correct_unmatched(
         company_id=company_id,
         subject_id=payment["id"],
         event_type="match_corrected",
-        summary="Incasso abbinato da una persona",
+        summary=f"{payment_label(payment.get('direction'))} abbinato da una persona",
         occurred_at=payment["paid_at"] or "correzione",
         process_id=CASH_PROCESS_ID,
         step_id=STEP_CONFIRMED,
@@ -236,7 +237,7 @@ def revoke_payment_decision(
 def _company(conn, actor: str) -> str:
     company_id = company_id_for_user(conn, actor)
     if not company_id:
-        raise AppError(403, NO_COMPANY_UPLOAD)
+        raise AppError(403, USER_WITHOUT_COMPANY)
     return company_id
 
 
@@ -304,11 +305,14 @@ def _payment(conn, payment_id: str, company_id: str) -> dict[str, Any]:
         """
         SELECT e.id::text, e.company_id::text AS company_id,
                d.source_name,
-               f.value #>> '{}' AS paid_at
+               f.value #>> '{}' AS paid_at,
+               dir.value #>> '{}' AS direction
         FROM app.entities e
         LEFT JOIN app.cash_documents d ON d.entity_id = e.id
         LEFT JOIN app.facts f
           ON f.entity_id = e.id AND f.property = 'paid_at' AND f.valid_to IS NULL
+        LEFT JOIN app.facts dir
+          ON dir.entity_id = e.id AND dir.property = 'direction' AND dir.valid_to IS NULL
         WHERE e.id = %s::uuid AND e.type = 'Payment' AND e.valid_to IS NULL
         """,
         (payment_id,),

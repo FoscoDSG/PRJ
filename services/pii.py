@@ -14,6 +14,8 @@ from typing import Any
 MASK = "••••"
 # The page shows this word only when a read has already replaced the value.
 RESERVED = "riservato"
+# Margin and cost hidden by role. Distinct from personal data (``riservato``).
+ROLE_HIDDEN = "non visibile per il tuo ruolo"
 
 PII_PROPERTIES = frozenset(
     {

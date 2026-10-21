@@ -8,6 +8,8 @@ from services.ontology_view import (
     FIELD_LABELS,
     TYPE_LABELS,
     describe_ontology,
+    payment_label,
+    relation_label,
 )
 
 
@@ -48,6 +50,15 @@ def test_ontology_read_falls_back_to_the_technical_name():
     causale = next(field for field in payment["fields"] if field["name"] == "causale")
     assert invoice["label"] == "Invoice"
     assert causale["label"] == "causale"
+    generates = next(item for item in catalog["relations"] if item["name"] == "generates")
+    allocates = next(item for item in catalog["relations"] if item["name"] == "allocates")
+    assert generates["label"] == "genera"
+    assert allocates["label"] == "assegna"
+    assert relation_label("not_a_relation") == "not_a_relation"
+    assert payment_label("incoming") == "Incasso"
+    assert payment_label("outgoing") == "Pagamento"
+    assert payment_label(None) == "Incasso"
+    assert catalog["payment_labels"]["outgoing"] == "Pagamento"
 
 
 def test_extension_cannot_override_a_base_property():

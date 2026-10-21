@@ -11,7 +11,8 @@ import pytest
 from fastapi.testclient import TestClient
 
 from apps.api.main import app
-from services.companies import NO_COMPANY_UPLOAD
+from services.companies import USER_WITHOUT_COMPANY
+from services.pipeline import ORPHAN_STOCK
 from services.db import connect, password_hash
 from services.mapping.corrections import learned_metric
 from services.migrate import _ensure_registry, _execute_migration, _record, migrate, migration_files
@@ -21,7 +22,7 @@ from tests.test_flow import decide, give_company, load_demo, login
 from tests.test_learning import _batch, _decision, _mapping, _user
 
 ROOT = Path(__file__).resolve().parents[1]
-NOTICE = "Il tuo utente non è ancora collegato a un'azienda: chiedi all'amministratore"
+NOTICE = USER_WITHOUT_COMPANY
 
 
 @pytest.fixture
@@ -519,7 +520,7 @@ def test_api_blocks_the_remaining_decisions_without_a_company(client: TestClient
         denied = client.post(path)
         assert denied.status_code == 403, path
         assert denied.json()["detail"] == NOTICE
-        assert denied.json()["detail"] == NO_COMPANY_UPLOAD
+        assert denied.json()["detail"] == USER_WITHOUT_COMPANY
 
     from apps.cli import main
     from contextlib import redirect_stdout
@@ -580,9 +581,9 @@ def test_api_blocks_the_remaining_decisions_without_a_company(client: TestClient
     assert approved.status_code == 200, approved.text
 
     page = (ROOT / "apps" / "web" / "app.js").read_text(encoding="utf-8")
-    assert "quarantineCard(item, canWrite)" in page
-    assert "identityCard(item, canWrite)" in page
-    assert "driftCard(item, canWrite)" in page
+    assert "quarantineCard(item, canWrite, state.role)" in page
+    assert "identityCard(item, canWrite, state.role)" in page
+    assert "driftCard(item, canWrite, state.role)" in page
     assert "inboxCard(item, state.role, canWrite)" in page
     assert 'classList.toggle("mappings-readonly", !canWrite)' in page
     rendered = subprocess.run(
@@ -612,7 +613,7 @@ def test_decision_without_a_company_leaves_the_proposal_unchanged():
         ).fetchone()
         before_logs = conn.execute("SELECT count(*) AS n FROM app.decisions_log").fetchone()["n"]
         before_overrides = conn.execute("SELECT count(*) AS n FROM app.agent_overrides").fetchone()["n"]
-        with pytest.raises(AppError, match="non è ancora collegato") as caught:
+        with pytest.raises(AppError, match="azienda assegnata") as caught:
             approve(
                 conn,
                 row["id"],
@@ -621,8 +622,8 @@ def test_decision_without_a_company_leaves_the_proposal_unchanged():
                 row["evidence_hash"],
             )
         assert caught.value.status == 403
-        assert caught.value.message == NO_COMPANY_UPLOAD
-        with pytest.raises(AppError, match=NO_COMPANY_UPLOAD):
+        assert caught.value.message == USER_WITHOUT_COMPANY
+        with pytest.raises(AppError, match=USER_WITHOUT_COMPANY):
             modify(
                 conn,
                 row["id"],
@@ -631,7 +632,7 @@ def test_decision_without_a_company_leaves_the_proposal_unchanged():
                 role="approver",
                 evidence_hash=row["evidence_hash"],
             )
-        with pytest.raises(AppError, match=NO_COMPANY_UPLOAD):
+        with pytest.raises(AppError, match=USER_WITHOUT_COMPANY):
             reject(
                 conn,
                 row["id"],
@@ -723,8 +724,9 @@ def test_api_blocks_execute_stock_unmask_and_compensate(client: TestClient):
     assert denied_stock.status_code == 403
     assert denied_stock.json()["detail"] == NOTICE
     give_company("mapper", "Giacenza api")
-    allowed_stock = client.post("/api/stock/ART-X", json={"on_hand": 400})
-    assert allowed_stock.status_code == 200, allowed_stock.text
+    denied_orphan = client.post("/api/stock/ART-X", json={"on_hand": 400})
+    assert denied_orphan.status_code == 403
+    assert denied_orphan.json()["detail"] == ORPHAN_STOCK
 
     client.post("/api/logout")
     login(client, "admin")
@@ -741,6 +743,43 @@ def test_api_blocks_execute_stock_unmask_and_compensate(client: TestClient):
         json={"entity_id": order["customer_id"], "reason": "verifica del cliente"},
     )
     assert opened.status_code == 200, opened.text
+
+
+def test_orphan_stock_is_corrected_only_by_ieol_admin(client: TestClient):
+    login(client, "mapper")
+    load_demo()
+    give_company("mapper", "Officina Nord")
+    denied = client.post("/api/stock/ART-X", json={"on_hand": 11})
+    assert denied.status_code == 403
+    assert denied.json()["detail"] == ORPHAN_STOCK
+    with connect() as conn:
+        unchanged = conn.execute(
+            """
+            SELECT f.value
+            FROM app.facts f
+            JOIN app.entities e ON e.id = f.entity_id
+            WHERE e.type = 'StockPosition' AND e.company_id IS NULL
+              AND f.property = 'on_hand' AND f.valid_to IS NULL
+              AND e.business_key = 'ART-X|WH1'
+            """
+        ).fetchone()
+    assert unchanged is not None
+    assert unchanged["value"] != 11
+    give_company("admin", "IEOL")
+    login(client, "admin")
+    allowed = client.post("/api/stock/ART-X", json={"on_hand": 11})
+    assert allowed.status_code == 200, allowed.text
+    with connect() as conn:
+        changed = conn.execute(
+            """
+            SELECT f.value
+            FROM app.facts f
+            JOIN app.entities e ON e.id = f.entity_id
+            WHERE e.type = 'StockPosition' AND f.property = 'on_hand' AND f.valid_to IS NULL
+              AND e.business_key = 'ART-X|WH1'
+            """
+        ).fetchone()
+    assert changed["value"] == 11
 
 
 _CARD_BUTTONS = r"""
@@ -766,7 +805,7 @@ const item = {
   id: "i1", status: "proposed", risk: "low", order_key: "1024", problem: "manca",
   evidence_hash: "abc", actions: [], evidence: [],
 };
-const notice = "Il tuo utente non è ancora collegato a un'azienda: chiedi all'amministratore";
+const notice = "Non hai ancora un'azienda assegnata. Chiedi all'amministratore di collegarti.";
 const hiddenInbox = inboxCard(item, "approver", false);
 if (hiddenInbox.includes("data-act") || hiddenInbox.includes("decision-bar")) process.exit(6);
 if (!hiddenInbox.includes("1024") || !hiddenInbox.includes(escapeHtml(notice))) process.exit(7);
@@ -779,6 +818,17 @@ if (!inboxCard(ready, "approver").includes("Esegui")) process.exit(12);
 if (inboxCard(ready, "approver", false).includes("Esegui") || inboxCard(ready, "admin", false).includes("data-act")) {
   process.exit(13);
 }
+const executed = Object.assign({}, item, { status: "executed", executed: true });
+if (inboxCard(executed, "approver").includes(">Esegui<") || inboxCard(executed, "admin").includes(">Esegui<")) {
+  process.exit(16);
+}
+const openDecision = Object.assign({}, item, {
+  status: "dry_run_ok",
+  history: [{ id: "dec-1", decision: "approve", revoked: false, actor: "approver" }],
+});
+if (inboxCard(openDecision, "operator", true).includes(">Annulla<")) process.exit(17);
+if (!inboxCard(openDecision, "approver", true).includes(">Annulla<")) process.exit(18);
+if (!inboxCard(openDecision, "admin", true).includes(">Annulla<")) process.exit(19);
 const customer = { id: "c1", company_name: "ACME", business_key: "C1", orders: [], edges: [], facts: [] };
 if (!customerDetail(customer, "admin").includes("Mostra dati personali")) process.exit(14);
 if (customerDetail(customer, "admin", false).includes("Mostra dati personali") || customerDetail(customer, "admin", false).includes("unmask-pii")) {
