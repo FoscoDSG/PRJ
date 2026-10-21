@@ -153,7 +153,7 @@ def reject(
     _require_role(role)
     row = _lock(conn, recommendation_id)
     _require_presented_hash(conn, row, evidence_hash)
-    if row["status"] in ("executed", "rejected", "expired", "failed"):
+    if row["status"] in ("executed", "rejected", "expired", "failed", "revoked"):
         raise AppError(409, "La raccomandazione non è rifiutabile")
     _record_decision(conn, row, decision="reject", actor=actor, role=role)
     conn.execute(

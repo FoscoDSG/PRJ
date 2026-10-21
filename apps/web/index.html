@@ -3,14 +3,14 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Operating layer — ordini</title>
+  <title>IEOL</title>
   <link rel="stylesheet" href="/assets/styles.css" />
 </head>
 <body>
   <header class="top">
     <div>
       <p class="eyebrow">Intelligent Enterprise Operating Layer</p>
-      <h1>Order management</h1>
+      <h1>IEOL</h1>
     </div>
     <div class="session" id="session" hidden>
       <span id="who"></span>
@@ -31,17 +31,17 @@
 
   <div id="app" hidden>
     <nav aria-label="Sezioni">
-      <button type="button" data-view="mapping" class="active">Mapping</button>
-      <button type="button" data-view="orders">Ordini</button>
-      <button type="button" data-view="inbox">Inbox</button>
+      <button type="button" data-view="inbox" class="active">Oggi</button>
+      <button type="button" data-view="orders">Oggetti</button>
+      <button type="button" data-view="mapping">Dati</button>
       <button type="button" data-view="audit">Audit</button>
     </nav>
     <p id="flash" class="flash" hidden></p>
 
-    <section id="view-mapping" class="panel">
+    <section id="view-mapping" class="panel" hidden>
       <div class="row">
         <div>
-          <h2>Review del mapping</h2>
+          <h2>Dati</h2>
           <p class="lede">Le colonne sotto soglia restano in review. Un'email o un PDF ordine entra nello stesso modello: cliente, numero ordine e righe articolo quantità prezzo.</p>
         </div>
         <div class="actions">
@@ -69,14 +69,17 @@
     </section>
 
     <section id="view-orders" class="panel" hidden>
-      <h2>Ordini</h2>
+      <h2>Oggetti</h2>
+      <p class="lede">Ordini, fatture e incassi. I nomi e i collegamenti arrivano dalla descrizione dell'azienda.</p>
+      <div id="object-types" class="process-filters"></div>
       <div id="order-list" class="cards"></div>
       <article id="order-detail" hidden></article>
     </section>
 
-    <section id="view-inbox" class="panel" hidden>
-      <h2>Inbox eccezioni</h2>
-      <p class="lede">L'agente propone. L'anteprima mostra raccomandazione, provenienza, confidenza e payload prima di qualsiasi scrittura.</p>
+    <section id="view-inbox" class="panel">
+      <h2>Oggi</h2>
+      <p class="lede">Quello che oggi chiede una decisione, per ogni processo.</p>
+      <div id="process-filters" class="process-filters"></div>
       <p id="match-measure" class="formula"></p>
       <div id="inbox" class="stack"></div>
     </section>

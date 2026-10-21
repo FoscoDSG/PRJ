@@ -98,7 +98,25 @@
     acknowledged: "Segnata come vista",
     confirmed: "Fusione confermata",
     rejected: "Rifiutata",
+    revoked: "Annullata",
   };
+
+  function formatDay(value) {
+    const text = value == null ? "" : String(value);
+    const match = text.match(/^(\d{4})-(\d{2})-(\d{2})/);
+    if (!match) return text;
+    return `${match[3]}/${match[2]}/${match[1]}`;
+  }
+
+  function euroText(value) {
+    if (value == null || value === "") return "";
+    const number = Number(value);
+    if (!Number.isFinite(number)) return String(value);
+    const negative = number < 0;
+    const fixed = Math.abs(number).toFixed(2).split(".");
+    const whole = fixed[0].replace(/\B(?=(\d{3})+(?!\d))/g, ".");
+    return `${negative ? "-" : ""}${whole},${fixed[1]} €`;
+  }
 
   function decisionLabel(code) {
     return Object.prototype.hasOwnProperty.call(DECISION_LABELS, code) ? DECISION_LABELS[code] : String(code ?? "");
@@ -107,14 +125,17 @@
   function decisionHistory(entries) {
     const items = (entries || []).map((entry) => {
       const label = decisionLabel(entry && entry.decision);
-      const when = entry && entry.decided_at ? ` · ${entry.decided_at}` : "";
+      const amount = entry && entry.allocated_amount != null && entry.allocated_amount !== ""
+        ? ` · ${euroText(entry.allocated_amount)}`
+        : "";
+      const when = entry && entry.decided_at ? ` · ${formatDay(entry.decided_at)}` : "";
       const who = entry && entry.actor ? ` · ${entry.actor}` : "";
-      const text = `${label}${who}${when}`;
+      const text = `${label}${amount}${who}${when}`;
       const line = entry && entry.revoked
         ? `<span class="revoked-decision">${escapeHtml(text)}</span>`
         : escapeHtml(text);
       const revoker = entry && entry.revoked
-        ? `<span class="revoker-line">Annullata da ${escapeHtml(entry.revoker)} il ${escapeHtml(entry.revoked_at)}</span>`
+        ? `<span class="revoker-line">Annullata da ${escapeHtml(entry.revoker)} il ${escapeHtml(formatDay(entry.revoked_at))}</span>`
         : "";
       const motive = entry && entry.revoke_reason
         ? `<span class="revoke-reason">${escapeHtml(entry.revoke_reason)}</span>`
@@ -398,6 +419,47 @@
     return `<p class="failed-criteria">${bits.join(", ")}</p>`;
   }
 
+  function invoiceNumberValue(item) {
+    const invoice = item && item.invoice;
+    if (invoice && invoice.number != null && invoice.number !== "") return invoice.number;
+    return "";
+  }
+
+  function allocationAmountValue(item) {
+    const allocation = item && item.allocation;
+    if (allocation && allocation.amount != null && allocation.amount !== "") return allocation.amount;
+    return item && item.allocated_amount != null ? item.allocated_amount : "";
+  }
+
+  function matchLine(label, value) {
+    return `<li>${escapeHtml(label)} ${escapeHtml(value ?? "")}</li>`;
+  }
+
+  function matchBlocks(item) {
+    const payment = item && item.payment && typeof item.payment === "object" ? item.payment : {};
+    const invoice = item && item.invoice && typeof item.invoice === "object" ? item.invoice : {};
+    const allocation = item && item.allocation && typeof item.allocation === "object" ? item.allocation : {};
+    return `<h3 class="section-heading">Incasso</h3>
+      <ul class="fact-list">
+        ${matchLine("Numero", payment.number)}
+        ${matchLine("Data", payment.paid_at)}
+        ${matchLine("Importo", payment.amount)}
+      </ul>
+      <h3 class="section-heading">Fattura proposta</h3>
+      <ul class="fact-list">
+        ${matchLine("Numero", invoice.number)}
+        ${matchLine("Importo", invoice.amount)}
+        ${matchLine("Scadenza", invoice.due_at)}
+      </ul>
+      <h3 class="section-heading">Assegnazione</h3>
+      <ul class="fact-list">
+        ${matchLine("Importo assegnato", allocation.amount)}
+        ${matchLine("Residuo attuale", euroText(allocation.remaining))}
+      </ul>
+      <h3 class="section-heading">Criteri</h3>
+      ${criteriaMarkup(item && item.criteria)}`;
+  }
+
   function paymentButtons(item, role, canWrite) {
     if (canWrite === false) {
       return `<p>${escapeHtml(companyUploadNotice())}</p>`;
@@ -406,8 +468,8 @@
       return "<p>Sola lettura: l'operatore non approva.</p>";
     }
     if (item.status !== "proposed") return "";
-    return `<label>Fattura <input data-invoice value="${escapeHtml(item.invoice_id || "")}" /></label>
-      <label>Importo assegnato <input data-amount value="${escapeHtml(item.allocated_amount ?? "")}" /></label>
+    return `<label>Fattura <input data-invoice value="${escapeHtml(invoiceNumberValue(item))}" /></label>
+      <label>Importo assegnato <input data-amount value="${escapeHtml(allocationAmountValue(item))}" /></label>
       <label>Motivo della correzione <input data-correct-reason required minlength="5" maxlength="500" /></label>
       <label>Motivo del rifiuto <input data-reject-reason required minlength="5" maxlength="500" /></label>
       <div class="decision-bar">
@@ -467,23 +529,147 @@
     const processLine = processBits.length
       ? `<p class="process-step">${escapeHtml(processBits.join(" · "))}</p>`
       : "";
-    return `<article class="card" data-id="${escapeHtml(item.id)}" data-hash="${escapeHtml(item.evidence_hash)}">
-      <div class="meta">${pill(item.status)}${cfo}<span class="pill">${escapeHtml(item.risk)}</span></div>
-      <h3 class="card-title">${escapeHtml(title)}</h3>
-      ${processLine}
-      ${criteriaMarkup(item.criteria)}
-      ${failedMarkup(item.failed_criteria)}
-      <h3 class="section-heading">Anteprima di approvazione</h3>
+    const body = payment
+      ? `<p>${escapeHtml(item.problem)}</p>
+      <p class="confidence-badge">${escapeHtml(confidenceLabel(item))}</p>
+      ${matchBlocks(item)}`
+      : `<h3 class="section-heading">Anteprima di approvazione</h3>
       <p>${escapeHtml(item.problem)}</p>
       <p class="confidence-badge">${escapeHtml(confidenceLabel(item))}</p>
       <p class="formula">${escapeHtml(preview.formula || "")}</p>
       <ul class="fact-list">${evidence}</ul>
       <h3 class="section-heading">Cosa verrà approvato</h3>
-      <pre>${escapeHtml(JSON.stringify(payloads, null, 2))}</pre>
+      <pre>${escapeHtml(JSON.stringify(payloads, null, 2))}</pre>`;
+    const decided = item && item.disposition === "closed" ? " decided" : "";
+    return `<article class="card${decided}" data-id="${escapeHtml(item.id)}" data-hash="${escapeHtml(item.evidence_hash)}">
+      <div class="meta">${pill(item.status)}${cfo}<span class="pill">${escapeHtml(item.risk)}</span></div>
+      <h3 class="card-title">${escapeHtml(title)}</h3>
+      ${processLine}
+      ${payment ? "" : criteriaMarkup(item.criteria)}
+      ${failedMarkup(item.failed_criteria)}
+      ${body}
       ${decisionHistory(item.history)}
       ${revokeBar(item, canWrite, payment ? "payment" : "inbox")}
       ${buttons}
     </article>`;
+  }
+
+  function ontologyType(ontology, name) {
+    const types = ontology && Array.isArray(ontology.types) ? ontology.types : [];
+    return types.find((item) => item && item.name === name) || null;
+  }
+
+  function fieldCaption(ontology, typeName, field) {
+    const info = ontologyType(ontology, typeName);
+    const fields = info && Array.isArray(info.fields) ? info.fields : [];
+    const found = fields.find((item) => item && item.name === field.name);
+    if (found && typeof found.label === "string" && found.label !== "") return found.label;
+    if (field && typeof field.label === "string" && field.label !== "") return field.label;
+    return field && field.name ? String(field.name) : "";
+  }
+
+  function linkText(ontology, link) {
+    const rels = ontology && Array.isArray(ontology.relations) ? ontology.relations : [];
+    const known = rels.some((item) => item && item.name === link.rel);
+    const rel = known ? link.rel : (link && link.rel) || "";
+    const info = ontologyType(ontology, link && link.type);
+    const typeLabel = info && info.label ? info.label : (link && link.type) || "";
+    const key = link && link.key != null ? link.key : "";
+    return [rel, typeLabel, key].filter((part) => part !== "" && part != null).join(" ");
+  }
+
+  function objectFields(object, ontology) {
+    const rows = (object && object.fields || []).map((field) => {
+      const caption = fieldCaption(ontology, object.type, field);
+      const value = field && field.value != null ? field.value : "";
+      return `<li>${escapeHtml(caption)}: ${escapeHtml(value)}</li>`;
+    }).join("");
+    return `${rows}${remainingLine(object)}`;
+  }
+
+  function remainingLine(object) {
+    if (!object || object.type !== "Invoice" || object.remaining == null || object.remaining === "") return "";
+    return `<li>${escapeHtml("Residuo attuale")}: ${escapeHtml(euroText(object.remaining))}</li>`;
+  }
+
+  function objectLinks(object, ontology) {
+    return (object && object.links || []).map((link) => {
+      const text = linkText(ontology, link);
+      return `<li><button type="button" data-object="${escapeHtml(link && link.id)}">${escapeHtml(text)}</button></li>`;
+    }).join("");
+  }
+
+  const DECISION_NOUNS = {
+    confirm: "della conferma",
+    correct: "della correzione",
+    reject: "del rifiuto",
+    approve: "dell'approvazione",
+    modify: "della modifica",
+  };
+
+  function revocationLine(entry, history) {
+    const who = entry && entry.actor ? String(entry.actor) : "";
+    const when = formatDay(entry && entry.at);
+    const targetId = entry && entry.revokes_decision_id;
+    const target = targetId
+      ? (history || []).find((item) => item && item.id === targetId && item.decision !== "revoked")
+      : null;
+    const noun = target && Object.prototype.hasOwnProperty.call(DECISION_NOUNS, target.decision)
+      ? DECISION_NOUNS[target.decision]
+      : "";
+    if (!target || noun === "") {
+      return escapeHtml(["Annullamento di una decisione precedente", who, when].filter((part) => part !== "").join(" · "));
+    }
+    const amount = target.amount != null && target.amount !== "" ? euroText(target.amount) : "";
+    const day = formatDay(target.at);
+    let phrase = `Annullamento ${noun}`;
+    if (amount) phrase += ` di ${amount}`;
+    if (day) phrase += ` del ${day}`;
+    if (who) phrase += ` · ${who}`;
+    return escapeHtml(phrase);
+  }
+
+  function historyLine(entry, history) {
+    const code = entry && entry.decision ? String(entry.decision) : "";
+    if (code === "revoked") return revocationLine(entry, history);
+    const label = code && Object.prototype.hasOwnProperty.call(DECISION_LABELS, code)
+      ? DECISION_LABELS[code]
+      : (entry && entry.label != null ? String(entry.label) : code);
+    const amount = entry && entry.amount != null && entry.amount !== "" ? euroText(entry.amount) : "";
+    const who = entry && entry.actor ? String(entry.actor) : "";
+    const when = formatDay(entry && entry.at);
+    const text = escapeHtml([label, amount, who, when].filter((part) => part !== "").join(" · "));
+    if (entry && entry.revoked) {
+      return `<span class="revoked-decision">${text}</span> annullata`;
+    }
+    return text;
+  }
+
+  function objectCard(object, ontology) {
+    const info = ontologyType(ontology, object && object.type);
+    const typeLabel = info && info.label ? info.label : (object && object.type) || "";
+    const links = objectLinks(object, ontology);
+    return `<article class="card">
+      <h3 class="card-title">${escapeHtml(typeLabel)} ${escapeHtml(object && object.business_key || "")}</h3>
+      <ul class="fact-list">${objectFields(object, ontology)}</ul>
+      ${links ? `<h3 class="section-heading">Collegamenti</h3><ul class="edges">${links}</ul>` : ""}
+      <button type="button" data-object="${escapeHtml(object && object.id)}">Apri scheda</button>
+    </article>`;
+  }
+
+  function objectDetail(object, ontology) {
+    const info = ontologyType(ontology, object && object.type);
+    const typeLabel = info && info.label ? info.label : (object && object.type) || "";
+    const links = objectLinks(object, ontology);
+    const entries = (object && object.history) || [];
+    const history = entries.map((entry) => {
+      return `<li>${historyLine(entry, entries)}</li>`;
+    }).join("");
+    return `<p><button type="button" id="back-objects" class="ghost">Torna agli oggetti</button></p>
+      <h2>${escapeHtml(typeLabel)} ${escapeHtml(object && object.business_key || "")}</h2>
+      <ul class="fact-list">${objectFields(object, ontology)}</ul>
+      ${links ? `<h3 class="section-heading">Collegamenti</h3><ul class="edges">${links}</ul>` : ""}
+      ${history ? `<h3 class="section-heading">Storia</h3><ul class="decision-history">${history}</ul>` : ""}`;
   }
 
   function plainRatio(value) {
@@ -524,6 +710,8 @@
     orderCard,
     orderDetail,
     customerDetail,
+    objectCard,
+    objectDetail,
     inboxCard,
     measureText,
     auditCard,

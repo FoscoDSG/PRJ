@@ -1,7 +1,7 @@
 const login = document.querySelector("#login");
 const app = document.querySelector("#app");
 const flash = document.querySelector("#flash");
-const state = { role: "", demoMode: false };
+const state = { role: "", demoMode: false, ontology: null, todayProcess: "", objectType: "Order" };
 
 async function api(path, options = {}) {
   const headers = { ...(options.headers || {}) };
@@ -30,6 +30,8 @@ const {
   orderCard,
   orderDetail,
   customerDetail,
+  objectCard,
+  objectDetail,
   inboxCard,
   measureText,
   readableCard,
@@ -71,7 +73,7 @@ function enter(me) {
   const companyNotice = document.querySelector("#company-notice");
   companyNotice.hidden = state.hasCompany;
   companyNotice.textContent = state.hasCompany ? "" : companyUploadNotice();
-  show("mapping");
+  show("inbox");
 }
 
 document.querySelector("#login-form").addEventListener("submit", async (event) => {
@@ -108,7 +110,7 @@ function show(view) {
     document.querySelector(`#view-${name}`).hidden = name !== view;
   }
   if (view === "mapping") loadMappings();
-  if (view === "orders") loadOrders();
+  if (view === "orders") loadObjects();
   if (view === "inbox") loadInbox();
   if (view === "audit") loadAudit();
 }
@@ -357,14 +359,108 @@ function bindRevokes(root, reload) {
   }
 }
 
-async function loadOrders() {
-  const data = await api("/api/orders");
+const OBJECT_PAGE_TYPES = ["Order", "Invoice", "Payment"];
+
+function openCount(items, processId) {
+  return items.filter((item) => {
+    if (!item || item.disposition !== "open") return false;
+    if (!processId) return true;
+    return Boolean(item.process && item.process.id === processId);
+  }).length;
+}
+
+function renderProcessFilters(processes, items) {
+  const root = document.querySelector("#process-filters");
+  root.replaceChildren();
+  const choices = [{ id: "", label: "Tutti" }].concat(
+    (processes || []).map((process) => ({
+      id: process.id,
+      label: process.label || process.id,
+    })),
+  );
+  for (const choice of choices) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "ghost";
+    button.setAttribute("aria-pressed", state.todayProcess === choice.id ? "true" : "false");
+    button.textContent = `${choice.label} · ${openCount(items, choice.id)}`;
+    button.addEventListener("click", () => {
+      state.todayProcess = choice.id;
+      loadInbox();
+    });
+    root.append(button);
+  }
+}
+
+async function ensureOntology() {
+  if (!state.ontology) state.ontology = await api("/api/ontology");
+  return state.ontology;
+}
+
+async function loadObjects() {
+  const ontology = await ensureOntology();
+  const types = OBJECT_PAGE_TYPES
+    .map((name) => (ontology.types || []).find((item) => item && item.name === name))
+    .filter(Boolean);
+  if (types.length && !types.some((item) => item.name === state.objectType)) {
+    state.objectType = types[0].name;
+  }
+  renderObjectTypes(types);
   const list = document.querySelector("#order-list");
-  document.querySelector("#order-detail").hidden = true;
+  const detail = document.querySelector("#order-detail");
+  detail.hidden = true;
   list.hidden = false;
-  list.innerHTML = data.orders.map(orderCard).join("") || "<p>Nessun ordine. Carica la fixture e aggiorna il modello.</p>";
-  list.querySelectorAll("button[data-order]").forEach((button) => {
-    button.addEventListener("click", () => openOrder(button.dataset.order));
+  let data = { objects: [] };
+  try {
+    data = await api(`/api/objects?type=${encodeURIComponent(state.objectType)}`);
+  } catch (err) {
+    list.replaceChildren();
+    const note = document.createElement("p");
+    note.textContent = err.message;
+    list.append(note);
+    return;
+  }
+  const objects = data.objects || [];
+  if (!objects.length) {
+    list.replaceChildren();
+    const note = document.createElement("p");
+    note.textContent = "Nessun oggetto di questo tipo.";
+    list.append(note);
+    return;
+  }
+  list.innerHTML = objects.map((object) => objectCard(object, ontology)).join("");
+  list.querySelectorAll("button[data-object]").forEach((button) => {
+    button.addEventListener("click", () => openObject(button.dataset.object));
+  });
+}
+
+function renderObjectTypes(types) {
+  const root = document.querySelector("#object-types");
+  root.replaceChildren();
+  for (const typeDef of types) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "ghost";
+    button.setAttribute("aria-pressed", state.objectType === typeDef.name ? "true" : "false");
+    button.textContent = typeDef.label || typeDef.name;
+    button.addEventListener("click", () => {
+      state.objectType = typeDef.name;
+      loadObjects();
+    });
+    root.append(button);
+  }
+}
+
+async function openObject(id) {
+  const object = await api(`/api/objects/${id}`);
+  const ontology = await ensureOntology();
+  document.querySelector("#order-list").hidden = true;
+  const detail = document.querySelector("#order-detail");
+  detail.hidden = false;
+  detail.innerHTML = objectDetail(object, ontology);
+  detail.querySelector("#back-objects").addEventListener("click", loadObjects);
+  detail.querySelectorAll("button[data-object]").forEach((button) => {
+    button.addEventListener("click", () => openObject(button.dataset.object));
   });
 }
 
@@ -374,7 +470,7 @@ async function openOrder(id) {
   const detail = document.querySelector("#order-detail");
   detail.hidden = false;
   detail.innerHTML = orderDetail(order);
-  detail.querySelector("#back-orders").addEventListener("click", loadOrders);
+  detail.querySelector("#back-orders").addEventListener("click", loadObjects);
   const customerButton = detail.querySelector("#open-customer");
   if (customerButton) {
     customerButton.addEventListener("click", () => openCustomer(customerButton.dataset.customer));
@@ -387,7 +483,7 @@ async function openCustomer(id) {
   document.querySelector("#order-list").hidden = true;
   detail.hidden = false;
   detail.innerHTML = customerDetail(customer, state.role, canWriteDecisions(state.hasCompany));
-  detail.querySelector("#back-orders").addEventListener("click", loadOrders);
+  detail.querySelector("#back-orders").addEventListener("click", loadObjects);
   const unmask = detail.querySelector("#unmask-pii");
   if (unmask) {
     unmask.addEventListener("click", async () => {
@@ -417,6 +513,9 @@ async function openCustomer(id) {
 
 async function loadInbox() {
   const data = await api("/api/inbox");
+  const ontology = await ensureOntology();
+  const items = data.recommendations || [];
+  renderProcessFilters(ontology.processes || [], items);
   const measure = document.querySelector("#match-measure");
   if (measure) {
     try {
@@ -425,9 +524,29 @@ async function loadInbox() {
       measure.textContent = measureText(null);
     }
   }
+  const visible = state.todayProcess
+    ? items.filter((item) => item.process && item.process.id === state.todayProcess)
+    : items;
   const root = document.querySelector("#inbox");
   const canWrite = canWriteDecisions(state.hasCompany);
-  root.innerHTML = data.recommendations.map((item) => inboxCard(item, state.role, canWrite)).join("") || "<p>Nessuna eccezione in inbox.</p>";
+  if (!visible.length) {
+    root.replaceChildren();
+    const note = document.createElement("p");
+    note.textContent = "Nessuna scheda in questo processo.";
+    root.append(note);
+    return;
+  }
+  const openItems = [];
+  const decidedItems = [];
+  for (const item of visible) {
+    if (item && item.disposition === "closed") decidedItems.push(item);
+    else openItems.push(item);
+  }
+  const openHtml = openItems.map((item) => inboxCard(item, state.role, canWrite)).join("");
+  const decidedHtml = decidedItems.length
+    ? `<h3 class="section-heading">Già decise</h3>${decidedItems.map((item) => inboxCard(item, state.role, canWrite)).join("")}`
+    : "";
+  root.innerHTML = openHtml + decidedHtml;
   bindRevokes(root, loadInbox);
   root.querySelectorAll("article").forEach((card) => {
     card.querySelectorAll("button[data-act]").forEach((button) => {
@@ -501,7 +620,7 @@ async function act(id, action, card) {
         body: JSON.stringify({
           decision: "correct",
           evidence_hash: evidenceHash,
-          invoice_id: invoiceId,
+          invoice_number: invoiceId,
           allocated_amount: amount,
           reason,
         }),

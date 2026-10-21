@@ -742,8 +742,10 @@ def test_operator_inbox_hides_confidential_evidence(client: TestClient):
     login(client, "operator")
     evidence = client.get("/api/inbox").json()["recommendations"][0]["evidence"]
     amount = next(item for item in evidence if item["property"] == "amount")
+    cost = next(item for item in evidence if item["property"] == "cost")
     vat = next(item for item in evidence if item["property"] == "vat")
-    assert amount["value"] == "••••"
+    assert amount["value"] == 60000
+    assert cost["value"] == "••••"
     assert vat["value"] == "••••"
     login(client, "approver")
     visible = client.get("/api/inbox").json()["recommendations"][0]["evidence"]

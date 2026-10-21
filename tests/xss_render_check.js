@@ -13,6 +13,8 @@ const {
   orderDetail,
   customerDetail,
   inboxCard,
+  objectCard,
+  objectDetail,
   measureText,
   auditCard,
   readableCard,
@@ -166,6 +168,7 @@ const html = [
     problem: "manca",
     expected_impact: "niente",
     confidence: 0.5,
+    disposition: "closed",
     blocked_reason: value,
     actions: [{ type: "createPurchaseOrder", params: { quantity: 1 } }],
   }, "approver"),
@@ -245,9 +248,56 @@ const html = [
       revoke_reason: value,
     }],
   }, "approver"),
+  objectCard({
+    id: "obj-1",
+    type: "Invoice",
+    business_key: value,
+    fields: [
+      { name: "amount", label: "WRONG", value: 122, classification: "confidential", masked: false },
+      { name: "note", label: value, value: "visibile", classification: "confidential", masked: false },
+      { name: "iban", label: "IBAN", value: "riservato", masked: true },
+      { name: "hostile", label: "Nota", value: value, masked: false },
+    ],
+    remaining: 90,
+    history: [{ decision: "confirm", label: "confirm", amount: 40, actor: "approver", at: "2026-04-02T10:00:00" }],
+    links: [{ rel: "settles", type: "Payment", key: value, id: "obj-1" }],
+  }, {
+    types: [
+      { name: "Invoice", label: "Fattura", fields: [{ name: "amount", label: "Importo fattura" }] },
+      { name: "Payment", label: "Incasso", fields: [] },
+    ],
+    relations: [{ name: "settles" }],
+  }),
   auditCard({ action: value, actor: value, payload: { note: value } }),
   readableCard({ action: value, who: value, when: value, what: value, order: value, detail: value }),
   pill(value),
+  objectDetail({
+    type: "Invoice",
+    business_key: "FT-2026-0187",
+    fields: [],
+    links: [],
+    history: [
+      { id: "keep", decision: "confirm", amount: 1500, actor: "approver", at: "2026-04-02T10:00:00" },
+      { id: "gone", decision: "confirm", amount: 940, actor: value, at: "2026-10-17T10:00:00", revoked: true },
+      { id: "undo", decision: "revoked", actor: "edoardo", at: "2026-10-18T09:00:00", revokes_decision_id: "gone" },
+      { id: "fix", decision: "correct", amount: 940, actor: "approver", at: "2026-10-18T11:00:00" },
+    ],
+  }, {
+    types: [{ name: "Invoice", label: "Fattura" }],
+    relations: [],
+  }),
+  objectDetail({
+    type: "Payment",
+    business_key: "INC-2026-0413",
+    fields: [],
+    links: [],
+    history: [
+      { id: "undo-missing", decision: "revoked", actor: value, at: "2026-10-18T09:00:00", revokes_decision_id: "missing", revoked: true },
+    ],
+  }, {
+    types: [{ name: "Payment", label: "Incasso" }],
+    relations: [],
+  }),
 ].join("\n");
 
 if (html.includes(value) || html.includes("<img") || html.includes("<script")) {
@@ -273,7 +323,7 @@ const structural = new Set([
   "file-type-actions", "file-type-choice", "mapping-actions",
   "mapping-source", "mapping-column", "mapping-destination", "mapping-status",
   "decision-history", "revoked-decision", "revoker-line", "revoke-reason", "executed-note",
-  "process-step", "match-criteria", "failed-criteria",
+  "process-step", "match-criteria", "failed-criteria", "decided",
 ]);
 const allowedLabels = new Set(["Fonte", "Colonna", "Destinazione", "Suggerimento", "Stato"]);
 const tagRe = /<\/?([a-zA-Z][a-zA-Z0-9]*)\b([^>]*)>/g;
@@ -426,6 +476,7 @@ if (!stepOnly.includes("process-step") || stepOnly.includes(" · ") || !stepOnly
   console.error("a step without a process still printed a separator");
   process.exit(2);
 }
+const secretInvoice = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
 const paymentCard = inboxCard({
   id: "pay-card",
   kind: "payment_match",
@@ -435,9 +486,12 @@ const paymentCard = inboxCard({
   problem: "abbina",
   confidence: 1,
   confidence_method: "rule",
-  invoice_id: "inv",
+  invoice_id: secretInvoice,
   allocated_amount: "10",
-  criteria: { amount: true, customer: true, reference: true },
+  payment: { number: "INC-9", paid_at: "2026-04-02", amount: 122 },
+  invoice: { number: "FT-9", amount: 200, due_at: "2026-04-01" },
+  allocation: { amount: 20, remaining: 90 },
+  criteria: { amount: true, customer: false, reference: true },
   process: { id: "order_to_cash", label: "Ordine e incasso" },
   step: { id: "match_proposed", label: "Proposta" },
   evidence_hash: "abc",
@@ -448,6 +502,106 @@ if (!paymentCard.includes("data-correct-reason") || !paymentCard.includes("data-
 }
 if (paymentCard.includes(" data-reason")) {
   console.error("confirm still shares one reason field");
+  process.exit(2);
+}
+if (paymentCard.includes("Cosa verrà approvato") || paymentCard.includes("Anteprima di approvazione")) {
+  console.error("payment card still shows the approval payload");
+  process.exit(2);
+}
+for (const heading of ["Incasso", "Fattura proposta", "Assegnazione", "Criteri", "Conferma", "Correggi", "Rifiuta"]) {
+  if (!paymentCard.includes(heading)) {
+    console.error(`payment card missing ${heading}`);
+    process.exit(2);
+  }
+}
+if (!paymentCard.includes('value="FT-9"') || paymentCard.includes(secretInvoice)) {
+  console.error("correct form used the internal invoice id");
+  process.exit(2);
+}
+if (!paymentCard.includes("sì") || !paymentCard.includes("no") || !paymentCard.includes("Residuo attuale") || !paymentCard.includes("90,00 €")) {
+  console.error("payment card did not show criteria and the remaining balance");
+  process.exit(2);
+}
+if (!html.includes("Residuo attuale") || !html.includes("90,00 €")) {
+  console.error("invoice card hid the remaining balance");
+  process.exit(2);
+}
+const historyCard = objectDetail({
+  type: "Invoice",
+  business_key: "FT-9",
+  fields: [],
+  links: [{ rel: "settles", type: "Payment", key: "INC-9", id: "pay-9" }],
+  history: [{ decision: "confirm", label: "confirm", amount: 40, actor: "approver", at: "2026-04-02T10:00:00" }],
+}, {
+  types: [{ name: "Invoice", label: "Fattura" }, { name: "Payment", label: "Incasso" }],
+  relations: [{ name: "settles" }],
+});
+if (historyCard.includes(">confirm<") || !historyCard.includes("Confermata") || !historyCard.includes("40,00 €") || !historyCard.includes("02/04/2026")) {
+  console.error("history still shows a raw decision code");
+  process.exit(2);
+}
+if (historyCard.includes("revoked-decision") || historyCard.includes("annullata")) {
+  console.error("a valid history line was marked annullata");
+  process.exit(2);
+}
+const story = html.slice(html.indexOf("FT-2026-0187"));
+const historyList = story.split('<ul class="decision-history">')[1].split("</ul>")[0];
+const storyLines = [...historyList.matchAll(/<li>([\s\S]*?)<\/li>/g)].map((match) => match[1]);
+if (storyLines.length !== 4) {
+  console.error("invoice history did not keep every decision");
+  process.exit(2);
+}
+const [kept, struck, cancellation, replacement] = storyLines;
+if (kept.includes("revoked-decision") || kept.includes("annullata") || !kept.includes("1.500,00 €")) {
+  console.error("a valid history line was marked annullata");
+  process.exit(2);
+}
+const marked = struck.indexOf("annullata");
+if (!struck.includes('class="revoked-decision"') || marked < 0 || marked < struck.indexOf("</span>")) {
+  console.error("revoked history line is not marked annullata");
+  process.exit(2);
+}
+if (
+  cancellation.includes("revoked-decision") ||
+  cancellation.includes("annullata") ||
+  !cancellation.includes("Annullamento della conferma di 940,00 € del 17/10/2026 · edoardo")
+) {
+  console.error("the revocation line was struck or did not name the closed decision");
+  process.exit(2);
+}
+const unknown = html.slice(html.indexOf("INC-2026-0413"));
+if (
+  unknown.includes("revoked-decision") ||
+  unknown.includes("annullata") ||
+  unknown.includes(value) ||
+  !unknown.includes("Annullamento di una decisione precedente") ||
+  !unknown.includes(escapeHtml(value))
+) {
+  console.error("a revocation without its decision was struck or leaked");
+  process.exit(2);
+}
+if (!struck.includes("940,00 €") || struck.includes(value) || !struck.includes(escapeHtml(value))) {
+  console.error("revoked history line leaked or dropped the amount");
+  process.exit(2);
+}
+if (replacement.includes("revoked-decision") || replacement.includes("annullata") || !replacement.includes("Corretta")) {
+  console.error("a valid history line was marked annullata");
+  process.exit(2);
+}
+if (!historyCard.includes('data-object="pay-9"')) {
+  console.error("linked object is not clickable");
+  process.exit(2);
+}
+if (!html.includes("Importo fattura: 122") || html.includes("WRONG")) {
+  console.error("object card ignored the ontology label or hid a visible amount");
+  process.exit(2);
+}
+if (!html.includes("visibile") || !html.includes("riservato")) {
+  console.error("object card did not show the server value");
+  process.exit(2);
+}
+if (!html.includes("Cosa verrà approvato")) {
+  console.error("order card lost its approval preview");
   process.exit(2);
 }
 const measuredLine = measureText({

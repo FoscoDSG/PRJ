@@ -74,7 +74,7 @@ tbody tr:nth-child(even) { background: #fafbfc; } tbody tr:hover { background: v
 .file-type-actions { display: inline-flex; flex-wrap: wrap; gap: var(--s2); align-items: center; margin: 0 0 var(--s3); }
 .file-type-choice { font-size: var(--fs-sm); }
 .decision-history { list-style: none; padding: 0; margin: 6px 0 0; }
-.revoked-decision { text-decoration: line-through; }
+.revoked-decision { text-decoration: line-through; color: var(--muted); }
 .revoker-line, span.revoke-reason { display: block; color: var(--muted); font-size: var(--fs-xs); }
 .executed-note { margin: 8px 0 0; color: var(--danger); font-weight: 650; }
 label.revoke-reason { display: inline-grid; margin: 6px 8px 0 0; font-size: var(--fs-sm); max-width: 100%; }
@@ -134,24 +134,41 @@ td.mapping-actions input { width: 100%; min-width: 0; max-width: 100%; }
   }
   .suggestion-band, .suggestion-note { display: block; margin-top: 2px; }
   button, .pill {
-    white-space: nowrap;
     hyphens: none;
     overflow-wrap: normal;
     word-break: normal;
+    max-width: 100%;
   }
+  button { white-space: normal; }
+  .pill { white-space: nowrap; }
+  .cards, .fact-list, #audit > .card { grid-template-columns: 1fr; }
+  .top, nav { flex-wrap: wrap; align-items: flex-start; }
+  .top, nav, .panel, #flash, .card, pre, table, input, select { max-width: 100%; }
+  pre { white-space: pre-wrap; overflow-x: hidden; overflow-wrap: anywhere; }
+  html, body { overflow-x: clip; }
+  .card[data-id] > label:has([data-reason]) input,
+  .card[data-id] > label input { width: 100%; max-width: 100%; }
   td.mapping-actions { white-space: normal; min-width: 11rem; width: 100%; }
   td.mapping-actions:empty { display: none; }
 }
 
+/* Filtri di processo e di tipo: vanno a capo, niente scroll orizzontale. */
+.process-filters { display: flex; flex-wrap: wrap; gap: var(--s2); margin: 0 0 var(--s4); max-width: 100%; }
+.process-filters button { max-width: 100%; }
+.process-filters button[aria-pressed="true"] { background: var(--brand); color: #fff; border-color: var(--brand); }
+
 /* Card e liste */
 .cards, .stack { display: grid; gap: var(--s3); }
-.cards { grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); }
+.cards { grid-template-columns: repeat(auto-fill, minmax(min(100%, 300px), 1fr)); }
 .card { border: 1px solid var(--line); border-radius: var(--r-lg); padding: var(--s4) var(--s5); background: #fff; }
+.card.decided { background: #f3f4f6; }
+.card.decided .card-title,
+.card.decided .fact-list { color: var(--muted); }
 .card-title { margin-top: var(--s2); }
 .card button { margin: var(--s2) var(--s2) 0 0; }
 .meta { display: flex; gap: var(--s2); flex-wrap: wrap; align-items: center; margin: 0 0 var(--s2); }
 .edges { padding-left: var(--s5); font-size: var(--fs-sm); }
-.fact-list { list-style: none; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: var(--s2); }
+.fact-list { list-style: none; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 260px), 1fr)); gap: var(--s2); }
 .fact-list > li { border: 1px solid var(--line-soft); border-radius: var(--r); padding: var(--s2) var(--s3); background: #fbfcfd; }
 .fact-list > li > p { margin: 2px 0 0; font-size: var(--fs-xs); color: var(--muted); }
 .fact-confidence { font-variant-numeric: tabular-nums; }
@@ -198,7 +215,16 @@ pre:empty { display: none; }
   #audit > .card { grid-template-columns: 1fr 140px 1fr; }
   #audit .audit-order { grid-column: 3; } #audit .audit-detail { grid-column: 1 / -1; }
 }
-@media (max-width: 720px) {
+@media (max-width: 859px) {
   .row { display: grid; } #audit > .card { grid-template-columns: 1fr; } #audit .audit-detail, #audit .audit-order { grid-column: 1; }
   h1 { font-size: var(--fs-lg); }
+}
+
+/* La regola dei campi a più colonne sta sopra e vince sul blocco a 859px.
+   Sotto i 700px i campi tornano su una sola colonna. */
+@media (max-width: 859px) {
+  .cards, #audit > .card { grid-template-columns: 1fr; }
+}
+@media (max-width: 700px) {
+  .fact-list { grid-template-columns: 1fr; }
 }

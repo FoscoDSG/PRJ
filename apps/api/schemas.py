@@ -89,10 +89,17 @@ class PaymentConfirmBody(BaseModel):
 
 
 class PaymentCorrectBody(BaseModel):
+    """``invoice_number`` is the invoice number inside the caller's company.
+
+    ``invoice_id`` remains for a caller that already has the id. One of the
+    two is required. The server resolves the number; the page does not.
+    """
+
     model_config = ConfigDict(extra="forbid")
     decision: Literal["correct"]
     evidence_hash: str = Field(pattern=_HASH)
-    invoice_id: UUID
+    invoice_id: UUID | None = None
+    invoice_number: str | None = Field(default=None, min_length=1, max_length=128)
     allocated_amount: float = Field(gt=0, le=10_000_000)
     reason: str = Field(min_length=5, max_length=500)
 
@@ -105,9 +112,14 @@ class PaymentRejectBody(BaseModel):
 
 
 class UnmatchedPaymentBody(BaseModel):
-    """A person allocates a payment the rule left open."""
+    """A person allocates a payment the rule left open.
+
+    The invoice is the number inside the caller's company, or an id the
+    caller already holds. The server does not look in another company.
+    """
 
     model_config = ConfigDict(extra="forbid")
-    invoice_id: UUID
+    invoice_id: UUID | None = None
+    invoice_number: str | None = Field(default=None, min_length=1, max_length=128)
     allocated_amount: float = Field(gt=0, le=10_000_000)
     reason: str = Field(min_length=5, max_length=500)

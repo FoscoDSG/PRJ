@@ -62,6 +62,7 @@ from services.pipeline import (
     revoke_correction,
     run_agents,
 )
+from services.objects_read import get_company_object, list_company_objects
 from services.queries import (
     get_cash_document,
     get_customer,
@@ -630,6 +631,42 @@ def agent_run(user: dict = Depends(require_user)) -> dict:
     return {"recommendations": created}
 
 
+@app.get("/api/objects")
+def objects_route(
+    type_name: str = Query(alias="type"),
+    user: dict = Depends(require_user),
+) -> dict:
+    """One type, this company only. A type outside the ontology is a 404."""
+    with app_connect() as conn:
+        company_id = company_id_for_user(conn, user["username"])
+        rows = list_company_objects(
+            conn,
+            ontology(),
+            type_name=type_name,
+            company_id=company_id,
+            actor=user["username"],
+            role=user["role"],
+        )
+    return _ok({"objects": rows})
+
+
+@app.get("/api/objects/{object_id}")
+def object_route(object_id: str, user: dict = Depends(require_user)) -> dict:
+    with app_connect() as conn:
+        company_id = company_id_for_user(conn, user["username"])
+        detail = get_company_object(
+            conn,
+            ontology(),
+            object_id=object_id,
+            company_id=company_id,
+            actor=user["username"],
+            role=user["role"],
+        )
+    if detail is None:
+        raise AppError(404, "Oggetto assente")
+    return _ok(detail)
+
+
 @app.get("/api/orders")
 def orders(user: dict = Depends(require_user)) -> dict:
     with app_connect() as conn:
@@ -669,7 +706,9 @@ def ontology_route(user: dict = Depends(require_user)) -> dict:
 def invoice_detail(invoice_id: str, user: dict = Depends(require_user)) -> dict:
     with app_connect() as conn:
         company_id = company_id_for_user(conn, user["username"])
-        detail = get_cash_document(conn, invoice_id, "Invoice", user["role"], company_id)
+        detail = get_cash_document(
+            conn, invoice_id, "Invoice", user["role"], company_id, actor=user["username"]
+        )
     if detail is None:
         raise AppError(404, "Fattura assente")
     return _ok(detail)
@@ -679,7 +718,9 @@ def invoice_detail(invoice_id: str, user: dict = Depends(require_user)) -> dict:
 def payment_detail(payment_id: str, user: dict = Depends(require_user)) -> dict:
     with app_connect() as conn:
         company_id = company_id_for_user(conn, user["username"])
-        detail = get_cash_document(conn, payment_id, "Payment", user["role"], company_id)
+        detail = get_cash_document(
+            conn, payment_id, "Payment", user["role"], company_id, actor=user["username"]
+        )
     if detail is None:
         raise AppError(404, "Incasso assente")
     return _ok(detail)
@@ -944,9 +985,10 @@ def correct_match_route(
             actor=user["username"],
             role=user["role"],
             evidence_hash=body.evidence_hash,
-            invoice_id=str(body.invoice_id),
             allocated_amount=body.allocated_amount,
             reason=body.reason,
+            invoice_id=str(body.invoice_id) if body.invoice_id else None,
+            invoice_number=body.invoice_number,
         )
         conn.commit()
     return _ok(result)
@@ -991,9 +1033,10 @@ def correct_unmatched_route(
             payment_id,
             actor=user["username"],
             role=user["role"],
-            invoice_id=str(body.invoice_id),
             allocated_amount=body.allocated_amount,
             reason=body.reason,
+            invoice_id=str(body.invoice_id) if body.invoice_id else None,
+            invoice_number=body.invoice_number,
         )
         conn.commit()
     return _ok(result)
