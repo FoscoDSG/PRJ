@@ -1,23 +1,32 @@
 """One open/closed rule for every queue.
 
-A card is open when it has no human decision, or when its last human
-decision is a revocation. Order exceptions and payment matches both call
-``card_disposition``, so the counts on the page match the cards.
+A card is open only when a person can still record a decision today.
+The order queue and the payment queue both call ``card_disposition``
+with the states their engine actually accepts.
+
+An order recommendation accepts a decision in ``detected``, ``proposed``
+and ``modified``. After a revocation its state is ``revoked``, and the
+engine refuses another decision, so the card is closed and is not counted.
+
+A payment match accepts a decision only while it is ``proposed``.
+Revoking the last decision puts it back there, and a new decision is
+accepted.
 """
 
 from __future__ import annotations
 
+# States in which the order engine still accepts approve, modify or reject.
+ORDER_DECIDABLE = frozenset({"detected", "proposed", "modified"})
+# A payment card shows the decision buttons only while it is proposed.
+PAYMENT_DECIDABLE = frozenset({"proposed"})
 
-def card_disposition(decisions: list[dict]) -> str:
+
+def card_disposition(status: str, decidable: frozenset[str]) -> str:
     """``open`` or ``closed``.
 
-    ``decisions`` are chronological and include revocation rows. The last
-    row decides: no rows, or a last row whose decision is ``revoked``,
-    means open. Any other last decision means closed.
+    ``decidable`` is the set of states in which this queue accepts a
+    decision today. The same function serves every queue.
     """
-    if not decisions:
-        return "open"
-    last = decisions[-1]
-    if str(last.get("decision") or "") == "revoked":
+    if str(status or "") in decidable:
         return "open"
     return "closed"

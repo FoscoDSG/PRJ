@@ -6,19 +6,25 @@ from typing import Any
 
 import psycopg
 
-from services.disposition import card_disposition
+from services.disposition import ORDER_DECIDABLE, PAYMENT_DECIDABLE, card_disposition
 from services.mapping.corrections import present_origin, proposed_label, table_file_choice_codes
 from services.mapping.labels import profile_label
 from services.mapping.threshold import active_threshold
 from services.pii import MASK as PII_MASK
-from services.pii import clear_personal_names, is_pii_key, is_pii_property, note_clear_personal_view, redact
+from services.pii import (
+    clear_personal_names,
+    hides_margin,
+    is_pii_key,
+    is_pii_property,
+    note_clear_personal_view,
+    redact,
+)
 from services.revocation import EXECUTED_MESSAGE, inbox_histories, mapping_histories, state_histories
 from services.text import stable
 
 MASK = PII_MASK
 STOCK_FORMULA = "disponibile = giacenza − impegnato"
 PRIVILEGED = {"admin", "approver"}
-SENSITIVE_KEYS = {"vat", "amount", "cost", "margin", "piva", "costo", "importo"}
 
 
 def list_mappings(
@@ -49,8 +55,10 @@ def list_mappings(
         item = dict(row)
         prop = ontology.prop(item["target_type"], item["target_property"]) if ontology else None
         personal = is_pii_key(item["source_field"]) or is_pii_property(item["target_property"])
-        confidential = prop is not None and prop.classification == "confidential"
-        if personal or (confidential and role not in PRIVILEGED):
+        hidden_margin = hides_margin(item["target_property"]) or (
+            prop is not None and hides_margin(prop.name)
+        )
+        if personal or (hidden_margin and role not in PRIVILEGED):
             item["samples"] = [MASK for _ in (item["samples"] or [])]
         item["samples"] = redact(item["samples"])
         item["calibrated"] = False
@@ -274,32 +282,16 @@ def list_inbox(conn: psycopg.Connection, role: str, company_id: str | None = Non
         item["headline"] = f"Ordine {item.get('order_key') or ''}"
         item.pop("process_id", None)
         item.pop("step_id", None)
-    _set_order_disposition(conn, inbox)
+    _set_order_disposition(inbox)
     if company_id:
         inbox.extend(_payment_inbox(conn, role, company_id, model))
     return inbox
 
 
-def _set_order_disposition(conn: psycopg.Connection, inbox: list[dict]) -> None:
-    """Same open/closed rule as the payment queue. Counts on the page use it."""
-    ids = [item["id"] for item in inbox]
-    if not ids:
-        return
-    rows = conn.execute(
-        """
-        SELECT recommendation_id::text AS recommendation_id, decision
-        FROM app.decisions_log
-        WHERE recommendation_id = ANY(%s::uuid[])
-          AND decision IN ('approve', 'reject', 'modify', 'revoked')
-        ORDER BY decided_at, id
-        """,
-        (ids,),
-    ).fetchall()
-    grouped: dict[str, list[dict]] = {}
-    for row in rows:
-        grouped.setdefault(row["recommendation_id"], []).append({"decision": row["decision"]})
+def _set_order_disposition(inbox: list[dict]) -> None:
+    """Open only while the order engine still accepts a decision."""
     for item in inbox:
-        item["disposition"] = card_disposition(grouped.get(item["id"], []))
+        item["disposition"] = card_disposition(str(item.get("status") or ""), ORDER_DECIDABLE)
 
 
 def _payment_inbox(conn: psycopg.Connection, role: str, company_id: str, model) -> list[dict]:
@@ -331,7 +323,8 @@ def _payment_inbox(conn: psycopg.Connection, role: str, company_id: str, model) 
     decisions = conn.execute(
         """
         SELECT id::text, proposal_id::text, decision, actor, decided_at,
-               failed_criteria, reason, revokes_decision_id::text
+               failed_criteria, reason, revokes_decision_id::text,
+               allocated_amount
         FROM app.payment_decisions
         WHERE company_id = %s::uuid
         ORDER BY decided_at, id
@@ -362,6 +355,11 @@ def _payment_inbox(conn: psycopg.Connection, role: str, company_id: str, model) 
                     "decided_at": _when(decision["decided_at"]),
                     "revoked": decision["id"] in revoked,
                     "failed_criteria": decision.get("failed_criteria") or [],
+                    "allocated_amount": (
+                        None
+                        if decision.get("allocated_amount") is None
+                        else stable(decision["allocated_amount"])
+                    ),
                 }
             )
             if decision["id"] not in revoked:
@@ -373,11 +371,8 @@ def _payment_inbox(conn: psycopg.Connection, role: str, company_id: str, model) 
                 latest["decision"], "proposed"
             )
             failed = list(latest.get("failed_criteria") or [])
-        raw_decisions = by_proposal.get(row["id"], [])
-        disposition = card_disposition([{"decision": item["decision"]} for item in raw_decisions])
         amount = stable(row["allocated_amount"])
-        if role not in PRIVILEGED:
-            amount = MASK
+        disposition = card_disposition(status, PAYMENT_DECIDABLE)
         payment_facts = visible_facts(conn, row["payment_entity_id"])
         invoice_facts = visible_facts(conn, row["invoice_entity_id"])
         balance = remaining_balance(conn, company_id, row["invoice_entity_id"])
@@ -660,6 +655,11 @@ def _with_provenance(evidence: Any, classes: dict[str, str | None]) -> Any:
     return enriched
 
 
+def _operator_hides(role: str, name: str | None) -> bool:
+    """Operators see amounts. Margin and cost stay masked for them."""
+    return role not in PRIVILEGED and hides_margin(name)
+
+
 def _mask_evidence(evidence: Any, role: str) -> Any:
     if not isinstance(evidence, list):
         return evidence
@@ -670,8 +670,7 @@ def _mask_evidence(evidence: Any, role: str) -> Any:
             continue
         copy = dict(item)
         personal = is_pii_property(copy.get("property"), copy.get("entity_type"))
-        confidential = copy.get("classification") == "confidential" or copy.get("property") in SENSITIVE_KEYS
-        if personal or (confidential and role not in PRIVILEGED):
+        if personal or _operator_hides(role, copy.get("property")):
             copy["value"] = MASK
             copy["masked"] = True
         masked.append(copy)
@@ -682,7 +681,6 @@ def _mask_tree(value: Any, role: str) -> Any:
     if isinstance(value, list):
         return [_mask_tree(item, role) for item in value]
     if isinstance(value, dict):
-        classification = value.get("classification")
         prop = value.get("property")
         entity_type = value.get("entity_type")
         masked = {}
@@ -690,10 +688,10 @@ def _mask_tree(value: Any, role: str) -> Any:
             personal = is_pii_key(str(key)) or (
                 key == "value" and is_pii_property(str(prop) if prop is not None else None, str(entity_type) if entity_type else None)
             )
-            confidential = key in SENSITIVE_KEYS or (
-                key == "value" and (classification == "confidential" or prop in SENSITIVE_KEYS)
+            hidden = _operator_hides(role, str(key)) or (
+                key == "value" and _operator_hides(role, str(prop) if prop is not None else None)
             )
-            if personal or (confidential and role not in PRIVILEGED):
+            if personal or hidden:
                 masked[key] = MASK
             else:
                 masked[key] = _mask_tree(item, role)
@@ -808,7 +806,7 @@ def _facts(
         item["value"] = stable(item["value"])
         item["confidence"] = stable(item["confidence"])
         personal = is_pii_property(item["property"], entity_type)
-        if personal or (item["classification"] == "confidential" and role not in ("admin", "approver")):
+        if personal or _operator_hides(role, item["property"]):
             item["value"] = MASK
             item["masked"] = True
         item["calibrated"] = False

@@ -645,6 +645,7 @@ def objects_route(
             type_name=type_name,
             company_id=company_id,
             actor=user["username"],
+            role=user["role"],
         )
     return _ok({"objects": rows})
 
@@ -659,6 +660,7 @@ def object_route(object_id: str, user: dict = Depends(require_user)) -> dict:
             object_id=object_id,
             company_id=company_id,
             actor=user["username"],
+            role=user["role"],
         )
     if detail is None:
         raise AppError(404, "Oggetto assente")

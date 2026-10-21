@@ -14,6 +14,7 @@ const {
   customerDetail,
   inboxCard,
   objectCard,
+  objectDetail,
   measureText,
   auditCard,
   readableCard,
@@ -167,6 +168,7 @@ const html = [
     problem: "manca",
     expected_impact: "niente",
     confidence: 0.5,
+    disposition: "closed",
     blocked_reason: value,
     actions: [{ type: "createPurchaseOrder", params: { quantity: 1 } }],
   }, "approver"),
@@ -256,6 +258,8 @@ const html = [
       { name: "iban", label: "IBAN", value: "riservato", masked: true },
       { name: "hostile", label: "Nota", value: value, masked: false },
     ],
+    remaining: 90,
+    history: [{ decision: "confirm", label: "confirm", amount: 40, actor: "approver", at: "2026-04-02T10:00:00" }],
     links: [{ rel: "settles", type: "Payment", key: value, id: "obj-1" }],
   }, {
     types: [
@@ -292,7 +296,7 @@ const structural = new Set([
   "file-type-actions", "file-type-choice", "mapping-actions",
   "mapping-source", "mapping-column", "mapping-destination", "mapping-status",
   "decision-history", "revoked-decision", "revoker-line", "revoke-reason", "executed-note",
-  "process-step", "match-criteria", "failed-criteria",
+  "process-step", "match-criteria", "failed-criteria", "decided",
 ]);
 const allowedLabels = new Set(["Fonte", "Colonna", "Destinazione", "Suggerimento", "Stato"]);
 const tagRe = /<\/?([a-zA-Z][a-zA-Z0-9]*)\b([^>]*)>/g;
@@ -487,8 +491,30 @@ if (!paymentCard.includes('value="FT-9"') || paymentCard.includes(secretInvoice)
   console.error("correct form used the internal invoice id");
   process.exit(2);
 }
-if (!paymentCard.includes("sì") || !paymentCard.includes("no") || !paymentCard.includes("Residuo")) {
+if (!paymentCard.includes("sì") || !paymentCard.includes("no") || !paymentCard.includes("Residuo attuale") || !paymentCard.includes("90,00 €")) {
   console.error("payment card did not show criteria and the remaining balance");
+  process.exit(2);
+}
+if (!html.includes("Residuo attuale") || !html.includes("90,00 €")) {
+  console.error("invoice card hid the remaining balance");
+  process.exit(2);
+}
+const historyCard = objectDetail({
+  type: "Invoice",
+  business_key: "FT-9",
+  fields: [],
+  links: [{ rel: "settles", type: "Payment", key: "INC-9", id: "pay-9" }],
+  history: [{ decision: "confirm", label: "confirm", amount: 40, actor: "approver", at: "2026-04-02T10:00:00" }],
+}, {
+  types: [{ name: "Invoice", label: "Fattura" }, { name: "Payment", label: "Incasso" }],
+  relations: [{ name: "settles" }],
+});
+if (historyCard.includes(">confirm<") || !historyCard.includes("Confermata") || !historyCard.includes("40,00 €") || !historyCard.includes("02/04/2026")) {
+  console.error("history still shows a raw decision code");
+  process.exit(2);
+}
+if (!historyCard.includes('data-object="pay-9"')) {
+  console.error("linked object is not clickable");
   process.exit(2);
 }
 if (!html.includes("Importo fattura: 122") || html.includes("WRONG")) {

@@ -21,6 +21,7 @@ from services.pii import (
     MASK,
     RESERVED,
     clear_personal_names,
+    hides_margin,
     is_pii_property,
     note_clear_personal_view,
     text_has_pii,
@@ -35,6 +36,7 @@ def list_company_objects(
     type_name: str,
     company_id: str | None,
     actor: str,
+    role: str,
 ) -> list[dict[str, Any]]:
     """Objects of one type for this company. An unknown type is a 404."""
     _require_type(model, type_name)
@@ -50,7 +52,7 @@ def list_company_objects(
         (type_name, company_id),
     ).fetchall()
     return [
-        _present(conn, model, row, company_id, actor, detail=False)
+        _present(conn, model, row, company_id, actor, role, detail=False)
         for row in rows
     ]
 
@@ -62,6 +64,7 @@ def get_company_object(
     object_id: str,
     company_id: str | None,
     actor: str,
+    role: str,
 ) -> dict[str, Any] | None:
     """One object of this company. Another company, or a bad id, is absent."""
     if not company_id or not _uuid(object_id):
@@ -78,7 +81,7 @@ def get_company_object(
         return None
     if row["type"] not in model.types:
         return None
-    return _present(conn, model, row, company_id, actor, detail=True)
+    return _present(conn, model, row, company_id, actor, role, detail=True)
 
 
 def visible_facts(conn: psycopg.Connection, entity_id: str) -> dict[str, Any]:
@@ -138,10 +141,11 @@ def _present(
     row: dict,
     company_id: str,
     actor: str,
+    role: str,
     *,
     detail: bool,
 ) -> dict[str, Any]:
-    fields = _fields(conn, row["id"], row["type"])
+    fields = _fields(conn, row["id"], row["type"], role)
     # The hook is the place a future view log would record a clear personal value.
     note_clear_personal_view(
         conn,
@@ -165,7 +169,7 @@ def _present(
     return payload
 
 
-def _fields(conn: psycopg.Connection, entity_id: str, type_name: str) -> list[dict[str, Any]]:
+def _fields(conn: psycopg.Connection, entity_id: str, type_name: str, role: str) -> list[dict[str, Any]]:
     rows = conn.execute(
         """
         SELECT property, value
@@ -182,6 +186,9 @@ def _fields(conn: psycopg.Connection, entity_id: str, type_name: str) -> list[di
         masked = personal or value == MASK or (isinstance(value, str) and text_has_pii(value))
         if masked:
             value = RESERVED
+        elif role not in ("admin", "approver") and hides_margin(row["property"]):
+            value = MASK
+            masked = True
         fields.append(
             {
                 "name": row["property"],
@@ -271,6 +278,16 @@ def _event_history(
     return items
 
 
+_DECISION_WORDS = {
+    "confirm": "Confermata",
+    "correct": "Corretta",
+    "reject": "Rifiutata",
+    "revoked": "Annullata",
+    "approve": "Approvata",
+    "modify": "Modificata",
+}
+
+
 def _decision_history(
     conn: psycopg.Connection,
     entity_id: str,
@@ -278,7 +295,8 @@ def _decision_history(
 ) -> list[dict[str, Any]]:
     rows = conn.execute(
         """
-        SELECT id::text, decision, actor, decided_at, revokes_decision_id::text AS revokes
+        SELECT id::text, decision, actor, decided_at, allocated_amount,
+               revokes_decision_id::text AS revokes
         FROM app.payment_decisions
         WHERE company_id = %s::uuid
           AND (invoice_entity_id = %s::uuid OR payment_entity_id = %s::uuid)
@@ -295,9 +313,10 @@ def _decision_history(
             {
                 "kind": "decision",
                 "at": at,
-                "label": row["decision"],
+                "label": _DECISION_WORDS.get(row["decision"], row["decision"]),
                 "actor": row["actor"] or "",
                 "decision": row["decision"],
+                "amount": None if row["allocated_amount"] is None else stable(row["allocated_amount"]),
                 "revoked": row["decision"] == "revoked" or row["id"] in revoked,
                 "id": row["id"],
             }

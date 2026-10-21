@@ -1,8 +1,10 @@
 """Precision, recall and the share of payments left unmatched.
 
 Labels are human confirmations and corrections only. The latest decision
-of a proposal counts. A revocation is a later decision and is counted
-apart, as for mappings. Synthetic files stay out. The result stays
+of a rule proposal counts. A manual allocation has no proposal, so each
+one is its own case: splitting one payment across two invoices is two
+cases. A revocation is a later decision and is counted apart, as for
+mappings. Synthetic files stay out. The result stays
 ``non misurata`` until 30 human cases and 3 distinct source names.
 Two companies that share a source name count as one source.
 """
@@ -139,7 +141,12 @@ def score_cases(
             continue
         if item["id"] in revoked_ids:
             continue
-        key = item.get("proposal_id") or f"payment:{item.get('payment_entity_id')}"
+        # A proposal keeps one latest decision. A manual allocation has
+        # no proposal, so each decision is its own case.
+        if item.get("proposal_id"):
+            key = f"proposal:{item['proposal_id']}"
+        else:
+            key = f"decision:{item['id']}"
         latest[key] = item
     true_positive = 0
     false_positive = 0

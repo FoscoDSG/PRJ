@@ -13,7 +13,8 @@ from fastapi.testclient import TestClient
 
 from apps.api.main import app
 from services.db import connect
-from services.disposition import card_disposition
+from services.agent.payment_measure import score_cases
+from services.disposition import ORDER_DECIDABLE, PAYMENT_DECIDABLE, card_disposition
 from services.pii import MASK, RESERVED, note_clear_personal_view
 from tests.test_flow import decide, give_company, load_demo, login
 from tests.test_order_to_cash import SYNTHETIC, _assign, _status, _upload
@@ -47,23 +48,16 @@ def _remaining(client: TestClient, number: str) -> int | float:
 
 
 def test_card_disposition_is_the_same_rule_for_every_queue():
-    sequences = [
-        [],
-        [{"decision": "approve"}],
-        [{"decision": "reject"}],
-        [{"decision": "modify"}],
-        [{"decision": "confirm"}],
-        [{"decision": "correct"}],
-        [{"decision": "approve"}, {"decision": "revoked"}],
-        [{"decision": "confirm"}, {"decision": "revoked"}],
-        [{"decision": "correct"}, {"decision": "revoked"}],
-        [{"decision": "reject"}, {"decision": "revoked"}, {"decision": "approve"}],
-    ]
-    for decisions in sequences:
-        last = decisions[-1]["decision"] if decisions else ""
-        expected = "open" if last in ("", "revoked") else "closed"
-        assert card_disposition(decisions) == expected
-        assert card_disposition(list(decisions)) == expected
+    """Open only when that queue can still accept a decision today."""
+    for status in ("detected", "proposed", "modified"):
+        assert card_disposition(status, ORDER_DECIDABLE) == "open"
+    for status in ("approved", "rejected", "revoked", "executed", "dry_run_ok"):
+        assert card_disposition(status, ORDER_DECIDABLE) == "closed"
+    assert card_disposition("proposed", PAYMENT_DECIDABLE) == "open"
+    for status in ("confirmed", "corrected", "rejected", "revoked"):
+        assert card_disposition(status, PAYMENT_DECIDABLE) == "closed"
+    # The same status goes through the same function for both queues.
+    assert card_disposition("proposed", ORDER_DECIDABLE) == card_disposition("proposed", PAYMENT_DECIDABLE)
 
 
 def test_unknown_type_is_absent_and_a_company_without_one_sees_nothing(client: TestClient):
@@ -152,8 +146,9 @@ def test_two_payments_balance_mask_and_the_other_companys_number(client: TestCli
         for item in client.get("/api/inbox").json()["recommendations"]
         if item.get("kind") == "payment_match" and item["invoice"]["number"] == "FT-TEST-100"
     )
-    assert mapper_full["allocated_amount"] == MASK
+    assert mapper_full["allocated_amount"] == 122
     assert mapper_full["allocation"]["amount"] == 122
+    assert mapper_full["allocation"]["remaining"] == 122
 
     login(client, "approver")
     split = next(item for item in matches if item["invoice"]["number"] == "FT-TEST-301")
@@ -183,6 +178,18 @@ def test_two_payments_balance_mask_and_the_other_companys_number(client: TestCli
         if item["id"] == split["id"]
     )
     assert reopened["disposition"] == "open"
+    assert reopened["status"] == "proposed"
+    again_decision = client.post(
+        f"/api/payment-proposals/{split['id']}/confirm",
+        json={"decision": "confirm", "evidence_hash": split["evidence_hash"]},
+    )
+    assert again_decision.status_code == 200, again_decision.text
+    decided_again = next(
+        item
+        for item in client.get("/api/inbox").json()["recommendations"]
+        if item["id"] == split["id"]
+    )
+    assert decided_again["disposition"] == "closed"
 
     with connect() as conn:
         partial_payment = conn.execute(
@@ -314,8 +321,10 @@ def test_order_cards_reopen_and_demo_numbers_stay(client: TestClient):
     load_demo()
     found = _by_key(client, "Order")["1024"]
     assert _field(found, "shortage_qty")["value"] == 80
-    assert _field(found, "margin")["value"] == 0.6667
-    assert _field(found, "margin")["masked"] is False
+    assert _field(found, "amount")["value"] == 60000
+    assert _field(found, "amount")["masked"] is False
+    assert _field(found, "margin")["value"] == MASK
+    assert _field(found, "margin")["masked"] is True
 
     login(client, "approver")
     orders = client.get("/api/orders").json()["orders"]
@@ -357,7 +366,16 @@ def test_order_cards_reopen_and_demo_numbers_stay(client: TestClient):
         for item in client.get("/api/inbox").json()["recommendations"]
         if item["id"] == card["id"]
     )
-    assert reopened["disposition"] == "open"
+    assert reopened["disposition"] == "closed"
+    assert reopened["status"] == "revoked"
+    open_orders = [
+        item
+        for item in client.get("/api/inbox").json()["recommendations"]
+        if item["kind"] == "order_exception" and item["disposition"] == "open"
+    ]
+    assert open_orders == []
+    refused = decide(client, reopened)
+    assert refused.status_code == 409
 
     give_company("admin", "Altra azienda")
     login(client, "admin")
@@ -372,16 +390,176 @@ def test_order_cards_reopen_and_demo_numbers_stay(client: TestClient):
     assert seen["margin"] == 0.6667
 
 
+def test_a_manual_split_lowers_both_balances_and_counts_two_cases(client: TestClient):
+    company = give_company("mapper", "Split manuale")
+    _assign("approver", company)
+    login(client, "mapper")
+    _upload(client, "fatturapa", "fatture_prova.xml", (SYNTHETIC / "fatture_prova.xml").read_bytes())
+    _upload(client, "bank", "incassi_prova.csv", (SYNTHETIC / "incassi_prova.csv").read_bytes())
+    login(client, "approver")
+    assert _remaining(client, "FT-TEST-301") == 80
+    assert _remaining(client, "FT-TEST-302") == 20
+    with connect() as conn:
+        payment_id = conn.execute(
+            """
+            SELECT id::text FROM app.entities
+            WHERE type = 'Payment' AND business_key = 'INC-200' AND company_id = %s
+            """,
+            (company,),
+        ).fetchone()["id"]
+    first = client.post(
+        f"/api/payments/{payment_id}/correct",
+        json={
+            "invoice_number": "FT-TEST-301",
+            "allocated_amount": 25,
+            "reason": "prima parte dello stesso incasso",
+        },
+    )
+    assert first.status_code == 200, first.text
+    second = client.post(
+        f"/api/payments/{payment_id}/correct",
+        json={
+            "invoice_number": "FT-TEST-302",
+            "allocated_amount": 15,
+            "reason": "seconda parte dello stesso incasso",
+        },
+    )
+    assert second.status_code == 200, second.text
+    assert _remaining(client, "FT-TEST-301") == 55
+    assert _remaining(client, "FT-TEST-302") == 5
+    detail = client.get(f"/api/objects/{_by_key(client, 'Invoice')['FT-TEST-301']['id']}").json()
+    decision = next(item for item in detail["history"] if item.get("decision") == "correct")
+    assert decision["label"] == "Corretta"
+    assert decision["amount"] == 25
+    assert "confirm" not in decision["label"]
+    assert _status(_by_key(client, "Invoice")["FT-TEST-301"]["id"]) == "issued"
+
+    payment = {"id": "pay", "company_id": company, "source_name": "alfa", "label_origin": "rule"}
+    shared = {
+        "proposal_id": None,
+        "payment_entity_id": "pay",
+        "company_id": company,
+        "decision": "correct",
+        "source_name": "alfa",
+        "revokes_decision_id": None,
+    }
+    report = score_cases(
+        [],
+        [
+            {**shared, "id": "d1", "invoice_entity_id": "inv-a", "allocated_amount": "25.00"},
+            {**shared, "id": "d2", "invoice_entity_id": "inv-b", "allocated_amount": "15.00"},
+        ],
+        [payment],
+    )
+    assert report["human_cases"] == 2
+    assert report["false_negative"] == 2
+    revoked = {
+        **shared,
+        "id": "rev",
+        "decision": "revoked",
+        "invoice_entity_id": None,
+        "allocated_amount": None,
+        "revokes_decision_id": "d1",
+    }
+    after = score_cases(
+        [],
+        [
+            {**shared, "id": "d1", "invoice_entity_id": "inv-a", "allocated_amount": "25.00"},
+            {**shared, "id": "d2", "invoice_entity_id": "inv-b", "allocated_amount": "15.00"},
+            revoked,
+        ],
+        [payment],
+    )
+    assert after["human_cases"] == 1
+    assert after["revocations"] == 1
+
+
+def _figures(payload) -> dict[str, set]:
+    found: dict[str, set] = {}
+
+    def walk(node) -> None:
+        if isinstance(node, dict):
+            if "property" in node and "value" in node:
+                found.setdefault(str(node["property"]), set()).add(node["value"])
+            for key, value in node.items():
+                if key in {"amount", "allocated_amount", "remaining", "margin", "cost", "unit_cost", "total_cost"} and not isinstance(value, (dict, list)):
+                    found.setdefault(key, set()).add(value)
+                else:
+                    walk(value)
+        elif isinstance(node, list):
+            for item in node:
+                walk(item)
+
+    walk(payload)
+    return found
+
+
+def test_operator_sees_amounts_and_not_margin_or_cost(client: TestClient):
+    company = give_company("mapper", "Visibilità importi")
+    _assign("operator", company)
+    _assign("approver", company)
+    _assign("admin", company)
+    login(client, "mapper")
+    load_demo()
+
+    def bundle() -> dict:
+        orders = client.get("/api/orders").json()["orders"]
+        order = next(item for item in orders if item["business_key"] == "1024")
+        detail = client.get(f"/api/orders/{order['id']}").json()
+        objects = client.get("/api/objects", params={"type": "Order"}).json()["objects"]
+        own = next(item for item in objects if item["business_key"] == "1024")
+        products = client.get("/api/objects", params={"type": "Product"}).json()["objects"]
+        product = next(item for item in products if item["business_key"] == "ART-X")
+        inbox = client.get("/api/inbox").json()["recommendations"]
+        card = next(item for item in inbox if item["kind"] == "order_exception")
+        return {"order": order, "detail": detail, "object": own, "product": product, "card": card}
+
+    login(client, "operator")
+    operator = bundle()
+    figures = _figures(operator)
+    assert 60000 in figures["amount"]
+    assert MASK not in figures["amount"]
+    assert figures["margin"] == {MASK}
+    assert figures["cost"] == {MASK}
+    assert _field(operator["object"], "amount")["value"] == operator["order"]["amount"] == 60000
+    assert _field(operator["object"], "margin")["value"] == operator["order"]["margin"] == MASK
+    assert _field(operator["product"], "cost")["value"] == MASK
+    cost_evidence = next(item for item in operator["card"]["evidence"] if item["property"] == "cost")
+    amount_evidence = next(item for item in operator["card"]["evidence"] if item["property"] == "amount")
+    assert cost_evidence["value"] == MASK
+    assert amount_evidence["value"] == 60000
+    vat = next(item for item in operator["card"]["evidence"] if item["property"] == "vat")
+    assert vat["value"] == MASK
+
+    for role in ("approver", "admin"):
+        login(client, role)
+        seen = bundle()
+        figures = _figures(seen)
+        assert MASK not in figures["amount"]
+        assert MASK not in figures["margin"]
+        assert MASK not in figures["cost"]
+        assert seen["order"]["margin"] == 0.6667
+        assert seen["order"]["amount"] == 60000
+        assert _field(seen["object"], "margin")["value"] == 0.6667
+        assert _field(seen["product"], "cost")["value"] == 40
+        assert next(item["value"] for item in seen["card"]["evidence"] if item["property"] == "cost") == 40
+        assert next(item["value"] for item in seen["card"]["evidence"] if item["property"] == "amount") == 60000
+
+
 def test_pages_show_reserved_only_when_the_server_sends_it():
     for path in WEB.iterdir():
         if path.suffix in {".js", ".html", ".css"}:
             assert "riservato" not in path.read_text(encoding="utf-8")
     app = (WEB / "app.js").read_text(encoding="utf-8")
-    assert 'disposition !== "open"' in app
+    assert 'disposition !== "open"' in app or 'disposition === "closed"' in app
+    assert "Già decise" in app
     assert "invoice_number:" in app
+    page_js = (WEB / "escape.js").read_text(encoding="utf-8")
+    assert "Residuo attuale" in page_js
     css = (WEB / "styles.css").read_text(encoding="utf-8")
     assert "max-width: 859px" in css
     assert "overflow-x: clip" in css
+    assert css.rfind("minmax(min(100%, 260px)") < css.rfind("@media (max-width: 700px)")
     assert "grid-template-columns: 1fr" in css
     page = (WEB / "index.html").read_text(encoding="utf-8")
     assert "IEOL" in page

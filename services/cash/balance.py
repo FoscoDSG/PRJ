@@ -4,8 +4,11 @@ Remaining = invoice amount
             − linked credit notes
             − amounts a person confirmed or corrected.
 
-The last decision of each proposal counts. A revoked decision does not.
-A match that is only proposed does not. This function never writes.
+The last decision of each rule proposal counts. A manual allocation,
+one a person recorded without a proposal, counts on its own: two
+allocations of the same payment are two amounts. A revoked decision
+does not count. A match that is only proposed does not. This function
+never writes.
 """
 
 from __future__ import annotations
@@ -81,7 +84,11 @@ def _human_allocations(
     company_id: str,
     invoice_id: str,
 ) -> Decimal:
-    """Last kept decision per proposal. Proposals themselves are not read."""
+    """Kept decisions. Proposals themselves are not read.
+
+    A rule proposal keeps its latest decision. A manual allocation has
+    no proposal, so each of those decisions counts by itself.
+    """
     rows = conn.execute(
         """
         SELECT id::text, proposal_id::text AS proposal_id,
@@ -99,7 +106,10 @@ def _human_allocations(
     for row in rows:
         if row["decision"] == "revoked" or row["id"] in revoked:
             continue
-        key = row["proposal_id"] or f"payment:{row['payment_entity_id'] or row['id']}"
+        if row["proposal_id"]:
+            key = f"proposal:{row['proposal_id']}"
+        else:
+            key = f"decision:{row['id']}"
         latest[key] = row
     total = _ZERO
     for row in latest.values():

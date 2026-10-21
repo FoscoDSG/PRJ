@@ -459,6 +459,9 @@ async function openObject(id) {
   detail.hidden = false;
   detail.innerHTML = objectDetail(object, ontology);
   detail.querySelector("#back-objects").addEventListener("click", loadObjects);
+  detail.querySelectorAll("button[data-object]").forEach((button) => {
+    button.addEventListener("click", () => openObject(button.dataset.object));
+  });
 }
 
 async function openOrder(id) {
@@ -533,7 +536,17 @@ async function loadInbox() {
     root.append(note);
     return;
   }
-  root.innerHTML = visible.map((item) => inboxCard(item, state.role, canWrite)).join("");
+  const openItems = [];
+  const decidedItems = [];
+  for (const item of visible) {
+    if (item && item.disposition === "closed") decidedItems.push(item);
+    else openItems.push(item);
+  }
+  const openHtml = openItems.map((item) => inboxCard(item, state.role, canWrite)).join("");
+  const decidedHtml = decidedItems.length
+    ? `<h3 class="section-heading">Già decise</h3>${decidedItems.map((item) => inboxCard(item, state.role, canWrite)).join("")}`
+    : "";
+  root.innerHTML = openHtml + decidedHtml;
   bindRevokes(root, loadInbox);
   root.querySelectorAll("article").forEach((card) => {
     card.querySelectorAll("button[data-act]").forEach((button) => {

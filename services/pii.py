@@ -81,6 +81,45 @@ def is_pii_key(name: str | None) -> bool:
     return bool(name) and name.lower() in PII_KEYS
 
 
+# Cost and margin stay hidden from an operator. A unit cost or a total
+# cost would let someone rebuild the margin from a visible price.
+_MARGIN_NAMES = frozenset(
+    {
+        "margin",
+        "margine",
+        "cost",
+        "costo",
+        "unit_cost",
+        "total_cost",
+        "line_cost",
+        "standard_cost",
+        "costo_unitario",
+        "costo_totale",
+    }
+)
+
+
+def hides_margin(name: str | None) -> bool:
+    """True when showing this field would reveal the margin.
+
+    Amounts (``amount``, ``allocated_amount``, a price) are not in this
+    set. An operator sees those. An approver is not filtered here: the
+    caller decides who is privileged.
+    """
+    if not name:
+        return False
+    key = str(name).strip().lower().replace(" ", "_")
+    if key in _MARGIN_NAMES:
+        return True
+    if "margin" in key or "margine" in key:
+        return True
+    if "costo" in key:
+        return True
+    if key == "cost" or key.endswith("_cost") or key.startswith("cost_"):
+        return True
+    return False
+
+
 def is_pii_property(name: str | None, entity_type: str | None = None) -> bool:
     if not name:
         return False
