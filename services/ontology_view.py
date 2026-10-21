@@ -231,16 +231,30 @@ def relation_label(name: str | None) -> str:
     return RELATION_LABELS.get(name) or name
 
 
+def is_incoming(payment: Any) -> bool:
+    """A payment leaves the company only when direction is exactly ``outgoing``.
+
+    ``incoming``, an empty direction and a missing direction all count as
+    money coming in. The label is then Incasso. Old payments written before
+    a direction existed stay in the measure and in the match rule.
+    """
+    if isinstance(payment, dict):
+        value = payment.get("direction")
+    else:
+        value = payment
+    return value != "outgoing"
+
+
 def payment_label(direction: str | None) -> str:
     """Incasso when money comes in, Pagamento when it goes out."""
-    if str(direction or "").strip().lower() == "outgoing":
-        return PAYMENT_DIRECTION_LABELS["outgoing"]
-    return PAYMENT_DIRECTION_LABELS["incoming"]
+    if is_incoming(direction):
+        return PAYMENT_DIRECTION_LABELS["incoming"]
+    return PAYMENT_DIRECTION_LABELS["outgoing"]
 
 
 def payment_words(text: str, direction: str | None) -> str:
     """Rewrite a stored sentence when this payment leaves the company."""
-    if str(direction or "").strip().lower() != "outgoing" or not text:
+    if is_incoming(direction) or not text:
         return text
     return text.replace("Incasso", "Pagamento").replace("incasso", "pagamento")
 

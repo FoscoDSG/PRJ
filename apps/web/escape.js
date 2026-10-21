@@ -505,8 +505,7 @@
 
   function paymentHeading(payment) {
     if (payment && typeof payment.label === "string" && payment.label !== "") return payment.label;
-    if (payment && payment.direction === "outgoing") return "Pagamento";
-    return "Incasso";
+    return isIncoming(payment) ? "Incasso" : "Pagamento";
   }
 
   function matchLine(label, value) {
@@ -644,9 +643,17 @@
     return found && found.value != null ? String(found.value) : "";
   }
 
+  function isIncoming(payment) {
+    let direction = payment;
+    if (payment && typeof payment === "object") {
+      direction = Object.prototype.hasOwnProperty.call(payment, "direction") ? payment.direction : "";
+    }
+    return direction !== "outgoing";
+  }
+
   function paymentWord(direction, ontology) {
     const labels = ontology && ontology.payment_labels;
-    const key = direction === "outgoing" ? "outgoing" : "incoming";
+    const key = isIncoming(direction) ? "incoming" : "outgoing";
     if (labels && typeof labels[key] === "string" && labels[key] !== "") return labels[key];
     return key === "outgoing" ? "Pagamento" : "Incasso";
   }
@@ -660,7 +667,7 @@
   }
 
   function fieldCaption(ontology, typeName, field, object) {
-    if (typeName === "Payment" && directionOf(object) === "outgoing") {
+    if (typeName === "Payment" && !isIncoming(directionOf(object))) {
       const maps = ontology && ontology.payment_field_labels;
       const outgoing = maps && maps.outgoing;
       const name = field && field.name;

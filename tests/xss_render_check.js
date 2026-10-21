@@ -553,6 +553,20 @@ if (!outgoingCard.includes(">Pagamento<") || !outgoingCard.includes("1.220,00 â‚
   console.error("outgoing payment kept the incasso label or a raw figure");
   process.exit(2);
 }
+const unlabeledPayment = objectDetail({
+  type: "Payment",
+  business_key: "INC-OLD",
+  fields: [{ name: "amount", value: 10 }],
+  links: [],
+  history: [{ kind: "event", at: "2026-04-02", label: "Incasso registrato", actor: "", decision: "" }],
+}, {
+  types: [{ name: "Payment", label: "Incasso" }],
+  payment_labels: { incoming: "Incasso", outgoing: "Pagamento" },
+});
+if (!unlabeledPayment.includes("Incasso INC-OLD") || unlabeledPayment.includes("Pagamento")) {
+  console.error("a payment without direction was not called Incasso");
+  process.exit(2);
+}
 const failedText = outgoingCard.split('class="failed-criteria">')[1].split("</p>")[0];
 if (
   !failedText.includes("Importo") ||
