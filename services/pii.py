@@ -12,6 +12,8 @@ import re
 from typing import Any
 
 MASK = "••••"
+# The page shows this word only when a read has already replaced the value.
+RESERVED = "riservato"
 
 PII_PROPERTIES = frozenset(
     {
@@ -287,6 +289,46 @@ def unmask_entity(conn: Any, entity_id: str, reason: str, *, actor: str, role: s
             {"property": row["property"], "value": stable(row["value_cleartext"])} for row in rows
         ],
     }
+
+
+def clear_personal_names(facts: list[dict[str, Any]], entity_type: str | None) -> list[str]:
+    """Personal fields whose value is still in clear.
+
+    A masked value (``••••`` or ``riservato``) is not clear. The caller
+    passes the names, never the values, to the view-log hook.
+    """
+    names = []
+    for fact in facts:
+        prop = fact.get("property") or fact.get("name")
+        if not is_pii_property(str(prop) if prop else None, entity_type):
+            continue
+        if fact.get("masked"):
+            continue
+        value = fact.get("value")
+        if value in (None, "", MASK, RESERVED):
+            continue
+        names.append(str(prop))
+    return names
+
+
+def note_clear_personal_view(
+    conn: Any,
+    *,
+    actor: str,
+    entity_id: str,
+    properties: list[str],
+) -> None:
+    """Hook for a future personal-data view log.
+
+    TODO: when ``properties`` is not empty, a detail view is about to show
+    those personal fields in clear. Append one log row with who, when, the
+    object and the field names. Do not store the values. The log is not
+    built yet, so this function does not write.
+    """
+    if not properties:
+        return
+    del conn, actor, entity_id
+    return
 
 
 def install_log_redaction() -> None:

@@ -398,6 +398,47 @@
     return `<p class="failed-criteria">${bits.join(", ")}</p>`;
   }
 
+  function invoiceNumberValue(item) {
+    const invoice = item && item.invoice;
+    if (invoice && invoice.number != null && invoice.number !== "") return invoice.number;
+    return "";
+  }
+
+  function allocationAmountValue(item) {
+    const allocation = item && item.allocation;
+    if (allocation && allocation.amount != null && allocation.amount !== "") return allocation.amount;
+    return item && item.allocated_amount != null ? item.allocated_amount : "";
+  }
+
+  function matchLine(label, value) {
+    return `<li>${escapeHtml(label)} ${escapeHtml(value ?? "")}</li>`;
+  }
+
+  function matchBlocks(item) {
+    const payment = item && item.payment && typeof item.payment === "object" ? item.payment : {};
+    const invoice = item && item.invoice && typeof item.invoice === "object" ? item.invoice : {};
+    const allocation = item && item.allocation && typeof item.allocation === "object" ? item.allocation : {};
+    return `<h3 class="section-heading">Incasso</h3>
+      <ul class="fact-list">
+        ${matchLine("Numero", payment.number)}
+        ${matchLine("Data", payment.paid_at)}
+        ${matchLine("Importo", payment.amount)}
+      </ul>
+      <h3 class="section-heading">Fattura proposta</h3>
+      <ul class="fact-list">
+        ${matchLine("Numero", invoice.number)}
+        ${matchLine("Importo", invoice.amount)}
+        ${matchLine("Scadenza", invoice.due_at)}
+      </ul>
+      <h3 class="section-heading">Assegnazione</h3>
+      <ul class="fact-list">
+        ${matchLine("Importo assegnato", allocation.amount)}
+        ${matchLine("Residuo", allocation.remaining)}
+      </ul>
+      <h3 class="section-heading">Criteri</h3>
+      ${criteriaMarkup(item && item.criteria)}`;
+  }
+
   function paymentButtons(item, role, canWrite) {
     if (canWrite === false) {
       return `<p>${escapeHtml(companyUploadNotice())}</p>`;
@@ -406,8 +447,8 @@
       return "<p>Sola lettura: l'operatore non approva.</p>";
     }
     if (item.status !== "proposed") return "";
-    return `<label>Fattura <input data-invoice value="${escapeHtml(item.invoice_id || "")}" /></label>
-      <label>Importo assegnato <input data-amount value="${escapeHtml(item.allocated_amount ?? "")}" /></label>
+    return `<label>Fattura <input data-invoice value="${escapeHtml(invoiceNumberValue(item))}" /></label>
+      <label>Importo assegnato <input data-amount value="${escapeHtml(allocationAmountValue(item))}" /></label>
       <label>Motivo della correzione <input data-correct-reason required minlength="5" maxlength="500" /></label>
       <label>Motivo del rifiuto <input data-reject-reason required minlength="5" maxlength="500" /></label>
       <div class="decision-bar">
@@ -467,23 +508,93 @@
     const processLine = processBits.length
       ? `<p class="process-step">${escapeHtml(processBits.join(" · "))}</p>`
       : "";
-    return `<article class="card" data-id="${escapeHtml(item.id)}" data-hash="${escapeHtml(item.evidence_hash)}">
-      <div class="meta">${pill(item.status)}${cfo}<span class="pill">${escapeHtml(item.risk)}</span></div>
-      <h3 class="card-title">${escapeHtml(title)}</h3>
-      ${processLine}
-      ${criteriaMarkup(item.criteria)}
-      ${failedMarkup(item.failed_criteria)}
-      <h3 class="section-heading">Anteprima di approvazione</h3>
+    const body = payment
+      ? `<p>${escapeHtml(item.problem)}</p>
+      <p class="confidence-badge">${escapeHtml(confidenceLabel(item))}</p>
+      ${matchBlocks(item)}`
+      : `<h3 class="section-heading">Anteprima di approvazione</h3>
       <p>${escapeHtml(item.problem)}</p>
       <p class="confidence-badge">${escapeHtml(confidenceLabel(item))}</p>
       <p class="formula">${escapeHtml(preview.formula || "")}</p>
       <ul class="fact-list">${evidence}</ul>
       <h3 class="section-heading">Cosa verrà approvato</h3>
-      <pre>${escapeHtml(JSON.stringify(payloads, null, 2))}</pre>
+      <pre>${escapeHtml(JSON.stringify(payloads, null, 2))}</pre>`;
+    return `<article class="card" data-id="${escapeHtml(item.id)}" data-hash="${escapeHtml(item.evidence_hash)}">
+      <div class="meta">${pill(item.status)}${cfo}<span class="pill">${escapeHtml(item.risk)}</span></div>
+      <h3 class="card-title">${escapeHtml(title)}</h3>
+      ${processLine}
+      ${payment ? "" : criteriaMarkup(item.criteria)}
+      ${failedMarkup(item.failed_criteria)}
+      ${body}
       ${decisionHistory(item.history)}
       ${revokeBar(item, canWrite, payment ? "payment" : "inbox")}
       ${buttons}
     </article>`;
+  }
+
+  function ontologyType(ontology, name) {
+    const types = ontology && Array.isArray(ontology.types) ? ontology.types : [];
+    return types.find((item) => item && item.name === name) || null;
+  }
+
+  function fieldCaption(ontology, typeName, field) {
+    const info = ontologyType(ontology, typeName);
+    const fields = info && Array.isArray(info.fields) ? info.fields : [];
+    const found = fields.find((item) => item && item.name === field.name);
+    if (found && typeof found.label === "string" && found.label !== "") return found.label;
+    if (field && typeof field.label === "string" && field.label !== "") return field.label;
+    return field && field.name ? String(field.name) : "";
+  }
+
+  function linkText(ontology, link) {
+    const rels = ontology && Array.isArray(ontology.relations) ? ontology.relations : [];
+    const known = rels.some((item) => item && item.name === link.rel);
+    const rel = known ? link.rel : (link && link.rel) || "";
+    const info = ontologyType(ontology, link && link.type);
+    const typeLabel = info && info.label ? info.label : (link && link.type) || "";
+    const key = link && link.key != null ? link.key : "";
+    return [rel, typeLabel, key].filter((part) => part !== "" && part != null).join(" ");
+  }
+
+  function objectFields(object, ontology) {
+    return (object && object.fields || []).map((field) => {
+      const caption = fieldCaption(ontology, object.type, field);
+      const value = field && field.value != null ? field.value : "";
+      return `<li>${escapeHtml(caption)}: ${escapeHtml(value)}</li>`;
+    }).join("");
+  }
+
+  function objectLinks(object, ontology) {
+    return (object && object.links || []).map((link) => `<li>${escapeHtml(linkText(ontology, link))}</li>`).join("");
+  }
+
+  function objectCard(object, ontology) {
+    const info = ontologyType(ontology, object && object.type);
+    const typeLabel = info && info.label ? info.label : (object && object.type) || "";
+    const links = objectLinks(object, ontology);
+    return `<article class="card">
+      <h3 class="card-title">${escapeHtml(typeLabel)} ${escapeHtml(object && object.business_key || "")}</h3>
+      <ul class="fact-list">${objectFields(object, ontology)}</ul>
+      ${links ? `<h3 class="section-heading">Collegamenti</h3><ul class="edges">${links}</ul>` : ""}
+      <button type="button" data-object="${escapeHtml(object && object.id)}">Apri scheda</button>
+    </article>`;
+  }
+
+  function objectDetail(object, ontology) {
+    const info = ontologyType(ontology, object && object.type);
+    const typeLabel = info && info.label ? info.label : (object && object.type) || "";
+    const links = objectLinks(object, ontology);
+    const history = (object && object.history || []).map((entry) => {
+      const text = [entry && entry.label, entry && entry.actor, entry && entry.at]
+        .filter((part) => part != null && part !== "")
+        .join(" · ");
+      return `<li>${escapeHtml(text)}</li>`;
+    }).join("");
+    return `<p><button type="button" id="back-objects" class="ghost">Torna agli oggetti</button></p>
+      <h2>${escapeHtml(typeLabel)} ${escapeHtml(object && object.business_key || "")}</h2>
+      <ul class="fact-list">${objectFields(object, ontology)}</ul>
+      ${links ? `<h3 class="section-heading">Collegamenti</h3><ul class="edges">${links}</ul>` : ""}
+      ${history ? `<h3 class="section-heading">Storia</h3><ul class="decision-history">${history}</ul>` : ""}`;
   }
 
   function plainRatio(value) {
@@ -524,6 +635,8 @@
     orderCard,
     orderDetail,
     customerDetail,
+    objectCard,
+    objectDetail,
     inboxCard,
     measureText,
     auditCard,

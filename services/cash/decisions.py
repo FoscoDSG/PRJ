@@ -66,15 +66,16 @@ def correct_proposal(
     actor: str,
     role: str,
     evidence_hash: str,
-    invoice_id: str,
     allocated_amount: Decimal | int | float | str,
     reason: str,
+    invoice_id: str | None = None,
+    invoice_number: str | None = None,
 ) -> dict[str, Any]:
     company_id = _company(conn, actor)
     proposal = _proposal(conn, proposal_id, company_id)
     _fresh(proposal, evidence_hash)
     _refuse_if_decided(conn, proposal_id)
-    invoice = _invoice(conn, invoice_id, company_id)
+    invoice = _resolve_invoice(conn, company_id, invoice_id, invoice_number)
     amount = money(allocated_amount)
     if amount <= 0:
         raise AppError(400, "L'importo assegnato deve essere positivo")
@@ -105,14 +106,15 @@ def correct_unmatched(
     *,
     actor: str,
     role: str,
-    invoice_id: str,
     allocated_amount: Decimal | int | float | str,
     reason: str,
+    invoice_id: str | None = None,
+    invoice_number: str | None = None,
 ) -> dict[str, Any]:
     """A person matches a payment the rule left open. The invoice stays open."""
     company_id = _company(conn, actor)
     payment = _payment(conn, payment_id, company_id)
-    invoice = _invoice(conn, invoice_id, company_id)
+    invoice = _resolve_invoice(conn, company_id, invoice_id, invoice_number)
     amount = money(allocated_amount)
     if amount <= 0:
         raise AppError(400, "L'importo assegnato deve essere positivo")
@@ -252,6 +254,35 @@ def _proposal(conn, proposal_id: str, company_id: str) -> dict[str, Any]:
     if row is None or row["company_id"] != company_id:
         raise AppError(404, "Proposta assente")
     return dict(row)
+
+
+def _resolve_invoice(
+    conn,
+    company_id: str,
+    invoice_id: str | None,
+    invoice_number: str | None,
+) -> dict[str, Any]:
+    """An id, or the invoice number inside this company. Never the other company."""
+    number = (invoice_number or "").strip()
+    if number and invoice_id:
+        raise AppError(422, "Indica il numero della fattura")
+    if number:
+        rows = conn.execute(
+            """
+            SELECT id::text, company_id::text AS company_id, business_key
+            FROM app.entities
+            WHERE type = 'Invoice' AND valid_to IS NULL
+              AND company_id = %s::uuid
+              AND business_key = %s
+            """,
+            (company_id, number),
+        ).fetchall()
+        if len(rows) != 1:
+            raise AppError(404, "Fattura assente")
+        return dict(rows[0])
+    if not invoice_id:
+        raise AppError(422, "Indica il numero della fattura")
+    return _invoice(conn, invoice_id, company_id)
 
 
 def _invoice(conn, invoice_id: str, company_id: str) -> dict[str, Any]:

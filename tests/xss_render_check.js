@@ -13,6 +13,7 @@ const {
   orderDetail,
   customerDetail,
   inboxCard,
+  objectCard,
   measureText,
   auditCard,
   readableCard,
@@ -245,6 +246,24 @@ const html = [
       revoke_reason: value,
     }],
   }, "approver"),
+  objectCard({
+    id: "obj-1",
+    type: "Invoice",
+    business_key: value,
+    fields: [
+      { name: "amount", label: "WRONG", value: 122, classification: "confidential", masked: false },
+      { name: "note", label: value, value: "visibile", classification: "confidential", masked: false },
+      { name: "iban", label: "IBAN", value: "riservato", masked: true },
+      { name: "hostile", label: "Nota", value: value, masked: false },
+    ],
+    links: [{ rel: "settles", type: "Payment", key: value, id: "obj-1" }],
+  }, {
+    types: [
+      { name: "Invoice", label: "Fattura", fields: [{ name: "amount", label: "Importo fattura" }] },
+      { name: "Payment", label: "Incasso", fields: [] },
+    ],
+    relations: [{ name: "settles" }],
+  }),
   auditCard({ action: value, actor: value, payload: { note: value } }),
   readableCard({ action: value, who: value, when: value, what: value, order: value, detail: value }),
   pill(value),
@@ -426,6 +445,7 @@ if (!stepOnly.includes("process-step") || stepOnly.includes(" · ") || !stepOnly
   console.error("a step without a process still printed a separator");
   process.exit(2);
 }
+const secretInvoice = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
 const paymentCard = inboxCard({
   id: "pay-card",
   kind: "payment_match",
@@ -435,9 +455,12 @@ const paymentCard = inboxCard({
   problem: "abbina",
   confidence: 1,
   confidence_method: "rule",
-  invoice_id: "inv",
+  invoice_id: secretInvoice,
   allocated_amount: "10",
-  criteria: { amount: true, customer: true, reference: true },
+  payment: { number: "INC-9", paid_at: "2026-04-02", amount: 122 },
+  invoice: { number: "FT-9", amount: 200, due_at: "2026-04-01" },
+  allocation: { amount: 20, remaining: 90 },
+  criteria: { amount: true, customer: false, reference: true },
   process: { id: "order_to_cash", label: "Ordine e incasso" },
   step: { id: "match_proposed", label: "Proposta" },
   evidence_hash: "abc",
@@ -448,6 +471,36 @@ if (!paymentCard.includes("data-correct-reason") || !paymentCard.includes("data-
 }
 if (paymentCard.includes(" data-reason")) {
   console.error("confirm still shares one reason field");
+  process.exit(2);
+}
+if (paymentCard.includes("Cosa verrà approvato") || paymentCard.includes("Anteprima di approvazione")) {
+  console.error("payment card still shows the approval payload");
+  process.exit(2);
+}
+for (const heading of ["Incasso", "Fattura proposta", "Assegnazione", "Criteri", "Conferma", "Correggi", "Rifiuta"]) {
+  if (!paymentCard.includes(heading)) {
+    console.error(`payment card missing ${heading}`);
+    process.exit(2);
+  }
+}
+if (!paymentCard.includes('value="FT-9"') || paymentCard.includes(secretInvoice)) {
+  console.error("correct form used the internal invoice id");
+  process.exit(2);
+}
+if (!paymentCard.includes("sì") || !paymentCard.includes("no") || !paymentCard.includes("Residuo")) {
+  console.error("payment card did not show criteria and the remaining balance");
+  process.exit(2);
+}
+if (!html.includes("Importo fattura: 122") || html.includes("WRONG")) {
+  console.error("object card ignored the ontology label or hid a visible amount");
+  process.exit(2);
+}
+if (!html.includes("visibile") || !html.includes("riservato")) {
+  console.error("object card did not show the server value");
+  process.exit(2);
+}
+if (!html.includes("Cosa verrà approvato")) {
+  console.error("order card lost its approval preview");
   process.exit(2);
 }
 const measuredLine = measureText({

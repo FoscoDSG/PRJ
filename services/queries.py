@@ -6,14 +6,16 @@ from typing import Any
 
 import psycopg
 
+from services.disposition import card_disposition
 from services.mapping.corrections import present_origin, proposed_label, table_file_choice_codes
 from services.mapping.labels import profile_label
 from services.mapping.threshold import active_threshold
+from services.pii import MASK as PII_MASK
+from services.pii import clear_personal_names, is_pii_key, is_pii_property, note_clear_personal_view, redact
 from services.revocation import EXECUTED_MESSAGE, inbox_histories, mapping_histories, state_histories
-from services.pii import is_pii_key, is_pii_property, redact
 from services.text import stable
 
-MASK = "••••"
+MASK = PII_MASK
 STOCK_FORMULA = "disponibile = giacenza − impegnato"
 PRIVILEGED = {"admin", "approver"}
 SENSITIVE_KEYS = {"vat", "amount", "cost", "margin", "piva", "costo", "importo"}
@@ -272,9 +274,32 @@ def list_inbox(conn: psycopg.Connection, role: str, company_id: str | None = Non
         item["headline"] = f"Ordine {item.get('order_key') or ''}"
         item.pop("process_id", None)
         item.pop("step_id", None)
+    _set_order_disposition(conn, inbox)
     if company_id:
         inbox.extend(_payment_inbox(conn, role, company_id, model))
     return inbox
+
+
+def _set_order_disposition(conn: psycopg.Connection, inbox: list[dict]) -> None:
+    """Same open/closed rule as the payment queue. Counts on the page use it."""
+    ids = [item["id"] for item in inbox]
+    if not ids:
+        return
+    rows = conn.execute(
+        """
+        SELECT recommendation_id::text AS recommendation_id, decision
+        FROM app.decisions_log
+        WHERE recommendation_id = ANY(%s::uuid[])
+          AND decision IN ('approve', 'reject', 'modify', 'revoked')
+        ORDER BY decided_at, id
+        """,
+        (ids,),
+    ).fetchall()
+    grouped: dict[str, list[dict]] = {}
+    for row in rows:
+        grouped.setdefault(row["recommendation_id"], []).append({"decision": row["decision"]})
+    for item in inbox:
+        item["disposition"] = card_disposition(grouped.get(item["id"], []))
 
 
 def _payment_inbox(conn: psycopg.Connection, role: str, company_id: str, model) -> list[dict]:
@@ -318,6 +343,9 @@ def _payment_inbox(conn: psycopg.Connection, role: str, company_id: str, model) 
         if row["proposal_id"]:
             by_proposal.setdefault(row["proposal_id"], []).append(dict(row))
     revoked = {row["revokes_decision_id"] for row in decisions if row["revokes_decision_id"]}
+    from services.cash.balance import remaining_balance
+    from services.objects_read import visible_facts
+
     items = []
     for row in rows:
         process, step = catalog_pair(model, row["process_id"], row["step_id"])
@@ -345,9 +373,14 @@ def _payment_inbox(conn: psycopg.Connection, role: str, company_id: str, model) 
                 latest["decision"], "proposed"
             )
             failed = list(latest.get("failed_criteria") or [])
+        raw_decisions = by_proposal.get(row["id"], [])
+        disposition = card_disposition([{"decision": item["decision"]} for item in raw_decisions])
         amount = stable(row["allocated_amount"])
         if role not in PRIVILEGED:
             amount = MASK
+        payment_facts = visible_facts(conn, row["payment_entity_id"])
+        invoice_facts = visible_facts(conn, row["invoice_entity_id"])
+        balance = remaining_balance(conn, company_id, row["invoice_entity_id"])
         evidence = _mask_evidence(row["evidence"], role)
         evidence = redact(evidence)
         items.append(
@@ -393,6 +426,21 @@ def _payment_inbox(conn: psycopg.Connection, role: str, company_id: str, model) 
                 "invoice_id": row["invoice_entity_id"],
                 "payment_id": row["payment_entity_id"],
                 "allocated_amount": amount,
+                "disposition": disposition,
+                "payment": {
+                    "number": row["business_key"],
+                    "paid_at": payment_facts.get("paid_at") or "",
+                    "amount": payment_facts.get("amount"),
+                },
+                "invoice": {
+                    "number": row["invoice_number"],
+                    "amount": invoice_facts.get("amount"),
+                    "due_at": invoice_facts.get("due_at") or "",
+                },
+                "allocation": {
+                    "amount": stable(row["allocated_amount"]),
+                    "remaining": None if balance is None else stable(balance),
+                },
             }
         )
     return items
@@ -410,6 +458,7 @@ def get_cash_document(
     type_name: str,
     role: str,
     company_id: str | None,
+    actor: str = "",
 ) -> dict | None:
     """One invoice or payment of this company. Another company, or none, is absent."""
     if not company_id:
@@ -445,6 +494,19 @@ def get_cash_document(
     }
     if type_name == "Invoice":
         detail["lines"] = _invoice_lines(conn, row["business_key"], role, measured, support, company_id)
+        from services.cash.balance import remaining_balance
+
+        balance = remaining_balance(conn, company_id, row["id"])
+        detail["remaining"] = None if balance is None else stable(balance)
+    from services.objects_read import document_history
+
+    detail["history"] = document_history(conn, row["id"], type_name, company_id)
+    note_clear_personal_view(
+        conn,
+        actor=actor,
+        entity_id=row["id"],
+        properties=clear_personal_names(facts, type_name),
+    )
     return detail
 
 
