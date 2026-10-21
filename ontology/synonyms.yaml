@@ -163,3 +163,56 @@ uncovered:
   - {target_type: StockPosition, target_property: warehouse_source_key, reason: "Warehouse di Danea è il nome del magazzino (Warehouse.name). Il profilo italiano usa già magazzino."}
   - {target_type: Warehouse, target_property: source_key, reason: "Warehouse di Danea è il nome, non un codice separato."}
   - {target_type: Shipment, target_property: status, reason: "Il tracciato Danea non ha uno stato spedizione distinto dalla causale."}
+  - {target_type: Shipment, target_property: occurred_at, reason: "Ereditato da Event. La data di processo non è una colonna del dizionario."}
+  - {target_type: Shipment, target_property: process_id, reason: "Ereditato da Event. L'id di processo non è una colonna del dizionario."}
+  - {target_type: Shipment, target_property: step_id, reason: "Ereditato da Event. L'id del passo non è una colonna del dizionario."}
+  - {target_type: Shipment, target_property: order_source_key, reason: "Il collegamento spedizione-ordine è del modulo ordine-incasso, non un'intestazione delle fonti del dizionario."}
+  - {target_type: Supplier, target_property: vat, reason: "La partita IVA del fornitore collega lo stesso soggetto del cliente. Il dizionario ha già Customer.vat."}
+  - {target_type: Event, target_property: occurred_at, reason: "Data dell'evento di processo, scritta dal sistema, non da una colonna di export."}
+  - {target_type: Event, target_property: process_id, reason: "Identificatore del processo, dichiarato nell'ontologia, non in un export."}
+  - {target_type: Event, target_property: step_id, reason: "Identificatore del passo, dichiarato nell'ontologia, non in un export."}
+  - {target_type: Invoice, target_property: title, reason: "Ereditato da Document. Il numero fattura è Invoice.source_key."}
+  - {target_type: Invoice, target_property: source_key, reason: "La chiave italiana fattura sta nel profilo di mapping, non nel dizionario che esclude FatturaPA."}
+  - {target_type: Invoice, target_property: document_type, reason: "Tipo documento letto dal tracciato XML di prova, non da un'intestazione del dizionario."}
+  - {target_type: Invoice, target_property: issued_at, reason: "Data fattura del modulo ordine-incasso. Il dizionario tiene la data sull'ordine."}
+  - {target_type: Invoice, target_property: due_at, reason: "La chiave italiana scadenza sta nel profilo di mapping, non nel dizionario."}
+  - {target_type: Invoice, target_property: scadenze, reason: "Elenco scadenze letto dall'importatore, non da una colonna del dizionario."}
+  - {target_type: Invoice, target_property: amount, reason: "Importo fattura, riservato. Il dizionario copre Order.amount, non questo modulo."}
+  - {target_type: Invoice, target_property: currency, reason: "Valuta della fattura, assente nelle fonti ammesse del dizionario."}
+  - {target_type: Invoice, target_property: customer_vat, reason: "Partita IVA del cliente in fattura. Il dizionario ha Customer.vat."}
+  - {target_type: Invoice, target_property: customer_name, reason: "Nome del cliente in fattura. È un dato personale, non una voce nuova del dizionario."}
+  - {target_type: Invoice, target_property: order_source_key, reason: "Riferimento ordine sulla fattura, collegamento del processo, non una colonna del dizionario."}
+  - {target_type: Invoice, target_property: status, reason: "Stato scritto dal processo. La regola non chiude la fattura da un export."}
+  - {target_type: InvoiceLine, target_property: amount, reason: "Ereditato da Transaction. L'importo di riga è InvoiceLine.line_amount."}
+  - {target_type: InvoiceLine, target_property: source_key, reason: "Chiave di riga composta da numero fattura e numero riga."}
+  - {target_type: InvoiceLine, target_property: description, reason: "Descrizione di riga letta dall'importatore di prova."}
+  - {target_type: InvoiceLine, target_property: quantity, reason: "La quantità di riga fattura non entra nel dizionario: FatturaPA resta fuori."}
+  - {target_type: InvoiceLine, target_property: unit_price, reason: "Prezzo di riga fattura, importo riservato, fuori dal dizionario."}
+  - {target_type: InvoiceLine, target_property: line_amount, reason: "Importo di riga, riservato, fuori dal dizionario."}
+  - {target_type: InvoiceLine, target_property: invoice_source_key, reason: "Riferimento alla testata fattura, non una colonna del dizionario."}
+  - {target_type: InvoiceLine, target_property: vat_rate, reason: "Aliquota letta dall'importatore di prova. FatturaPA non è una fonte del dizionario."}
+  - {target_type: CreditNote, target_property: title, reason: "Ereditato da Document. Il numero della nota è CreditNote.source_key."}
+  - {target_type: CreditNote, target_property: source_key, reason: "Numero della nota di credito TD04, letto dall'importatore di prova."}
+  - {target_type: CreditNote, target_property: document_type, reason: "TD04 è il tipo della nota, non un'intestazione del dizionario."}
+  - {target_type: CreditNote, target_property: issued_at, reason: "Data della nota di credito, scritta dall'importatore."}
+  - {target_type: CreditNote, target_property: amount, reason: "Importo della nota, riservato."}
+  - {target_type: CreditNote, target_property: invoice_source_key, reason: "Fattura a cui la nota si riferisce."}
+  - {target_type: CreditNote, target_property: customer_vat, reason: "Stessa partita IVA del cliente della fattura."}
+  - {target_type: CreditNote, target_property: reason, reason: "Causale della nota, testo del documento di prova."}
+  - {target_type: CreditNote, target_property: status, reason: "Stato della nota, scritto dal processo."}
+  - {target_type: Payment, target_property: amount, reason: "Ereditato da Transaction. L'incasso è riservato e la chiave italiana importo sta nel profilo."}
+  - {target_type: Payment, target_property: source_key, reason: "La chiave italiana incasso sta nel profilo di mapping, non nel dizionario."}
+  - {target_type: Payment, target_property: direction, reason: "Direzione incoming o outgoing, dichiarata dal processo."}
+  - {target_type: Payment, target_property: paid_at, reason: "Data dell'incasso, scritta dall'importatore dell'estratto di prova."}
+  - {target_type: Payment, target_property: iban, reason: "IBAN è un dato personale. Non è una voce del dizionario."}
+  - {target_type: Payment, target_property: causale, reason: "La causale è un dato personale. La chiave italiana sta nel profilo, non nel dizionario."}
+  - {target_type: Payment, target_property: counterparty_name, reason: "Nome di chi paga, dato personale."}
+  - {target_type: Payment, target_property: counterparty_vat, reason: "Partita IVA di chi paga, dato personale."}
+  - {target_type: Payment, target_property: reference, reason: "Riferimento letto dalla causale per la regola di abbinamento."}
+  - {target_type: Payment, target_property: status, reason: "Stato dell'incasso, scritto dal processo. La regola non chiude la fattura."}
+  - {target_type: PaymentAllocation, target_property: amount, reason: "Ereditato da Transaction. L'importo assegnato è allocated_amount."}
+  - {target_type: PaymentAllocation, target_property: source_key, reason: "Chiave dell'assegnazione, scritta dalla proposta."}
+  - {target_type: PaymentAllocation, target_property: payment_source_key, reason: "Collegamento all'incasso. L'abbinamento passa da qui."}
+  - {target_type: PaymentAllocation, target_property: invoice_source_key, reason: "Collegamento alla fattura. Il pagamento non la salda da solo."}
+  - {target_type: PaymentAllocation, target_property: allocated_amount, reason: "Importo assegnato, riservato. È il criterio amount della proposta."}
+  - {target_type: PaymentAllocation, target_property: status, reason: "proposed o confirmed. Non è la chiusura della fattura."}

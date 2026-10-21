@@ -30,6 +30,7 @@
     "external_call",
     "outcome",
     "pii_unmask",
+    "corrected",
     "n/d",
   ]);
 
@@ -41,6 +42,8 @@
     stock: "Probabile giacenze",
     supplier: "Probabile anagrafica fornitori",
     shipment: "Probabile spedizioni",
+    invoice: "Probabile fatture",
+    payment: "Probabile incassi",
   };
   const UNKNOWN_PROFILE_LABEL = "Tipo non riconosciuto";
 
@@ -87,6 +90,7 @@
 
   const DECISION_LABELS = {
     confirm: "Confermata",
+    correct: "Corretta",
     reject: "Rifiutata",
     approve: "Approvata",
     modify: "Modificata",
@@ -373,6 +377,46 @@
     return `<article class="card"><div class="meta">${pill(item.action)}<span class="pill">${escapeHtml(item.who || "")}</span></div><p class="audit-when">${escapeHtml(item.when || "")}</p><p class="audit-what">${escapeHtml(item.what || item.action || "")}</p><p class="audit-order">Ordine ${escapeHtml(item.order || "n/d")}</p><p class="audit-detail">${escapeHtml(item.detail || "")}</p></article>`;
   }
 
+  const CRITERION_LABELS = {
+    amount: "Importo",
+    customer: "Cliente",
+    reference: "Riferimento in causale",
+  };
+
+  function criteriaMarkup(criteria) {
+    if (!criteria || typeof criteria !== "object") return "";
+    const parts = ["amount", "customer", "reference"].map((key) => {
+      const flag = criteria[key] === true ? "sì" : "no";
+      return `${CRITERION_LABELS[key]}: ${flag}`;
+    });
+    return `<p class="match-criteria">${escapeHtml(parts.join(" · "))}</p>`;
+  }
+
+  function failedMarkup(failed) {
+    if (!Array.isArray(failed) || !failed.length) return "";
+    const bits = failed.map((item) => escapeHtml(item));
+    return `<p class="failed-criteria">${bits.join(", ")}</p>`;
+  }
+
+  function paymentButtons(item, role, canWrite) {
+    if (canWrite === false) {
+      return `<p>${escapeHtml(companyUploadNotice())}</p>`;
+    }
+    if (role !== "approver" && role !== "admin") {
+      return "<p>Sola lettura: l'operatore non approva.</p>";
+    }
+    if (item.status !== "proposed") return "";
+    return `<label>Fattura <input data-invoice value="${escapeHtml(item.invoice_id || "")}" /></label>
+      <label>Importo assegnato <input data-amount value="${escapeHtml(item.allocated_amount ?? "")}" /></label>
+      <label>Motivo della correzione <input data-correct-reason required minlength="5" maxlength="500" /></label>
+      <label>Motivo del rifiuto <input data-reject-reason required minlength="5" maxlength="500" /></label>
+      <div class="decision-bar">
+        <button type="button" data-act="confirm-match">Conferma</button>
+        <button type="button" class="ghost" data-act="correct-match">Correggi</button>
+        <button type="button" class="ghost" data-act="reject-match">Rifiuta</button>
+      </div>`;
+  }
+
   function inboxCard(item, role, canWrite) {
     const purchase = (item.actions || []).find((action) => action.type === "createPurchaseOrder");
     const qty = purchase?.params.quantity ?? "";
@@ -391,8 +435,11 @@
     const approveButton = blocked
       ? `<button type="button" data-act="approve" disabled>Approva</button> <span class="blocked-reason">${escapeHtml(blocked)}</span>`
       : `<button type="button" data-act="approve">Approva</button>`;
+    const payment = item.kind === "payment_match";
     let buttons;
-    if (canWrite === false) {
+    if (payment) {
+      buttons = paymentButtons(item, role, canWrite);
+    } else if (canWrite === false) {
       buttons = `<p>${escapeHtml(companyUploadNotice())}</p>`;
     } else if (role === "operator") {
       buttons = "<p>Sola lettura: l'operatore non approva.</p>";
@@ -411,9 +458,21 @@
     } else {
       buttons = "<p>Sola lettura: l'operatore non approva.</p>";
     }
+    const title = item && typeof item.headline === "string" && item.headline !== ""
+      ? item.headline
+      : `Ordine ${item.order_key ?? ""}`;
+    const processLabel = item && item.process && typeof item.process === "object" ? item.process.label : "";
+    const stepLabel = item && item.step && typeof item.step === "object" ? item.step.label : "";
+    const processBits = [processLabel, stepLabel].filter((part) => typeof part === "string" && part !== "");
+    const processLine = processBits.length
+      ? `<p class="process-step">${escapeHtml(processBits.join(" · "))}</p>`
+      : "";
     return `<article class="card" data-id="${escapeHtml(item.id)}" data-hash="${escapeHtml(item.evidence_hash)}">
       <div class="meta">${pill(item.status)}${cfo}<span class="pill">${escapeHtml(item.risk)}</span></div>
-      <h3 class="card-title">Ordine ${escapeHtml(item.order_key)}</h3>
+      <h3 class="card-title">${escapeHtml(title)}</h3>
+      ${processLine}
+      ${criteriaMarkup(item.criteria)}
+      ${failedMarkup(item.failed_criteria)}
       <h3 class="section-heading">Anteprima di approvazione</h3>
       <p>${escapeHtml(item.problem)}</p>
       <p class="confidence-badge">${escapeHtml(confidenceLabel(item))}</p>
@@ -422,9 +481,21 @@
       <h3 class="section-heading">Cosa verrà approvato</h3>
       <pre>${escapeHtml(JSON.stringify(payloads, null, 2))}</pre>
       ${decisionHistory(item.history)}
-      ${revokeBar(item, canWrite, "inbox")}
+      ${revokeBar(item, canWrite, payment ? "payment" : "inbox")}
       ${buttons}
     </article>`;
+  }
+
+  function plainRatio(value) {
+    const number = Number(value);
+    if (!Number.isFinite(number)) return "n/d";
+    return String(number).replace(".", ",");
+  }
+
+  function measureText(report) {
+    const recall = plainRatio(report && report.recall);
+    const share = plainRatio(report && report.unmatched_share);
+    return `richiamo sui casi controllati: ${recall}. quota di incassi lasciati senza abbinamento: ${share}`;
   }
 
   function auditCard(event) {
@@ -454,6 +525,7 @@
     orderDetail,
     customerDetail,
     inboxCard,
+    measureText,
     auditCard,
     readableCard,
   };

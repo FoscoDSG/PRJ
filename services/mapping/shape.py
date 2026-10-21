@@ -46,6 +46,12 @@ _PROPERTY_ROLES = {
     ("StockPosition", "on_hand"): "stock_qty",
     ("Supplier", "delay_days"): "delay",
     ("Shipment", "source_key"): "tracking",
+    ("Invoice", "source_key"): "invoice_number",
+    ("Invoice", "due_at"): "due_date",
+    ("Invoice", "amount"): "amount",
+    ("Payment", "causale"): "causale",
+    ("Payment", "amount"): "amount",
+    ("Payment", "source_key"): "payment_key",
 }
 
 _EMAIL = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")

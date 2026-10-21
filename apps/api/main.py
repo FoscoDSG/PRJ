@@ -23,11 +23,15 @@ from apps.api.schemas import (
     FileTypeDecisionBody,
     LoginBody,
     ModifyBody,
+    PaymentConfirmBody,
+    PaymentCorrectBody,
+    PaymentRejectBody,
     RejectBody,
     RevokeBody,
     SqlIngestBody,
     StockBody,
     UnmaskBody,
+    UnmatchedPaymentBody,
 )
 from services.audit_read import list_readable
 from services.db import app_connect, assert_demo_database, authenticate, demo_mode, ensure_ready
@@ -59,6 +63,7 @@ from services.pipeline import (
     run_agents,
 )
 from services.queries import (
+    get_cash_document,
     get_customer,
     get_order,
     list_audit,
@@ -649,10 +654,151 @@ def customer_detail(customer_id: str, user: dict = Depends(require_user)) -> dic
     return _ok(detail)
 
 
+@app.get("/api/ontology")
+def ontology_route(user: dict = Depends(require_user)) -> dict:
+    """Types, relations, process steps and extensions. The page does not invent them."""
+    from services.ontology_view import describe_ontology, extension_for_company
+
+    with app_connect() as conn:
+        company_id = company_id_for_user(conn, user["username"])
+        package = extension_for_company(conn, company_id)
+    return _ok(describe_ontology(ontology(), company_id, package))
+
+
+@app.get("/api/invoices/{invoice_id}")
+def invoice_detail(invoice_id: str, user: dict = Depends(require_user)) -> dict:
+    with app_connect() as conn:
+        company_id = company_id_for_user(conn, user["username"])
+        detail = get_cash_document(conn, invoice_id, "Invoice", user["role"], company_id)
+    if detail is None:
+        raise AppError(404, "Fattura assente")
+    return _ok(detail)
+
+
+@app.get("/api/payments/{payment_id}")
+def payment_detail(payment_id: str, user: dict = Depends(require_user)) -> dict:
+    with app_connect() as conn:
+        company_id = company_id_for_user(conn, user["username"])
+        detail = get_cash_document(conn, payment_id, "Payment", user["role"], company_id)
+    if detail is None:
+        raise AppError(404, "Incasso assente")
+    return _ok(detail)
+
+
+@app.post("/api/ingest/fatturapa")
+async def ingest_fatturapa_route(
+    file: UploadFile = File(...),
+    source_class: SourceClass = Form(...),
+    source_name: str | None = Form(None),
+    user: dict = Depends(require_user),
+) -> dict:
+    _require_company(user["username"])
+    return await _ingest_cash(file, source_name, source_class, user, kind="fatturapa")
+
+
+@app.post("/api/ingest/bank")
+async def ingest_bank_route(
+    file: UploadFile = File(...),
+    source_class: SourceClass = Form(...),
+    source_name: str | None = Form(None),
+    user: dict = Depends(require_user),
+) -> dict:
+    _require_company(user["username"])
+    return await _ingest_cash(file, source_name, source_class, user, kind="bank")
+
+
+async def _ingest_cash(
+    file: UploadFile,
+    source_name: str | None,
+    source_class: str,
+    user: dict,
+    kind: str,
+) -> dict:
+    from services.cash.documents import import_batch, propose_company_matches
+    from services.ingest.bank_csv import parse_bank_csv
+    from services.ingest.fatturapa import parse_fatturapa
+
+    path: Path | None = None
+    try:
+        path = await _save_upload(file)
+        text = _read_text(path)
+        name = (source_name or Path(file.filename or "upload").stem).strip()
+        if name == "" or len(name) > 128:
+            raise AppError(422, "Nome fonte non valido")
+        if kind == "fatturapa":
+            parsed = parse_fatturapa(text)
+            invoices = parsed["invoices"]
+            credit_notes = parsed["credit_notes"]
+            payments: list = []
+        else:
+            invoices = []
+            credit_notes = []
+            payments = parse_bank_csv(text)
+        with app_connect() as conn:
+            company_id = company_id_for_user(conn, user["username"])
+            stored = import_batch(
+                conn,
+                ontology(),
+                company_id=company_id,
+                source_name=name,
+                source_class=source_class,
+                label_origin="synthetic",
+                invoices=invoices,
+                credit_notes=credit_notes,
+                payments=payments,
+            )
+            # Cleartext is readable only by ieol_pii, on a committed row.
+            conn.commit()
+            matches = propose_company_matches(conn, ontology(), company_id)
+            conn.commit()
+    finally:
+        if path is not None:
+            path.unlink(missing_ok=True)
+    return _ok(
+        {
+            "invoices": stored["invoices"],
+            "credit_notes": stored["credit_notes"],
+            "payments": stored["payments"],
+            "proposals": matches["proposals"],
+            "unmatched": matches["unmatched"],
+        }
+    )
+
+
+def _read_text(path: Path) -> str:
+    try:
+        return path.read_text(encoding="utf-8")
+    except UnicodeDecodeError as exc:
+        raise AppError(422, "File non leggibile") from exc
+
+
+@app.post("/api/payments/match")
+def match_payments(user: dict = Depends(require_user)) -> dict:
+    from services.cash.documents import propose_company_matches
+
+    _require_company(user["username"])
+    with app_connect() as conn:
+        company_id = company_id_for_user(conn, user["username"])
+        result = propose_company_matches(conn, ontology(), company_id)
+        conn.commit()
+    return _ok(result)
+
+
+@app.get("/api/payment-match/measure")
+def payment_measure(user: dict = Depends(require_user)) -> dict:
+    """Admin reads the cross-company measure. A company user reads only their own."""
+    from services.agent.payment_measure import measure_for_viewer
+
+    with app_connect() as conn:
+        company_id = company_id_for_user(conn, user["username"])
+        return _ok(measure_for_viewer(conn, role=user["role"], company_id=company_id))
+
+
 @app.get("/api/inbox")
 def inbox(user: dict = Depends(require_user)) -> dict:
     with app_connect() as conn:
-        rows = list_inbox(conn, user["role"])
+        company_id = company_id_for_user(conn, user["username"])
+        rows = list_inbox(conn, user["role"], company_id)
     return _ok({"recommendations": rows})
 
 
@@ -753,6 +899,121 @@ def revoke_inbox_route(
             actor=user["username"],
             role=user["role"],
             company_id=company_id,
+            reason=body.reason,
+        )
+        conn.commit()
+    return _ok(result)
+
+
+@app.post("/api/payment-proposals/{proposal_id}/confirm")
+def confirm_match_route(
+    proposal_id: str,
+    body: PaymentConfirmBody,
+    user: dict = Depends(require_user),
+) -> dict:
+    from services.cash.decisions import confirm_proposal
+
+    _require_approver_company(user)
+    with app_connect() as conn:
+        result = confirm_proposal(
+            conn,
+            ontology(),
+            proposal_id,
+            actor=user["username"],
+            role=user["role"],
+            evidence_hash=body.evidence_hash,
+        )
+        conn.commit()
+    return _ok(result)
+
+
+@app.post("/api/payment-proposals/{proposal_id}/correct")
+def correct_match_route(
+    proposal_id: str,
+    body: PaymentCorrectBody,
+    user: dict = Depends(require_user),
+) -> dict:
+    from services.cash.decisions import correct_proposal
+
+    _require_approver_company(user)
+    with app_connect() as conn:
+        result = correct_proposal(
+            conn,
+            ontology(),
+            proposal_id,
+            actor=user["username"],
+            role=user["role"],
+            evidence_hash=body.evidence_hash,
+            invoice_id=str(body.invoice_id),
+            allocated_amount=body.allocated_amount,
+            reason=body.reason,
+        )
+        conn.commit()
+    return _ok(result)
+
+
+@app.post("/api/payment-proposals/{proposal_id}/reject")
+def reject_match_route(
+    proposal_id: str,
+    body: PaymentRejectBody,
+    user: dict = Depends(require_user),
+) -> dict:
+    from services.cash.decisions import reject_proposal
+
+    _require_approver_company(user)
+    with app_connect() as conn:
+        result = reject_proposal(
+            conn,
+            ontology(),
+            proposal_id,
+            actor=user["username"],
+            role=user["role"],
+            evidence_hash=body.evidence_hash,
+            reason=body.reason,
+        )
+        conn.commit()
+    return _ok(result)
+
+
+@app.post("/api/payments/{payment_id}/correct")
+def correct_unmatched_route(
+    payment_id: str,
+    body: UnmatchedPaymentBody,
+    user: dict = Depends(require_user),
+) -> dict:
+    from services.cash.decisions import correct_unmatched
+
+    _require_approver_company(user)
+    with app_connect() as conn:
+        result = correct_unmatched(
+            conn,
+            ontology(),
+            payment_id,
+            actor=user["username"],
+            role=user["role"],
+            invoice_id=str(body.invoice_id),
+            allocated_amount=body.allocated_amount,
+            reason=body.reason,
+        )
+        conn.commit()
+    return _ok(result)
+
+
+@app.post("/api/payment-decisions/{decision_id}/revoke")
+def revoke_payment_route(
+    decision_id: str,
+    body: RevokeBody,
+    user: dict = Depends(require_user),
+) -> dict:
+    from services.cash.decisions import revoke_payment_decision
+
+    _require_approver_company(user)
+    with app_connect() as conn:
+        result = revoke_payment_decision(
+            conn,
+            decision_id,
+            actor=user["username"],
+            role=user["role"],
             reason=body.reason,
         )
         conn.commit()

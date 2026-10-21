@@ -20,6 +20,8 @@ PROFILE_ORDER = {
     "supplier": 30,
     "order": 40,
     "order_line": 50,
+    "invoice": 55,
+    "payment": 56,
     "stock": 60,
     "unknown": 90,
 }
@@ -283,6 +285,27 @@ def _write_profile(
             source,
             confidence,
             confidence_rules=confidence_rules,
+        )
+    if profile == "invoice":
+        source_key = _text(values.get("source_key"))
+        if not source_key:
+            return 0, 0
+        entity_id = _ensure_entity(conn, "Invoice", source_key, company_id)
+        _alias(conn, "Invoice", source_key, entity_id)
+        values.setdefault("status", "issued")
+        return 1, _write_facts(
+            conn, ontology, entity_id, "Invoice", values, source, confidence, confidence_rules=confidence_rules
+        )
+    if profile == "payment":
+        source_key = _text(values.get("source_key"))
+        if not source_key:
+            return 0, 0
+        entity_id = _ensure_entity(conn, "Payment", source_key, company_id)
+        _alias(conn, "Payment", source_key, entity_id)
+        values.setdefault("direction", "incoming")
+        values.setdefault("status", "received")
+        return 1, _write_facts(
+            conn, ontology, entity_id, "Payment", values, source, confidence, confidence_rules=confidence_rules
         )
     return 0, 0
 

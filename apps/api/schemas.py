@@ -78,3 +78,36 @@ class UnmaskBody(BaseModel):
 class StockBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
     on_hand: int = Field(ge=0, le=10_000_000)
+
+
+class PaymentConfirmBody(BaseModel):
+    """A person confirms a proposed match. The rule does not close the invoice."""
+
+    model_config = ConfigDict(extra="forbid")
+    decision: Literal["confirm"]
+    evidence_hash: str = Field(pattern=_HASH)
+
+
+class PaymentCorrectBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    decision: Literal["correct"]
+    evidence_hash: str = Field(pattern=_HASH)
+    invoice_id: UUID
+    allocated_amount: float = Field(gt=0, le=10_000_000)
+    reason: str = Field(min_length=5, max_length=500)
+
+
+class PaymentRejectBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    decision: Literal["reject"]
+    evidence_hash: str = Field(pattern=_HASH)
+    reason: str = Field(min_length=5, max_length=500)
+
+
+class UnmatchedPaymentBody(BaseModel):
+    """A person allocates a payment the rule left open."""
+
+    model_config = ConfigDict(extra="forbid")
+    invoice_id: UUID
+    allocated_amount: float = Field(gt=0, le=10_000_000)
+    reason: str = Field(min_length=5, max_length=500)

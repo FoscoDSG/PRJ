@@ -14,6 +14,8 @@ PROFILE_LABELS = {
     "stock": "Probabile giacenze",
     "supplier": "Probabile anagrafica fornitori",
     "shipment": "Probabile spedizioni",
+    "invoice": "Probabile fatture",
+    "payment": "Probabile incassi",
 }
 UNKNOWN_PROFILE_LABEL = "Tipo non riconosciuto"
 

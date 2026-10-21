@@ -25,6 +25,10 @@ PII_PROPERTIES = frozenset(
         "telefono",
         "cellulare",
         "iban",
+        "causale",
+        "customer_vat",
+        "counterparty_name",
+        "counterparty_vat",
         "address",
         "indirizzo",
         "codice_fiscale",
@@ -54,6 +58,10 @@ PII_KEYS = PII_PROPERTIES | frozenset(
         "referente",
         "intestatario",
         "cognome",
+        "causale",
+        "customer_vat",
+        "counterparty_name",
+        "counterparty_vat",
     }
 )
 
