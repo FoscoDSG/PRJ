@@ -277,13 +277,25 @@ const html = [
     fields: [],
     links: [],
     history: [
-      { decision: "confirm", amount: 1500, actor: "approver", at: "2026-04-02T10:00:00" },
-      { decision: "confirm", amount: 940, actor: value, at: "2026-04-03T10:00:00", revoked: true },
-      { decision: "revoked", actor: "approver", at: "2026-04-04T09:00:00", revoked: true },
-      { decision: "correct", amount: 940, actor: "approver", at: "2026-04-04T11:00:00", revoked: false },
+      { id: "keep", decision: "confirm", amount: 1500, actor: "approver", at: "2026-04-02T10:00:00" },
+      { id: "gone", decision: "confirm", amount: 940, actor: value, at: "2026-10-17T10:00:00", revoked: true },
+      { id: "undo", decision: "revoked", actor: "edoardo", at: "2026-10-18T09:00:00", revokes_decision_id: "gone" },
+      { id: "fix", decision: "correct", amount: 940, actor: "approver", at: "2026-10-18T11:00:00" },
     ],
   }, {
     types: [{ name: "Invoice", label: "Fattura" }],
+    relations: [],
+  }),
+  objectDetail({
+    type: "Payment",
+    business_key: "INC-2026-0413",
+    fields: [],
+    links: [],
+    history: [
+      { id: "undo-missing", decision: "revoked", actor: value, at: "2026-10-18T09:00:00", revokes_decision_id: "missing", revoked: true },
+    ],
+  }, {
+    types: [{ name: "Payment", label: "Incasso" }],
     relations: [],
   }),
 ].join("\n");
@@ -544,12 +556,29 @@ if (kept.includes("revoked-decision") || kept.includes("annullata") || !kept.inc
   console.error("a valid history line was marked annullata");
   process.exit(2);
 }
-for (const line of [struck, cancellation]) {
-  const marked = line.indexOf("annullata");
-  if (!line.includes('class="revoked-decision"') || marked < 0 || marked < line.indexOf("</span>")) {
-    console.error("revoked history line is not marked annullata");
-    process.exit(2);
-  }
+const marked = struck.indexOf("annullata");
+if (!struck.includes('class="revoked-decision"') || marked < 0 || marked < struck.indexOf("</span>")) {
+  console.error("revoked history line is not marked annullata");
+  process.exit(2);
+}
+if (
+  cancellation.includes("revoked-decision") ||
+  cancellation.includes("annullata") ||
+  !cancellation.includes("Annullamento della conferma di 940,00 € del 17/10/2026 · edoardo")
+) {
+  console.error("the revocation line was struck or did not name the closed decision");
+  process.exit(2);
+}
+const unknown = html.slice(html.indexOf("INC-2026-0413"));
+if (
+  unknown.includes("revoked-decision") ||
+  unknown.includes("annullata") ||
+  unknown.includes(value) ||
+  !unknown.includes("Annullamento di una decisione precedente") ||
+  !unknown.includes(escapeHtml(value))
+) {
+  console.error("a revocation without its decision was struck or leaked");
+  process.exit(2);
 }
 if (!struck.includes("940,00 €") || struck.includes(value) || !struck.includes(escapeHtml(value))) {
   console.error("revoked history line leaked or dropped the amount");

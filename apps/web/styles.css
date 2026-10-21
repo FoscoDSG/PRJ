@@ -74,7 +74,7 @@ tbody tr:nth-child(even) { background: #fafbfc; } tbody tr:hover { background: v
 .file-type-actions { display: inline-flex; flex-wrap: wrap; gap: var(--s2); align-items: center; margin: 0 0 var(--s3); }
 .file-type-choice { font-size: var(--fs-sm); }
 .decision-history { list-style: none; padding: 0; margin: 6px 0 0; }
-.revoked-decision { text-decoration: line-through; }
+.revoked-decision { text-decoration: line-through; color: var(--muted); }
 .revoker-line, span.revoke-reason { display: block; color: var(--muted); font-size: var(--fs-xs); }
 .executed-note { margin: 8px 0 0; color: var(--danger); font-weight: 650; }
 label.revoke-reason { display: inline-grid; margin: 6px 8px 0 0; font-size: var(--fs-sm); max-width: 100%; }

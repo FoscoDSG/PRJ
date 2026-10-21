@@ -599,8 +599,39 @@
     }).join("");
   }
 
-  function historyLine(entry) {
+  const DECISION_NOUNS = {
+    confirm: "della conferma",
+    correct: "della correzione",
+    reject: "del rifiuto",
+    approve: "dell'approvazione",
+    modify: "della modifica",
+  };
+
+  function revocationLine(entry, history) {
+    const who = entry && entry.actor ? String(entry.actor) : "";
+    const when = formatDay(entry && entry.at);
+    const targetId = entry && entry.revokes_decision_id;
+    const target = targetId
+      ? (history || []).find((item) => item && item.id === targetId && item.decision !== "revoked")
+      : null;
+    const noun = target && Object.prototype.hasOwnProperty.call(DECISION_NOUNS, target.decision)
+      ? DECISION_NOUNS[target.decision]
+      : "";
+    if (!target || noun === "") {
+      return escapeHtml(["Annullamento di una decisione precedente", who, when].filter((part) => part !== "").join(" · "));
+    }
+    const amount = target.amount != null && target.amount !== "" ? euroText(target.amount) : "";
+    const day = formatDay(target.at);
+    let phrase = `Annullamento ${noun}`;
+    if (amount) phrase += ` di ${amount}`;
+    if (day) phrase += ` del ${day}`;
+    if (who) phrase += ` · ${who}`;
+    return escapeHtml(phrase);
+  }
+
+  function historyLine(entry, history) {
     const code = entry && entry.decision ? String(entry.decision) : "";
+    if (code === "revoked") return revocationLine(entry, history);
     const label = code && Object.prototype.hasOwnProperty.call(DECISION_LABELS, code)
       ? DECISION_LABELS[code]
       : (entry && entry.label != null ? String(entry.label) : code);
@@ -630,8 +661,9 @@
     const info = ontologyType(ontology, object && object.type);
     const typeLabel = info && info.label ? info.label : (object && object.type) || "";
     const links = objectLinks(object, ontology);
-    const history = (object && object.history || []).map((entry) => {
-      return `<li>${historyLine(entry)}</li>`;
+    const entries = (object && object.history) || [];
+    const history = entries.map((entry) => {
+      return `<li>${historyLine(entry, entries)}</li>`;
     }).join("");
     return `<p><button type="button" id="back-objects" class="ghost">Torna agli oggetti</button></p>
       <h2>${escapeHtml(typeLabel)} ${escapeHtml(object && object.business_key || "")}</h2>

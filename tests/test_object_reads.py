@@ -481,11 +481,92 @@ def test_a_manual_split_lowers_both_balances_and_counts_two_cases(client: TestCl
     again = client.get(f"/api/objects/{_by_key(client, 'Invoice')['FT-TEST-301']['id']}").json()
     decisions = [item for item in again["history"] if item.get("kind") == "decision"]
     struck = next(item for item in decisions if item["id"] == first.json()["id"])
+    undo = next(item for item in decisions if item["decision"] == "revoked")
     assert struck["revoked"] is True
-    assert any(item["decision"] == "revoked" and item["revoked"] is True for item in decisions)
+    assert undo["revoked"] is False
+    assert undo["revokes_decision_id"] == first.json()["id"]
     other = client.get(f"/api/objects/{_by_key(client, 'Invoice')['FT-TEST-302']['id']}").json()
     kept = next(item for item in other["history"] if item.get("id") == second.json()["id"])
     assert kept["revoked"] is False
+
+
+_FREDDY_INVOICE = """<?xml version="1.0" encoding="UTF-8"?>
+<!-- label_origin: synthetic -->
+<FatturaElettronica>
+  <FatturaElettronicaHeader>
+    <CessionarioCommittente>
+      <DatiAnagrafici>
+        <Anagrafica><Denominazione>Cliente Prova Alfa</Denominazione></Anagrafica>
+        <IdFiscaleIVA><IdPaese>IT</IdPaese><IdCodice>00000000001</IdCodice></IdFiscaleIVA>
+      </DatiAnagrafici>
+    </CessionarioCommittente>
+  </FatturaElettronicaHeader>
+  <FatturaElettronicaBody>
+    <DatiGenerali>
+      <DatiGeneraliDocumento>
+        <TipoDocumento>TD01</TipoDocumento>
+        <Divisa>EUR</Divisa>
+        <Data>2026-10-01</Data>
+        <Numero>FT-2026-0187</Numero>
+        <ImportoTotaleDocumento>940.00</ImportoTotaleDocumento>
+      </DatiGeneraliDocumento>
+    </DatiGenerali>
+    <DatiBeniServizi>
+      <DettaglioLinee>
+        <NumeroLinea>1</NumeroLinea>
+        <Descrizione>Voce di prova</Descrizione>
+        <Quantita>1.00</Quantita>
+        <PrezzoUnitario>940.00</PrezzoUnitario>
+        <PrezzoTotale>940.00</PrezzoTotale>
+        <AliquotaIVA>22.00</AliquotaIVA>
+      </DettaglioLinee>
+    </DatiBeniServizi>
+  </FatturaElettronicaBody>
+</FatturaElettronica>
+"""
+
+_FREDDY_PAYMENT = """# label_origin: synthetic
+data,importo,iban,causale,riferimento,cliente,partita_iva,direzione,incasso
+2026-10-17,940.00,IT00TEST0000000000000000000,Saldo FT-2026-0187,FT-2026-0187,Cliente Prova Alfa,IT00000000001,incoming,INC-2026-0413
+"""
+
+
+def test_only_the_confirmation_is_revoked_and_the_revocation_points_at_it(client: TestClient):
+    company = give_company("mapper", "Storia annullata")
+    _assign("approver", company)
+    login(client, "mapper")
+    _upload(client, "fatturapa", "fattura_0187.xml", _FREDDY_INVOICE.encode())
+    uploaded = _upload(client, "bank", "incasso_0413.csv", _FREDDY_PAYMENT.encode())
+    assert uploaded["proposals"], uploaded
+    login(client, "approver")
+    inbox = client.get("/api/inbox").json()["recommendations"]
+    card = next(item for item in inbox if item.get("kind") == "payment_match")
+    confirmed = client.post(
+        f"/api/payment-proposals/{card['id']}/confirm",
+        json={"decision": "confirm", "evidence_hash": card["evidence_hash"]},
+    )
+    assert confirmed.status_code == 200, confirmed.text
+    decision_id = confirmed.json()["id"]
+    revoked = client.post(
+        f"/api/payment-decisions/{decision_id}/revoke",
+        json={"reason": "importo da correggere"},
+    )
+    assert revoked.status_code == 200, revoked.text
+
+    def decisions(type_name: str, key: str) -> list[dict]:
+        detail = client.get(f"/api/objects/{_by_key(client, type_name)[key]['id']}").json()
+        return [item for item in detail["history"] if item.get("kind") == "decision"]
+
+    for rows in (
+        decisions("Invoice", "FT-2026-0187"),
+        decisions("Payment", "INC-2026-0413"),
+    ):
+        closed = [item for item in rows if item["revoked"]]
+        assert [item["decision"] for item in closed] == ["confirm"]
+        assert closed[0]["id"] == decision_id
+        undo = next(item for item in rows if item["decision"] == "revoked")
+        assert undo["revoked"] is False
+        assert undo["revokes_decision_id"] == decision_id
 
 
 def _figures(payload) -> dict[str, set]:

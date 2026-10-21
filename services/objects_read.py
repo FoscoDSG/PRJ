@@ -325,7 +325,8 @@ def _decision_history(
                 "actor": row["actor"] or "",
                 "decision": row["decision"],
                 "amount": None if row["allocated_amount"] is None else stable(row["allocated_amount"]),
-                "revoked": row["decision"] == "revoked" or row["id"] in revoked,
+                "revoked": row["id"] in revoked,
+                "revokes_decision_id": row["revokes"],
                 "id": row["id"],
             }
         )
