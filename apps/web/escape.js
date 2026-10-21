@@ -607,7 +607,11 @@
     const amount = entry && entry.amount != null && entry.amount !== "" ? euroText(entry.amount) : "";
     const who = entry && entry.actor ? String(entry.actor) : "";
     const when = formatDay(entry && entry.at);
-    return [label, amount, who, when].filter((part) => part !== "").join(" · ");
+    const text = escapeHtml([label, amount, who, when].filter((part) => part !== "").join(" · "));
+    if (entry && entry.revoked) {
+      return `<span class="revoked-decision">${text}</span> annullata`;
+    }
+    return text;
   }
 
   function objectCard(object, ontology) {
@@ -627,7 +631,7 @@
     const typeLabel = info && info.label ? info.label : (object && object.type) || "";
     const links = objectLinks(object, ontology);
     const history = (object && object.history || []).map((entry) => {
-      return `<li>${escapeHtml(historyLine(entry))}</li>`;
+      return `<li>${historyLine(entry)}</li>`;
     }).join("");
     return `<p><button type="button" id="back-objects" class="ghost">Torna agli oggetti</button></p>
       <h2>${escapeHtml(typeLabel)} ${escapeHtml(object && object.business_key || "")}</h2>

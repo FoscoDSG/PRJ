@@ -299,10 +299,18 @@ def _decision_history(
                revokes_decision_id::text AS revokes
         FROM app.payment_decisions
         WHERE company_id = %s::uuid
-          AND (invoice_entity_id = %s::uuid OR payment_entity_id = %s::uuid)
+          AND (
+            invoice_entity_id = %s::uuid
+            OR payment_entity_id = %s::uuid
+            OR revokes_decision_id IN (
+              SELECT id FROM app.payment_decisions
+              WHERE company_id = %s::uuid
+                AND (invoice_entity_id = %s::uuid OR payment_entity_id = %s::uuid)
+            )
+          )
         ORDER BY decided_at, id
         """,
-        (company_id, entity_id, entity_id),
+        (company_id, entity_id, entity_id, company_id, entity_id, entity_id),
     ).fetchall()
     revoked = {row["revokes"] for row in rows if row["revokes"]}
     items = []

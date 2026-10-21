@@ -473,6 +473,20 @@ def test_a_manual_split_lowers_both_balances_and_counts_two_cases(client: TestCl
     assert after["human_cases"] == 1
     assert after["revocations"] == 1
 
+    cancelled = client.post(
+        f"/api/payment-decisions/{first.json()['id']}/revoke",
+        json={"reason": "prima parte annullata"},
+    )
+    assert cancelled.status_code == 200, cancelled.text
+    again = client.get(f"/api/objects/{_by_key(client, 'Invoice')['FT-TEST-301']['id']}").json()
+    decisions = [item for item in again["history"] if item.get("kind") == "decision"]
+    struck = next(item for item in decisions if item["id"] == first.json()["id"])
+    assert struck["revoked"] is True
+    assert any(item["decision"] == "revoked" and item["revoked"] is True for item in decisions)
+    other = client.get(f"/api/objects/{_by_key(client, 'Invoice')['FT-TEST-302']['id']}").json()
+    kept = next(item for item in other["history"] if item.get("id") == second.json()["id"])
+    assert kept["revoked"] is False
+
 
 def _figures(payload) -> dict[str, set]:
     found: dict[str, set] = {}

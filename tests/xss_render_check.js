@@ -271,6 +271,21 @@ const html = [
   auditCard({ action: value, actor: value, payload: { note: value } }),
   readableCard({ action: value, who: value, when: value, what: value, order: value, detail: value }),
   pill(value),
+  objectDetail({
+    type: "Invoice",
+    business_key: "FT-2026-0187",
+    fields: [],
+    links: [],
+    history: [
+      { decision: "confirm", amount: 1500, actor: "approver", at: "2026-04-02T10:00:00" },
+      { decision: "confirm", amount: 940, actor: value, at: "2026-04-03T10:00:00", revoked: true },
+      { decision: "revoked", actor: "approver", at: "2026-04-04T09:00:00", revoked: true },
+      { decision: "correct", amount: 940, actor: "approver", at: "2026-04-04T11:00:00", revoked: false },
+    ],
+  }, {
+    types: [{ name: "Invoice", label: "Fattura" }],
+    relations: [],
+  }),
 ].join("\n");
 
 if (html.includes(value) || html.includes("<img") || html.includes("<script")) {
@@ -511,6 +526,37 @@ const historyCard = objectDetail({
 });
 if (historyCard.includes(">confirm<") || !historyCard.includes("Confermata") || !historyCard.includes("40,00 €") || !historyCard.includes("02/04/2026")) {
   console.error("history still shows a raw decision code");
+  process.exit(2);
+}
+if (historyCard.includes("revoked-decision") || historyCard.includes("annullata")) {
+  console.error("a valid history line was marked annullata");
+  process.exit(2);
+}
+const story = html.slice(html.indexOf("FT-2026-0187"));
+const historyList = story.split('<ul class="decision-history">')[1].split("</ul>")[0];
+const storyLines = [...historyList.matchAll(/<li>([\s\S]*?)<\/li>/g)].map((match) => match[1]);
+if (storyLines.length !== 4) {
+  console.error("invoice history did not keep every decision");
+  process.exit(2);
+}
+const [kept, struck, cancellation, replacement] = storyLines;
+if (kept.includes("revoked-decision") || kept.includes("annullata") || !kept.includes("1.500,00 €")) {
+  console.error("a valid history line was marked annullata");
+  process.exit(2);
+}
+for (const line of [struck, cancellation]) {
+  const marked = line.indexOf("annullata");
+  if (!line.includes('class="revoked-decision"') || marked < 0 || marked < line.indexOf("</span>")) {
+    console.error("revoked history line is not marked annullata");
+    process.exit(2);
+  }
+}
+if (!struck.includes("940,00 €") || struck.includes(value) || !struck.includes(escapeHtml(value))) {
+  console.error("revoked history line leaked or dropped the amount");
+  process.exit(2);
+}
+if (replacement.includes("revoked-decision") || replacement.includes("annullata") || !replacement.includes("Corretta")) {
+  console.error("a valid history line was marked annullata");
   process.exit(2);
 }
 if (!historyCard.includes('data-object="pay-9"')) {
