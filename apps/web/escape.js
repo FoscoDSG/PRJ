@@ -206,16 +206,34 @@
     return `<article class="card"><strong>Schema drift su ${escapeHtml(item.source_name)}</strong><pre>${escapeHtml(JSON.stringify(item.diff, null, 2))}</pre>${decisionHistory(item.history)}${button}${revokeBar(item, canWrite, "drift", role)}</article>`;
   }
 
+  function rejectedQuarantineNote(item) {
+    const history = item && Array.isArray(item.history) ? item.history : [];
+    const entry = history.find((row) => row && row.decision === "rejected") || null;
+    const who = entry && entry.actor != null ? String(entry.actor).trim() : "";
+    const whenRaw = entry && entry.decided_at != null ? String(entry.decided_at).trim() : "";
+    const when = whenRaw ? formatDay(whenRaw) : "";
+    if (who && when) return `Rifiutato da ${who} il ${when}`;
+    if (who) return `Rifiutato da ${who}`;
+    if (when) return `Rifiutato il ${when}`;
+    return "Rifiutato";
+  }
+
   function quarantineCard(item, canWrite, role) {
     const reasons = (item.reasons || []).filter((reason) => reason != null && String(reason) !== "").join("; ");
     let note = "In attesa di conferma, nessuna scrittura ERP.";
-    if (reasons) note = reasons;
+    if (item.status === "rejected") note = rejectedQuarantineNote(item);
+    else if (reasons) note = reasons;
     else if (item.status === "released") note = "Documento rilasciato.";
     const title = item.order_key || item.source_name;
     const queued = !item.status || item.status === "open";
-    const button = canWrite !== false && queued
-      ? `<button type="button" data-release="${escapeHtml(item.id)}">Rilascia</button> <button type="button" class="ghost" data-reject-quarantine="${escapeHtml(item.id)}">Rifiuta</button>`
+    const canReject = role === "admin" || role === "mapper";
+    const release = canWrite !== false && queued
+      ? `<button type="button" data-release="${escapeHtml(item.id)}">Rilascia</button>`
       : "";
+    const reject = canWrite !== false && queued && canReject
+      ? `<button type="button" class="ghost" data-reject-quarantine="${escapeHtml(item.id)}">Rifiuta</button>`
+      : "";
+    const button = [release, reject].filter(Boolean).join(" ");
     return `<article class="card"><strong>Quarantena ${escapeHtml(title)}</strong><p>${escapeHtml(note)}</p>${decisionHistory(item.history)}${keptEffect(item, "quarantine")}${button}${revokeBar(item, canWrite, "quarantine", role)}</article>`;
   }
 
@@ -349,7 +367,7 @@
       ? `<p class="suggestion-note">${escapeHtml(shown.note)}</p>`
       : "";
     return `<tr>
-        <td class="mapping-source" data-label="${MAPPING_HEADERS.source}">${escapeHtml(item.source_name)}</td>
+        <td class="mapping-source" data-label="${MAPPING_HEADERS.source}">${withBreaks(item.source_name)}</td>
         <td class="mapping-column" data-label="${MAPPING_HEADERS.column}"><code>${withBreaks(item.source_field)}</code></td>
         <td class="mapping-destination" data-label="${MAPPING_HEADERS.destination}">${withBreaks(item.target_type)}.\u200b${withBreaks(item.target_property)}</td>
         <td class="mapping-confidence" data-label="${MAPPING_HEADERS.suggestion}"><p class="origin-line">${escapeHtml(originText(item))}</p><p class="suggestion-band">${escapeHtml(shown.band)}</p>${note}</td>

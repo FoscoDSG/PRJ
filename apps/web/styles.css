@@ -82,8 +82,8 @@ label.revoke-reason input { max-width: 100%; }
 #mapping-table table { width: 100%; table-layout: fixed; }
 #mapping-table .mapping-destination,
 #mapping-table code {
-  overflow-wrap: normal;
-  word-break: normal;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 td.mapping-actions { white-space: normal; }
 td.mapping-actions button,
@@ -121,7 +121,7 @@ td.mapping-actions input { width: 100%; min-width: 0; max-width: 100%; }
     letter-spacing: 0.05em;
     text-transform: uppercase;
   }
-  .mapping-source, .mapping-column, .mapping-destination { overflow-wrap: normal; word-break: normal; }
+  .mapping-source, .mapping-column, .mapping-destination { overflow-wrap: anywhere; }
   .origin-line {
     display: inline-block;
     max-width: 100%;

@@ -449,6 +449,56 @@ if (html.includes("In attesa di conferma")) {
   console.error("released document still looks pending");
   process.exit(2);
 }
+const openQuarantine = {
+  id: "q-open",
+  order_key: "1099",
+  source_name: "mail",
+  reasons: [],
+  status: "open",
+};
+for (const role of ["approver", "operator"]) {
+  const card = quarantineCard(openQuarantine, true, role);
+  if (card.includes("data-reject-quarantine") || card.includes(">Rifiuta<")) {
+    console.error(`quarantine reject shown to ${role}`);
+    process.exit(2);
+  }
+  if (!card.includes(">Rilascia<")) {
+    console.error(`quarantine release hidden from ${role}`);
+    process.exit(2);
+  }
+}
+for (const role of ["mapper", "admin"]) {
+  const card = quarantineCard(openQuarantine, true, role);
+  if (!card.includes("data-reject-quarantine") || !card.includes(">Rifiuta<")) {
+    console.error(`quarantine reject hidden from ${role}`);
+    process.exit(2);
+  }
+}
+const rejectedQuarantine = quarantineCard({
+  id: "q-rejected",
+  order_key: "1099",
+  reasons: [],
+  status: "rejected",
+  history: [{ decision: "rejected", actor: "mapper", decided_at: "2026-10-21T18:00:00" }],
+}, true, "approver");
+if (
+  rejectedQuarantine.includes("In attesa di conferma") ||
+  !rejectedQuarantine.includes("Rifiutato da mapper il 21/10/2026")
+) {
+  console.error("rejected quarantine still looks pending");
+  process.exit(2);
+}
+const rejectedBare = quarantineCard({
+  id: "q-bare",
+  order_key: "1100",
+  reasons: [],
+  status: "rejected",
+  history: [],
+}, true, "mapper");
+if (!rejectedBare.includes("Rifiutato") || rejectedBare.includes("In attesa di conferma") || rejectedBare.includes("Rifiutato da")) {
+  console.error("a rejection without a person still looks pending");
+  process.exit(2);
+}
 const bareProcess = inboxCard({
   id: "bare-process",
   status: "detected",
