@@ -80,6 +80,7 @@ tbody tr:nth-child(even) { background: #fafbfc; } tbody tr:hover { background: v
 label.revoke-reason { display: inline-grid; margin: 6px 8px 0 0; font-size: var(--fs-sm); max-width: 100%; }
 label.revoke-reason input { max-width: 100%; }
 #mapping-table table { width: 100%; table-layout: fixed; }
+#mapping-table .mapping-source,
 #mapping-table .mapping-destination,
 #mapping-table code {
   overflow-wrap: anywhere;
