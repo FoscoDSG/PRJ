@@ -259,7 +259,7 @@ async function loadMappings() {
   const canWrite = canWriteDecisions(state.hasCompany);
   document.querySelector("#mapping-table").classList.toggle("mappings-readonly", !canWrite);
   const drift = document.querySelector("#drift");
-  drift.innerHTML = data.drift.map((item) => driftCard(item, canWrite)).join("");
+  drift.innerHTML = data.drift.map((item) => driftCard(item, canWrite, state.role)).join("");
   drift.querySelectorAll("button[data-drift]").forEach((button) => {
     button.addEventListener("click", async () => {
       await api(`/api/drift/${button.dataset.drift}/acknowledge`, { method: "POST" });
@@ -269,7 +269,7 @@ async function loadMappings() {
   bindRevokes(drift, loadMappings);
   const quarantine = document.querySelector("#quarantine");
   const held = await api("/api/quarantine");
-  quarantine.innerHTML = held.documents.map((item) => quarantineCard(item, canWrite)).join("");
+  quarantine.innerHTML = held.documents.map((item) => quarantineCard(item, canWrite, state.role)).join("");
   quarantine.querySelectorAll("button[data-release]").forEach((button) => {
     button.addEventListener("click", async () => {
       try {
@@ -281,10 +281,21 @@ async function loadMappings() {
       }
     });
   });
+  quarantine.querySelectorAll("button[data-reject-quarantine]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      try {
+        await api(`/api/quarantine/${button.dataset.rejectQuarantine}/reject`, { method: "POST" });
+        showFlash("Documento rifiutato.");
+        loadMappings();
+      } catch (err) {
+        showFlash(err.message);
+      }
+    });
+  });
   bindRevokes(quarantine, loadMappings);
   const identity = document.querySelector("#identity");
   const reviews = await api("/api/identity-reviews");
-  identity.innerHTML = reviews.reviews.map((item) => identityCard(item, canWrite)).join("");
+  identity.innerHTML = reviews.reviews.map((item) => identityCard(item, canWrite, state.role)).join("");
   identity.querySelectorAll("button[data-merge]").forEach((button) => {
     button.addEventListener("click", async () => {
       await api(`/api/identity-reviews/${button.dataset.merge}/confirm`, { method: "POST" });
@@ -300,7 +311,7 @@ async function loadMappings() {
   bindRevokes(identity, loadMappings);
   renderProfileLabels(data.mappings, data.files);
   const body = document.querySelector("#mappings");
-  body.innerHTML = data.mappings.map((item) => mappingRow(item, canWriteDecisions(state.hasCompany))).join("");
+  body.innerHTML = data.mappings.map((item) => mappingRow(item, canWriteDecisions(state.hasCompany), state.role)).join("");
   body.querySelectorAll("button[data-confirm]").forEach((button) => {
     button.addEventListener("click", async () => {
       await api(`/api/mappings/${button.dataset.confirm}/confirm`, { method: "POST" });
@@ -429,9 +440,7 @@ async function loadObjects() {
     return;
   }
   list.innerHTML = objects.map((object) => objectCard(object, ontology)).join("");
-  list.querySelectorAll("button[data-object]").forEach((button) => {
-    button.addEventListener("click", () => openObject(button.dataset.object));
-  });
+  bindObjectOpen(list);
 }
 
 function renderObjectTypes(types) {
@@ -451,6 +460,15 @@ function renderObjectTypes(types) {
   }
 }
 
+function bindObjectOpen(root) {
+  root.querySelectorAll("[data-object]").forEach((node) => {
+    node.addEventListener("click", (event) => {
+      if (node.tagName === "A") event.preventDefault();
+      openObject(node.dataset.object);
+    });
+  });
+}
+
 async function openObject(id) {
   const object = await api(`/api/objects/${id}`);
   const ontology = await ensureOntology();
@@ -459,9 +477,7 @@ async function openObject(id) {
   detail.hidden = false;
   detail.innerHTML = objectDetail(object, ontology);
   detail.querySelector("#back-objects").addEventListener("click", loadObjects);
-  detail.querySelectorAll("button[data-object]").forEach((button) => {
-    button.addEventListener("click", () => openObject(button.dataset.object));
-  });
+  bindObjectOpen(detail);
 }
 
 async function openOrder(id) {

@@ -14,7 +14,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from apps.api.main import app
-from services.companies import NO_COMPANY_UPLOAD
+from services.companies import USER_WITHOUT_COMPANY
 from services.db import connect, password_hash
 from services.mapping.corrections import active_correction, file_type_metric, learned_metric, present_origin
 from services.mapping.engine import propose_mappings
@@ -133,10 +133,10 @@ def test_user_cannot_see_or_revoke_another_companys_decisions(client: TestClient
         json={"reason": "annullo la correzione"},
     )
     assert denied.status_code == 403
-    assert denied.json()["detail"] == NO_COMPANY_UPLOAD
+    assert denied.json()["detail"] == USER_WITHOUT_COMPANY
     untyped = client.post(f"/api/files/{missing}/type", json={"decision": "correct"})
     assert untyped.status_code == 403
-    assert untyped.json()["detail"] == NO_COMPANY_UPLOAD
+    assert untyped.json()["detail"] == USER_WITHOUT_COMPANY
     client.post("/api/logout")
     login(client, "operator")
     give_company("operator", "Sola lettura")
@@ -704,6 +704,9 @@ def test_review_markup_uses_the_server_phrase_and_hides_revoke_on_a_rule():
     assert 'submitFileType(file.file_id, "not_sure")' in script
     assert 'submitFileType(file.file_id, "wrong", code)' in script
     assert "@media (max-width: 859px)" in css
+    wide = css.split("@media (max-width: 859px)", 1)[0]
+    source_wrap = wide.split("#mapping-table .mapping-source", 1)[1].split("}", 1)[0]
+    assert "overflow-wrap: anywhere" in source_wrap
     narrow = css.split("@media (max-width: 859px)", 1)[1]
     assert "td.mapping-actions { white-space: normal;" in narrow
     assert "min-width: 11rem" in narrow
@@ -989,5 +992,17 @@ if (typed.includes("<script>")) process.exit(16);
 if (!typed.includes("&lt;script&gt;")) process.exit(17);
 if (typed.includes("Probabile anagrafica")) process.exit(18);
 if (!typed.includes("Probabile righe d&#39;ordine") && !typed.includes("Probabile righe d'ordine")) process.exit(19);
+const longFile = "EsportazioneAnagraficaClientiGestionaleCentraleOttobre2026.csv";
+const fonte = mappingRow({
+  id: "fonte",
+  source_name: longFile,
+  source_field: "piva",
+  target_type: "Customer",
+  target_property: "company_name",
+  status: "proposed",
+  origin: "rule",
+});
+const sourceCell = fonte.split('class="mapping-source"')[1].split("</td>")[0];
+if (!sourceCell.includes("EsportazioneAnagraficaClientiGestionaleCentraleOttobre2026.\u200bcsv")) process.exit(20);
 console.log("ok");
 """

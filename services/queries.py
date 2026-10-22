@@ -11,6 +11,7 @@ from services.mapping.corrections import present_origin, proposed_label, table_f
 from services.mapping.labels import profile_label
 from services.mapping.threshold import active_threshold
 from services.pii import MASK as PII_MASK
+from services.pii import ROLE_HIDDEN
 from services.pii import (
     clear_personal_names,
     hides_margin,
@@ -58,8 +59,10 @@ def list_mappings(
         hidden_margin = hides_margin(item["target_property"]) or (
             prop is not None and hides_margin(prop.name)
         )
-        if personal or (hidden_margin and role not in PRIVILEGED):
+        if personal:
             item["samples"] = [MASK for _ in (item["samples"] or [])]
+        elif hidden_margin and role not in PRIVILEGED:
+            item["samples"] = [ROLE_HIDDEN for _ in (item["samples"] or [])]
         item["samples"] = redact(item["samples"])
         item["calibrated"] = False
         item["measured"] = bool(measured)
@@ -338,6 +341,7 @@ def _payment_inbox(conn: psycopg.Connection, role: str, company_id: str, model) 
     revoked = {row["revokes_decision_id"] for row in decisions if row["revokes_decision_id"]}
     from services.cash.balance import remaining_balance
     from services.objects_read import visible_facts
+    from services.ontology_view import payment_label
 
     items = []
     for row in rows:
@@ -375,6 +379,8 @@ def _payment_inbox(conn: psycopg.Connection, role: str, company_id: str, model) 
         disposition = card_disposition(status, PAYMENT_DECIDABLE)
         payment_facts = visible_facts(conn, row["payment_entity_id"])
         invoice_facts = visible_facts(conn, row["invoice_entity_id"])
+        direction = str(payment_facts.get("direction") or "")
+        movement = payment_label(direction)
         balance = remaining_balance(conn, company_id, row["invoice_entity_id"])
         evidence = _mask_evidence(row["evidence"], role)
         evidence = redact(evidence)
@@ -384,7 +390,7 @@ def _payment_inbox(conn: psycopg.Connection, role: str, company_id: str, model) 
                 "kind": "payment_match",
                 "order_entity_id": row["payment_entity_id"],
                 "order_key": row["business_key"],
-                "headline": f"Incasso {row['business_key']}",
+                "headline": f"{movement} {row['business_key']}",
                 "problem": (
                     f"Proposta di abbinamento sulla fattura {row['invoice_number']}. "
                     "La fattura non viene chiusa."
@@ -426,6 +432,8 @@ def _payment_inbox(conn: psycopg.Connection, role: str, company_id: str, model) 
                     "number": row["business_key"],
                     "paid_at": payment_facts.get("paid_at") or "",
                     "amount": payment_facts.get("amount"),
+                    "direction": direction,
+                    "label": movement,
                 },
                 "invoice": {
                     "number": row["invoice_number"],
@@ -670,8 +678,11 @@ def _mask_evidence(evidence: Any, role: str) -> Any:
             continue
         copy = dict(item)
         personal = is_pii_property(copy.get("property"), copy.get("entity_type"))
-        if personal or _operator_hides(role, copy.get("property")):
+        if personal:
             copy["value"] = MASK
+            copy["masked"] = True
+        elif _operator_hides(role, copy.get("property")):
+            copy["value"] = ROLE_HIDDEN
             copy["masked"] = True
         masked.append(copy)
     return masked
@@ -691,8 +702,10 @@ def _mask_tree(value: Any, role: str) -> Any:
             hidden = _operator_hides(role, str(key)) or (
                 key == "value" and _operator_hides(role, str(prop) if prop is not None else None)
             )
-            if personal or hidden:
+            if personal:
                 masked[key] = MASK
+            elif hidden:
+                masked[key] = ROLE_HIDDEN
             else:
                 masked[key] = _mask_tree(item, role)
         return masked
@@ -806,8 +819,11 @@ def _facts(
         item["value"] = stable(item["value"])
         item["confidence"] = stable(item["confidence"])
         personal = is_pii_property(item["property"], entity_type)
-        if personal or _operator_hides(role, item["property"]):
+        if personal:
             item["value"] = MASK
+            item["masked"] = True
+        elif _operator_hides(role, item["property"]):
+            item["value"] = ROLE_HIDDEN
             item["masked"] = True
         item["calibrated"] = False
         item["measured"] = bool(measured)

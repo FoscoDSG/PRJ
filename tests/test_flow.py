@@ -13,6 +13,7 @@ from services.actions.executor import execute
 from services.db import connect
 from services.mapping.corrections import company_id_for_user
 from services.errors import AppError
+from services.pii import ROLE_HIDDEN
 from services.pipeline import load_fixtures, seed_src
 
 
@@ -107,7 +108,7 @@ def test_mapping_review_identity_and_agent_does_not_execute(client: TestClient):
     orders = client.get("/api/orders").json()["orders"]
     order = next(item for item in orders if item["business_key"] == "1024")
     assert order["shortage_qty"] == 80
-    assert order["margin"] == "••••"
+    assert order["margin"] == ROLE_HIDDEN
     detail = client.get(f"/api/orders/{order['id']}").json()
     assert detail["stock_formula"] == "disponibile = giacenza − impegnato"
     assert detail["lines"][0]["stock"]["available"] == 420
@@ -265,7 +266,8 @@ def test_excel_and_sql_connectors(client: TestClient, tmp_path: Path):
 def test_evidence_expiry_and_audit_is_append_only(client: TestClient):
     login(client, "mapper")
     load_demo()
-    give_company("mapper", "Giacenza")
+    give_company("admin", "Amministrazione IEOL")
+    login(client, "admin")
     expired = client.post("/api/stock/ART-X", json={"on_hand": 500})
     assert expired.status_code == 200, expired.text
     with connect() as conn:
@@ -745,7 +747,7 @@ def test_operator_inbox_hides_confidential_evidence(client: TestClient):
     cost = next(item for item in evidence if item["property"] == "cost")
     vat = next(item for item in evidence if item["property"] == "vat")
     assert amount["value"] == 60000
-    assert cost["value"] == "••••"
+    assert cost["value"] == ROLE_HIDDEN
     assert vat["value"] == "••••"
     login(client, "approver")
     visible = client.get("/api/inbox").json()["recommendations"][0]["evidence"]

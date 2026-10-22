@@ -18,6 +18,7 @@ import psycopg
 
 from services.agent.payment_match import RULE, SCORE_KIND, money
 from services.mapping.corrections import demo_company_ids
+from services.ontology_view import is_incoming
 
 MIN_MEASURED_CASES = 30
 MIN_MEASURED_SOURCES = 3
@@ -92,7 +93,16 @@ def measure_payment_matches(
         for row in conn.execute(
             """
             SELECT e.id::text, d.company_id::text AS company_id,
-                   d.source_name, d.label_origin
+                   d.source_name, d.label_origin,
+                   (
+                     SELECT dir.value #>> '{}'
+                     FROM app.facts dir
+                     WHERE dir.entity_id = e.id
+                       AND dir.property = 'direction'
+                       AND dir.valid_to IS NULL
+                     ORDER BY dir.valid_from DESC
+                     LIMIT 1
+                   ) AS direction
             FROM app.entities e
             JOIN app.cash_documents d ON d.entity_id = e.id
             WHERE e.type = 'Payment' AND e.valid_to IS NULL
@@ -127,6 +137,28 @@ def score_cases(
     decisions: list[dict[str, Any]],
     payments: list[dict[str, Any]],
 ) -> dict[str, Any]:
+    """Score human cases and the unmatched share of incoming payments.
+
+    A payment is outgoing only when ``is_incoming`` says so. Those rows
+    are left out of the cases and of the unmatched share.
+    """
+    outgoing_ids = {item["id"] for item in payments if item.get("id") and not is_incoming(item)}
+    if outgoing_ids:
+        outgoing_proposals = {
+            item["id"]
+            for item in proposals
+            if item.get("payment_entity_id") in outgoing_ids
+        }
+        proposals = [
+            item for item in proposals if item.get("payment_entity_id") not in outgoing_ids
+        ]
+        decisions = [
+            item
+            for item in decisions
+            if item.get("payment_entity_id") not in outgoing_ids
+            and item.get("proposal_id") not in outgoing_proposals
+        ]
+        payments = [item for item in payments if item.get("id") not in outgoing_ids]
     by_proposal = {item["id"]: item for item in proposals}
     by_decision = {item["id"]: item for item in decisions}
     payments_by_id = {item["id"]: item for item in payments}

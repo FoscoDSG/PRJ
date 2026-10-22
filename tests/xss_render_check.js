@@ -311,7 +311,7 @@ if (!html.includes(escapeHtml(value))) {
 
 const allowedTags = new Set([
   "span", "button", "article", "strong", "pre", "tr", "td", "code",
-  "h3", "div", "p", "ul", "li", "label", "input", "h2", "select", "option",
+  "h3", "div", "p", "ul", "li", "label", "input", "h2", "select", "option", "a",
 ]);
 const structural = new Set([
   "pill", "card", "meta", "ghost", "formula", "edges",
@@ -449,6 +449,56 @@ if (html.includes("In attesa di conferma")) {
   console.error("released document still looks pending");
   process.exit(2);
 }
+const openQuarantine = {
+  id: "q-open",
+  order_key: "1099",
+  source_name: "mail",
+  reasons: [],
+  status: "open",
+};
+for (const role of ["approver", "operator"]) {
+  const card = quarantineCard(openQuarantine, true, role);
+  if (card.includes("data-reject-quarantine") || card.includes(">Rifiuta<")) {
+    console.error(`quarantine reject shown to ${role}`);
+    process.exit(2);
+  }
+  if (!card.includes(">Rilascia<")) {
+    console.error(`quarantine release hidden from ${role}`);
+    process.exit(2);
+  }
+}
+for (const role of ["mapper", "admin"]) {
+  const card = quarantineCard(openQuarantine, true, role);
+  if (!card.includes("data-reject-quarantine") || !card.includes(">Rifiuta<")) {
+    console.error(`quarantine reject hidden from ${role}`);
+    process.exit(2);
+  }
+}
+const rejectedQuarantine = quarantineCard({
+  id: "q-rejected",
+  order_key: "1099",
+  reasons: [],
+  status: "rejected",
+  history: [{ decision: "rejected", actor: "mapper", decided_at: "2026-10-21T18:00:00" }],
+}, true, "approver");
+if (
+  rejectedQuarantine.includes("In attesa di conferma") ||
+  !rejectedQuarantine.includes("Rifiutato da mapper il 21/10/2026")
+) {
+  console.error("rejected quarantine still looks pending");
+  process.exit(2);
+}
+const rejectedBare = quarantineCard({
+  id: "q-bare",
+  order_key: "1100",
+  reasons: [],
+  status: "rejected",
+  history: [],
+}, true, "mapper");
+if (!rejectedBare.includes("Rifiutato") || rejectedBare.includes("In attesa di conferma") || rejectedBare.includes("Rifiutato da")) {
+  console.error("a rejection without a person still looks pending");
+  process.exit(2);
+}
 const bareProcess = inboxCard({
   id: "bare-process",
   status: "detected",
@@ -522,6 +572,63 @@ if (!paymentCard.includes("sì") || !paymentCard.includes("no") || !paymentCard.
   console.error("payment card did not show criteria and the remaining balance");
   process.exit(2);
 }
+if (
+  !paymentCard.includes("122,00 €") ||
+  !paymentCard.includes("200,00 €") ||
+  !paymentCard.includes("20,00 €") ||
+  !paymentCard.includes("02/04/2026") ||
+  !paymentCard.includes("01/04/2026") ||
+  paymentCard.includes("2026-04-02") ||
+  paymentCard.includes("2026-04-01")
+) {
+  console.error("payment card showed a raw amount or date");
+  process.exit(2);
+}
+const outgoingCard = inboxCard({
+  id: "out-pay",
+  kind: "payment_match",
+  status: "proposed",
+  risk: "low",
+  problem: "esce",
+  confidence: 1,
+  confidence_method: "rule",
+  evidence_hash: "abc",
+  payment: { number: "PAG-1", paid_at: "2026-10-30", amount: 1220, direction: "outgoing", label: "Pagamento" },
+  invoice: { number: "FT-1", amount: 1220, due_at: "2026-10-30" },
+  allocation: { amount: 1220, remaining: 0 },
+  criteria: { amount: false, customer: false, reference: false },
+  failed_criteria: ["amount", "customer", "reference"],
+}, "approver", true);
+if (!outgoingCard.includes(">Pagamento<") || !outgoingCard.includes("1.220,00 €") || outgoingCard.includes("2026-10-30")) {
+  console.error("outgoing payment kept the incasso label or a raw figure");
+  process.exit(2);
+}
+const unlabeledPayment = objectDetail({
+  type: "Payment",
+  business_key: "INC-OLD",
+  fields: [{ name: "amount", value: 10 }],
+  links: [],
+  history: [{ kind: "event", at: "2026-04-02", label: "Incasso registrato", actor: "", decision: "" }],
+}, {
+  types: [{ name: "Payment", label: "Incasso" }],
+  payment_labels: { incoming: "Incasso", outgoing: "Pagamento" },
+});
+if (!unlabeledPayment.includes("Incasso INC-OLD") || unlabeledPayment.includes("Pagamento")) {
+  console.error("a payment without direction was not called Incasso");
+  process.exit(2);
+}
+const failedText = outgoingCard.split('class="failed-criteria">')[1].split("</p>")[0];
+if (
+  !failedText.includes("Importo") ||
+  !failedText.includes("Cliente") ||
+  !failedText.includes("Riferimento in causale") ||
+  failedText.includes("amount") ||
+  failedText.includes("customer") ||
+  failedText.includes("reference")
+) {
+  console.error("failed criteria stayed as codes");
+  process.exit(2);
+}
 if (!html.includes("Residuo attuale") || !html.includes("90,00 €")) {
   console.error("invoice card hid the remaining balance");
   process.exit(2);
@@ -564,7 +671,7 @@ if (!struck.includes('class="revoked-decision"') || marked < 0 || marked < struc
 if (
   cancellation.includes("revoked-decision") ||
   cancellation.includes("annullata") ||
-  !cancellation.includes("Annullamento della conferma di 940,00 € del 17/10/2026 · edoardo")
+  !cancellation.includes("Annullamento della conferma di 940,00 € del 17/10/2026 · edoardo · 18/10/2026")
 ) {
   console.error("the revocation line was struck or did not name the closed decision");
   process.exit(2);
@@ -592,7 +699,35 @@ if (!historyCard.includes('data-object="pay-9"')) {
   console.error("linked object is not clickable");
   process.exit(2);
 }
-if (!html.includes("Importo fattura: 122") || html.includes("WRONG")) {
+const severalDates = objectDetail({
+  type: "Invoice",
+  business_key: "FT-9",
+  fields: [
+    { name: "scadenze", value: "2026-04-01, 2026-05-01" },
+    { name: "due_at", value: "2026-04-01T00:00:00" },
+  ],
+  links: [],
+  history: [],
+}, {
+  types: [{
+    name: "Invoice",
+    label: "Fattura",
+    fields: [
+      { name: "scadenze", label: "Scadenze" },
+      { name: "due_at", label: "Scadenza" },
+    ],
+  }],
+});
+if (
+  !severalDates.includes("Scadenze: 01/04/2026, 01/05/2026") ||
+  !severalDates.includes("Scadenza: 01/04/2026") ||
+  severalDates.includes("2026-04") ||
+  severalDates.includes("2026-05")
+) {
+  console.error("a date stayed raw");
+  process.exit(2);
+}
+if (!html.includes("Importo fattura: 122,00 €") || html.includes("Importo fattura: 122<") || html.includes("WRONG")) {
   console.error("object card ignored the ontology label or hid a visible amount");
   process.exit(2);
 }

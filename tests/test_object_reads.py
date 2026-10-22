@@ -15,7 +15,7 @@ from apps.api.main import app
 from services.db import connect
 from services.agent.payment_measure import score_cases
 from services.disposition import ORDER_DECIDABLE, PAYMENT_DECIDABLE, card_disposition
-from services.pii import MASK, RESERVED, note_clear_personal_view
+from services.pii import MASK, RESERVED, ROLE_HIDDEN, note_clear_personal_view
 from tests.test_flow import decide, give_company, load_demo, login
 from tests.test_order_to_cash import SYNTHETIC, _assign, _status, _upload
 
@@ -133,7 +133,13 @@ def test_two_payments_balance_mask_and_the_other_companys_number(client: TestCli
     matches = [item for item in inbox if item["kind"] == "payment_match"]
     full = next(item for item in matches if item["invoice"]["number"] == "FT-TEST-100")
     assert full["disposition"] == "open"
-    assert full["payment"] == {"number": "INC-100", "paid_at": "2026-04-02", "amount": 122}
+    assert full["payment"] == {
+        "number": "INC-100",
+        "paid_at": "2026-04-02",
+        "amount": 122,
+        "direction": "incoming",
+        "label": "Incasso",
+    }
     assert full["invoice"]["number"] == "FT-TEST-100"
     assert full["invoice"]["amount"] == 122
     assert full["invoice"]["due_at"] == "2026-04-01"
@@ -323,7 +329,7 @@ def test_order_cards_reopen_and_demo_numbers_stay(client: TestClient):
     assert _field(found, "shortage_qty")["value"] == 80
     assert _field(found, "amount")["value"] == 60000
     assert _field(found, "amount")["masked"] is False
-    assert _field(found, "margin")["value"] == MASK
+    assert _field(found, "margin")["value"] == ROLE_HIDDEN
     assert _field(found, "margin")["masked"] is True
 
     login(client, "approver")
@@ -614,14 +620,14 @@ def test_operator_sees_amounts_and_not_margin_or_cost(client: TestClient):
     figures = _figures(operator)
     assert 60000 in figures["amount"]
     assert MASK not in figures["amount"]
-    assert figures["margin"] == {MASK}
-    assert figures["cost"] == {MASK}
+    assert figures["margin"] == {ROLE_HIDDEN}
+    assert figures["cost"] == {ROLE_HIDDEN}
     assert _field(operator["object"], "amount")["value"] == operator["order"]["amount"] == 60000
-    assert _field(operator["object"], "margin")["value"] == operator["order"]["margin"] == MASK
-    assert _field(operator["product"], "cost")["value"] == MASK
+    assert _field(operator["object"], "margin")["value"] == operator["order"]["margin"] == ROLE_HIDDEN
+    assert _field(operator["product"], "cost")["value"] == ROLE_HIDDEN
     cost_evidence = next(item for item in operator["card"]["evidence"] if item["property"] == "cost")
     amount_evidence = next(item for item in operator["card"]["evidence"] if item["property"] == "amount")
-    assert cost_evidence["value"] == MASK
+    assert cost_evidence["value"] == ROLE_HIDDEN
     assert amount_evidence["value"] == 60000
     vat = next(item for item in operator["card"]["evidence"] if item["property"] == "vat")
     assert vat["value"] == MASK
@@ -653,7 +659,7 @@ def test_pages_show_reserved_only_when_the_server_sends_it():
     assert "Residuo attuale" in page_js
     css = (WEB / "styles.css").read_text(encoding="utf-8")
     assert "max-width: 859px" in css
-    assert "overflow-x: clip" in css
+    assert "overflow-x: clip" not in css
     assert css.rfind("minmax(min(100%, 260px)") < css.rfind("@media (max-width: 700px)")
     assert "grid-template-columns: 1fr" in css
     page = (WEB / "index.html").read_text(encoding="utf-8")

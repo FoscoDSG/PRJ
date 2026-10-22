@@ -15,8 +15,8 @@ import psycopg
 
 from services.audit import record
 
-NO_COMPANY_UPLOAD = (
-    "Il tuo utente non è ancora collegato a un'azienda: chiedi all'amministratore"
+USER_WITHOUT_COMPANY = (
+    "Non hai ancora un'azienda assegnata. Chiedi all'amministratore di collegarti."
 )
 _MAX_NAME = 200
 

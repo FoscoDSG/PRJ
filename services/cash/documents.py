@@ -37,6 +37,7 @@ from services.cash.catalog import (
     STEP_PAYMENT,
 )
 from services.cash.events import record_process_event
+from services.ontology_view import is_incoming, payment_label
 from services.evidence import evidence_hmac
 from services.graph.projection import project_graph
 from services.pii import MASK, is_pii_property, read_cleartext
@@ -351,7 +352,7 @@ def write_payment(
         company_id=company_id,
         subject_id=entity_id,
         event_type="payment_received",
-        summary="Incasso registrato",
+        summary=f"{payment_label(direction)} registrato",
         occurred_at=paid_at,
         process_id=CASH_PROCESS_ID,
         step_id=STEP_PAYMENT,
@@ -581,7 +582,7 @@ def _books(conn, company_id: str) -> tuple[list[InvoiceView], list[PaymentView]]
     for row in payment_rows:
         facts = plain.get(row["id"], {})
         personal = clear.get(row["id"], {})
-        if facts.get("direction") not in (None, "", "incoming"):
+        if not is_incoming(facts):
             continue
         origin = _origin(conn, row["id"])
         text = " ".join(

@@ -10,7 +10,7 @@ from psycopg.types.json import Json
 
 from services.agent.order_agent import AGENT_VERSION, build_context
 from services.audit import record
-from services.companies import NO_COMPANY_UPLOAD
+from services.companies import USER_WITHOUT_COMPANY
 from services.errors import AppError
 from services.mapping.threshold import active_threshold
 from services.rules.engine import CFO_THRESHOLD, RULES_VERSION
@@ -362,7 +362,7 @@ def _record_decision(
     if not company_id:
         if allow_missing_company:
             return
-        raise AppError(403, NO_COMPANY_UPLOAD)
+        raise AppError(403, USER_WITHOUT_COMPANY)
     header = _source_row(conn, str(row["order_entity_id"]))
     sources = _source_rows(conn, str(row["order_entity_id"]))
     confidence, method, rule = _score(

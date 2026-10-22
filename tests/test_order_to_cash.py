@@ -40,7 +40,7 @@ from services.agent.payment_measure import (
     score_cases,
 )
 from services.cash.documents import write_payment, write_supplier
-from services.companies import NO_COMPANY_UPLOAD
+from services.companies import USER_WITHOUT_COMPANY
 from services.db import app_connect, connect
 from services.graph.projection import project_graph
 from services.pii import MASK
@@ -338,6 +338,75 @@ def test_measure_stays_provisional_until_cases_and_source_names():
     assert empty["recall_label"] == RECALL_LABEL
     assert empty["unmatched_label"] == UNMATCHED_LABEL
 
+    incoming = case(7, "alfa", "c1")
+    proposals, decisions, payments = _unzip([incoming])
+    payments[0]["direction"] = "incoming"
+    before = score_cases(proposals, decisions, payments)
+    assert before["human_cases"] == 1
+    assert before["precision"] == 1
+    assert before["recall"] == 1
+    assert before["payments"] == 1
+    assert before["unmatched_payments"] == 0
+    assert before["unmatched_share"] == 0
+    outgoing_payment = {
+        "id": "pay-out",
+        "company_id": "c1",
+        "source_name": "beta",
+        "label_origin": "rule",
+        "direction": "outgoing",
+    }
+    outgoing_proposal = {
+        "id": "p-out",
+        "company_id": "c1",
+        "payment_entity_id": "pay-out",
+        "invoice_entity_id": "inv-out",
+        "source_name": "beta",
+        "label_origin": "rule",
+        "allocated_amount": "10.00",
+    }
+    outgoing_decision = {
+        "id": "d-out",
+        "proposal_id": "p-out",
+        "payment_entity_id": "pay-out",
+        "company_id": "c1",
+        "decision": "correct",
+        "invoice_entity_id": "inv-other",
+        "allocated_amount": "4.00",
+        "source_name": "beta",
+        "revokes_decision_id": None,
+    }
+    after = score_cases(
+        proposals + [outgoing_proposal],
+        decisions + [outgoing_decision],
+        payments + [outgoing_payment],
+    )
+    assert after["human_cases"] == before["human_cases"]
+    assert after["precision"] == before["precision"]
+    assert after["recall"] == before["recall"]
+    assert after["true_positive"] == before["true_positive"]
+    assert after["false_positive"] == before["false_positive"]
+    assert after["false_negative"] == before["false_negative"]
+    assert after["payments"] == before["payments"]
+    assert after["unmatched_payments"] == before["unmatched_payments"]
+    assert after["unmatched_share"] == before["unmatched_share"]
+    assert after["source_names"] == before["source_names"]
+    assert after["revocations"] == before["revocations"]
+
+    blank = {"id": "pay-old", "company_id": "c1", "source_name": "alfa", "label_origin": "rule"}
+    unnamed = {
+        "id": "pay-empty",
+        "company_id": "c1",
+        "source_name": "alfa",
+        "label_origin": "rule",
+        "direction": "",
+    }
+    with_blank = score_cases(proposals, decisions, payments + [blank, unnamed])
+    assert with_blank["payments"] == 3
+    assert with_blank["unmatched_payments"] == 2
+    assert with_blank["human_cases"] == 1
+    assert with_blank["precision"] == 1
+    assert with_blank["recall"] == 1
+
 
 def _unzip(rows):
     proposals, decisions, payments = [], [], []
@@ -632,7 +701,7 @@ def test_approver_without_a_company_cannot_decide(client: TestClient):
         json={"decision": "confirm", "evidence_hash": "a" * 64},
     )
     assert response.status_code == 403
-    assert response.json()["detail"] == NO_COMPANY_UPLOAD
+    assert response.json()["detail"] == USER_WITHOUT_COMPANY
     ontology = client.get("/api/ontology")
     assert ontology.status_code == 200
     body = ontology.json()
@@ -810,6 +879,100 @@ def test_measure_is_scoped_and_skips_demo_companies(client: TestClient):
     assert empty["source_names"] == []
     assert empty["recall_label"] == RECALL_LABEL
     assert empty["unmatched_label"] == UNMATCHED_LABEL
+
+
+def test_measure_ignores_outgoing_and_keeps_a_payment_without_direction(client: TestClient):
+    from services.cash.documents import _books
+
+    company = give_company("mapper", "Misura direzione")
+    _assign("approver", company)
+    model = load_merged()
+
+    def payment(conn, source_key: str, direction: str, source: str) -> str:
+        return write_payment(
+            conn,
+            model,
+            company_id=company,
+            source_key=source_key,
+            direction=direction,
+            paid_at="2026-04-01",
+            amount=Decimal("10.00"),
+            iban=IBAN,
+            causale="prova",
+            counterparty_name="Cliente Prova",
+            counterparty_vat="IT00000000001",
+            reference="FT-1",
+            source=source,
+            source_class="external",
+            label_origin="rule",
+        )
+
+    def correct(conn, payment_id: str, source: str) -> None:
+        conn.execute(
+            """
+            INSERT INTO app.payment_decisions (
+              id, proposal_id, payment_entity_id, company_id, decision,
+              actor, actor_role, failed_criteria, reason, source_name
+            )
+            VALUES (
+              %s, NULL, %s, %s, 'correct',
+              'approver', 'approver', '["amount","customer","reference"]'::jsonb,
+              'controllo di prova', %s
+            )
+            """,
+            (str(uuid.uuid4()), payment_id, company, source),
+        )
+
+    with connect() as conn:
+        incoming_id = payment(conn, "INC-IN", "incoming", "fonte-in")
+        correct(conn, incoming_id, "fonte-in")
+        conn.commit()
+        before = measure_payment_matches(conn, company_id=company)
+        outgoing_id = payment(conn, "INC-OUT-REAL", "outgoing", "fonte-out")
+        correct(conn, outgoing_id, "fonte-out")
+        conn.commit()
+        after = measure_payment_matches(conn, company_id=company)
+        kept = {item.entity_id for item in _books(conn, company)[1]}
+    assert outgoing_id not in kept
+    assert incoming_id in kept
+    assert after["human_cases"] == before["human_cases"] == 1
+    assert after["payments"] == before["payments"] == 1
+    assert after["unmatched_payments"] == before["unmatched_payments"] == 1
+    assert after["unmatched_share"] == before["unmatched_share"]
+    assert after["precision"] == before["precision"]
+    assert after["recall"] == before["recall"]
+    assert after["true_positive"] == before["true_positive"]
+    assert after["false_positive"] == before["false_positive"]
+    assert after["false_negative"] == before["false_negative"]
+    assert after["source_names"] == before["source_names"] == ["fonte-in"]
+    assert after["revocations"] == before["revocations"]
+
+    with connect() as conn:
+        blank_id = payment(conn, "INC-BLANK", "incoming", "fonte-in")
+        conn.execute(
+            """
+            UPDATE app.facts
+            SET valid_to = now()
+            WHERE entity_id = %s::uuid AND property = 'direction' AND valid_to IS NULL
+            """,
+            (blank_id,),
+        )
+        conn.commit()
+        measured = measure_payment_matches(conn, company_id=company)
+        kept = {item.entity_id for item in _books(conn, company)[1]}
+    assert blank_id in kept
+    assert measured["payments"] == 2
+    assert measured["unmatched_payments"] == 2
+    assert measured["human_cases"] == 1
+    assert measured["precision"] == before["precision"]
+    assert measured["recall"] == before["recall"]
+
+    login(client, "approver")
+    detail = client.get(f"/api/objects/{blank_id}").json()
+    assert detail["type_label"] == "Incasso"
+    history = " ".join(str(item.get("label") or "") for item in detail.get("history") or [])
+    assert "Incasso" in history
+    assert "Pagamento" not in history
 
 
 def test_migration_0017_does_not_rewrite_inbox_rows(client: TestClient):

@@ -157,7 +157,7 @@ ieol company create-demo --name "Demo interna"
 
 `create` lascia `is_demo` falso. `create-demo` lo imposta vero, qualunque sia il nome: le misure non cercano la parola «demo». Un utente riceve l'azienda una sola volta. Se ne ha già una, il comando si ferma e non scrive l'audit di successo. Per cambiare azienda serve un utente nuovo.
 
-Chi non ha un'azienda non può caricare un file nuovo: CSV, Excel, SQL, email e PDF rispondono 403 con «Il tuo utente non è ancora collegato a un'azienda: chiedi all'amministratore». La stessa risposta vale per ogni scrittura di decisione: conferma, rifiuto, annullamento di una correzione, tipo di file, «Conferma i suggerimenti forti» e «Aggiorna modello». La lettura resta aperta. In pagina non compaiono il caricamento né quei pulsanti, e si legge la stessa frase, scritta come testo e non come HTML.
+Chi non ha un'azienda non può caricare un file nuovo: CSV, Excel, SQL, email e PDF rispondono 403 con «Non hai ancora un'azienda assegnata. Chiedi all'amministratore di collegarti.». La stessa risposta vale per ogni scrittura di decisione: conferma, rifiuto, annullamento di una correzione, tipo di file, «Conferma i suggerimenti forti» e «Aggiorna modello». La lettura resta aperta. In pagina non compaiono il caricamento né quei pulsanti, e si legge la stessa frase, scritta come testo e non come HTML.
 
 `is_demo` si imposta alla creazione. Il database rifiuta di cambiarlo dopo: rinominare l'azienda non la fa entrare né uscire dalle misure.
 
