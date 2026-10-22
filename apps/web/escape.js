@@ -130,15 +130,31 @@
     return Object.prototype.hasOwnProperty.call(DECISION_LABELS, code) ? DECISION_LABELS[code] : String(code ?? "");
   }
 
-  function decisionHistory(entries) {
+  function defaultHistoryText(entry) {
+    const label = decisionLabel(entry && entry.decision);
+    const amount = entry && entry.allocated_amount != null && entry.allocated_amount !== ""
+      ? ` · ${euroText(entry.allocated_amount)}`
+      : "";
+    const when = entry && entry.decided_at ? ` · ${formatDay(entry.decided_at)}` : "";
+    const who = entry && entry.actor ? ` · ${entry.actor}` : "";
+    return `${label}${amount}${who}${when}`;
+  }
+
+  function rejectedHistoryText(entry) {
+    const who = entry && entry.actor != null ? String(entry.actor).trim() : "";
+    const whenRaw = entry && entry.decided_at != null ? String(entry.decided_at).trim() : "";
+    const when = whenRaw ? formatDay(whenRaw) : "";
+    if (who && when) return `Rifiutato da ${who} il ${when}`;
+    if (who) return `Rifiutato da ${who}`;
+    if (when) return `Rifiutato il ${when}`;
+    return "Rifiutato";
+  }
+
+  function decisionHistory(entries, kind) {
     const items = (entries || []).map((entry) => {
-      const label = decisionLabel(entry && entry.decision);
-      const amount = entry && entry.allocated_amount != null && entry.allocated_amount !== ""
-        ? ` · ${euroText(entry.allocated_amount)}`
-        : "";
-      const when = entry && entry.decided_at ? ` · ${formatDay(entry.decided_at)}` : "";
-      const who = entry && entry.actor ? ` · ${entry.actor}` : "";
-      const text = `${label}${amount}${who}${when}`;
+      const text = kind === "quarantine" && entry && entry.decision === "rejected"
+        ? rejectedHistoryText(entry)
+        : defaultHistoryText(entry);
       const line = entry && entry.revoked
         ? `<span class="revoked-decision">${escapeHtml(text)}</span>`
         : escapeHtml(text);
@@ -208,6 +224,9 @@
     if (kind === "quarantine" && item.status === "released") {
       return `<p class="executed-note">Il documento resta rilasciato.</p>`;
     }
+    if (kind === "quarantine" && item.status === "rejected") {
+      return `<p class="executed-note">Il documento resta rifiutato e non torna in coda.</p>`;
+    }
     if (kind === "identity" && item.status === "confirmed") {
       return `<p class="executed-note">I clienti restano uniti.</p>`;
     }
@@ -227,22 +246,10 @@
     return `<article class="card"><strong>Schema drift su ${escapeHtml(item.source_name)}</strong><pre>${escapeHtml(JSON.stringify(item.diff, null, 2))}</pre>${decisionHistory(item.history)}${button}${revokeBar(item, canWrite, "drift", role)}</article>`;
   }
 
-  function rejectedQuarantineNote(item) {
-    const history = item && Array.isArray(item.history) ? item.history : [];
-    const entry = history.find((row) => row && row.decision === "rejected") || null;
-    const who = entry && entry.actor != null ? String(entry.actor).trim() : "";
-    const whenRaw = entry && entry.decided_at != null ? String(entry.decided_at).trim() : "";
-    const when = whenRaw ? formatDay(whenRaw) : "";
-    if (who && when) return `Rifiutato da ${who} il ${when}`;
-    if (who) return `Rifiutato da ${who}`;
-    if (when) return `Rifiutato il ${when}`;
-    return "Rifiutato";
-  }
-
   function quarantineCard(item, canWrite, role) {
     const reasons = (item.reasons || []).filter((reason) => reason != null && String(reason) !== "").join("; ");
     let note = "In attesa di conferma, nessuna scrittura ERP.";
-    if (item.status === "rejected") note = rejectedQuarantineNote(item);
+    if (item.status === "rejected") note = "";
     else if (reasons) note = reasons;
     else if (item.status === "released") note = "Documento rilasciato.";
     const title = item.order_key || item.source_name;
@@ -252,11 +259,13 @@
     const reject = allows(item, "reject")
       ? `<label class="revoke-reason">Motivo del rifiuto <input data-quarantine-reason-input="${escapeHtml(item.id)}" required minlength="5" maxlength="500" /></label> <button type="button" class="ghost" data-reject-quarantine="${escapeHtml(item.id)}">Rifiuta</button>`
       : "";
-    const reasonSlot = item.status === "rejected"
+    const reasonText = item && item.reason != null ? String(item.reason).trim() : "";
+    const reasonSlot = item.status === "rejected" && reasonText
       ? `<p class="quarantine-reason" data-quarantine-reason="${escapeHtml(item.id)}"></p>`
       : "";
     const button = [release, reject].filter(Boolean).join(" ");
-    return `<article class="card"><strong>Quarantena ${escapeHtml(title)}</strong><p>${escapeHtml(note)}</p>${reasonSlot}${decisionHistory(item.history)}${keptEffect(item, "quarantine")}${button}${revokeBar(item, canWrite, "quarantine", role)}</article>`;
+    const noteHtml = note ? `<p>${escapeHtml(note)}</p>` : "";
+    return `<article class="card"><strong>Quarantena ${escapeHtml(title)}</strong>${noteHtml}${reasonSlot}${decisionHistory(item.history, "quarantine")}${keptEffect(item, "quarantine")}${button}${revokeBar(item, canWrite, "quarantine", role)}</article>`;
   }
 
   function identityCard(item, canWrite, role) {

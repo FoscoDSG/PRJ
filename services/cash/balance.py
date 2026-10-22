@@ -132,15 +132,21 @@ def _human_allocations(
 
 
 def _payment_directions(conn: psycopg.Connection, payment_ids: set[str]) -> dict[str, str | None]:
-    """Direction fact of each payment. A missing fact is absent from the map."""
+    """Newest open direction of each payment, the same order the measure uses.
+
+    A missing fact is absent from the map. Two open facts keep the later
+    ``valid_from``.
+    """
     if not payment_ids:
         return {}
     rows = conn.execute(
         """
-        SELECT entity_id::text AS id, value #>> '{}' AS direction
+        SELECT DISTINCT ON (entity_id)
+               entity_id::text AS id, value #>> '{}' AS direction
         FROM app.facts
         WHERE property = 'direction' AND valid_to IS NULL
           AND entity_id = ANY(%s::uuid[])
+        ORDER BY entity_id, valid_from DESC
         """,
         (list(payment_ids),),
     ).fetchall()

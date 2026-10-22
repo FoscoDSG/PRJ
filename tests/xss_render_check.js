@@ -479,13 +479,17 @@ const rejectedQuarantine = quarantineCard({
   order_key: "1099",
   reasons: [],
   status: "rejected",
+  reason: "documento illeggibile",
   history: [{ decision: "rejected", actor: "mapper", decided_at: "2026-10-21T18:00:00" }],
 }, true, "approver");
 if (
   rejectedQuarantine.includes("In attesa di conferma") ||
-  !rejectedQuarantine.includes("Rifiutato da mapper il 21/10/2026")
+  rejectedQuarantine.includes("Rifiutata") ||
+  !rejectedQuarantine.includes("Rifiutato da mapper il 21/10/2026") ||
+  rejectedQuarantine.includes("documento illeggibile") ||
+  !rejectedQuarantine.includes('data-quarantine-reason="q-rejected"')
 ) {
-  console.error("rejected quarantine still looks pending");
+  console.error("rejected quarantine still looks pending or repeats the note");
   process.exit(2);
 }
 const rejectedBare = quarantineCard({
@@ -493,10 +497,18 @@ const rejectedBare = quarantineCard({
   order_key: "1100",
   reasons: [],
   status: "rejected",
-  history: [],
+  reason: null,
+  history: [{ decision: "rejected", actor: null, decided_at: null }],
 }, true, "mapper");
-if (!rejectedBare.includes("Rifiutato") || rejectedBare.includes("In attesa di conferma") || rejectedBare.includes("Rifiutato da")) {
-  console.error("a rejection without a person still looks pending");
+if (
+  !rejectedBare.includes("Rifiutato") ||
+  rejectedBare.includes("In attesa di conferma") ||
+  rejectedBare.includes("Rifiutato da") ||
+  rejectedBare.includes(" il ") ||
+  rejectedBare.includes("Rifiutata") ||
+  rejectedBare.includes("quarantine-reason")
+) {
+  console.error("a rejection without a person or a date still looks pending");
   process.exit(2);
 }
 const hostileReason = quarantineCard({
@@ -509,14 +521,40 @@ const hostileReason = quarantineCard({
 }, true, "mapper");
 if (
   hostileReason.includes(value) ||
+  hostileReason.includes("Motivo:") ||
   !hostileReason.includes('data-quarantine-reason="q-reason"') ||
   !hostileReason.includes("Rifiutato da mapper il 21/10/2026")
 ) {
   console.error("reject reason was written into the card html");
   process.exit(2);
 }
+const revokedRejection = quarantineCard({
+  id: "q-revoked",
+  order_key: "1098",
+  reasons: [],
+  status: "rejected",
+  reason: "documento illeggibile",
+  allowed_actions: [],
+  history: [{
+    decision: "rejected",
+    actor: "mapper",
+    decided_at: "2026-10-21T18:00:00",
+    revoked: true,
+  }],
+}, true, "mapper");
+if (
+  !revokedRejection.includes("Il documento resta rifiutato e non torna in coda.") ||
+  !revokedRejection.includes("revoked-decision") ||
+  !revokedRejection.includes("Rifiutato da mapper il 21/10/2026") ||
+  revokedRejection.includes(">Rilascia<") ||
+  revokedRejection.includes(">Rifiuta<") ||
+  revokedRejection.includes("data-reject-quarantine")
+) {
+  console.error("a revoked rejection offers the queue again");
+  process.exit(2);
+}
 const page = fs.readFileSync(require("path").join(__dirname, "../apps/web/app.js"), "utf8");
-if (!page.includes('slot.textContent = item.reason == null ? "" : String(item.reason)')) {
+if (!page.includes('slot.textContent = "Motivo: " + String(item.reason).trim()')) {
   console.error("reject reason is not assigned with textContent");
   process.exit(2);
 }

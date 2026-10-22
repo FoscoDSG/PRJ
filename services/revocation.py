@@ -463,6 +463,12 @@ def inbox_histories(conn: psycopg.Connection, recommendation_ids: list[str]) -> 
     return grouped
 
 
+_HISTORY_WHEN = {
+    "created_at": "s.created_at",
+    "decided_at": "s.decided_at",
+}
+
+
 def state_histories(
     conn: psycopg.Connection,
     *,
@@ -470,12 +476,21 @@ def state_histories(
     revocation_table: str,
     subject_ids: list[str],
     decision_for_status: dict[str, str],
+    when_column: str = "created_at",
 ) -> dict[str, list[dict]]:
+    """One history line per decided row.
+
+    Quarantine passes ``decided_at``: that is the release or the refusal.
+    An empty value stays empty. Drift and identity still use ``created_at``.
+    """
     if not subject_ids:
         return {}
+    chosen = _HISTORY_WHEN.get(when_column)
+    if chosen is None:
+        raise ValueError(f"colonna data non ammessa: {when_column}")
     rows = conn.execute(
         f"""
-        SELECT s.id::text AS id, s.status, s.actor, s.created_at,
+        SELECT s.id::text AS id, s.status, s.actor, {chosen} AS decided_at,
                rev.actor AS revoker, rev.decided_at AS revoked_at, rev.reason AS revoke_reason
         FROM {subject_table} s
         LEFT JOIN {revocation_table} rev ON rev.revoked_decision_id = s.id
@@ -494,7 +509,7 @@ def state_histories(
                 decision_id=row["id"],
                 decision=decision,
                 actor=row["actor"],
-                decided_at=row["created_at"],
+                decided_at=row["decided_at"],
                 revoker=row["revoker"],
                 revoked_at=row["revoked_at"],
                 revoke_reason=row["revoke_reason"],

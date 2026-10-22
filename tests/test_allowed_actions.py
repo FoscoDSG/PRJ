@@ -26,6 +26,7 @@ from services.allowed_actions import (
     file_actions,
     identity_actions,
     mapping_actions,
+    page_actions,
     payment_actions,
     quarantine_actions,
     recommendation_actions,
@@ -198,6 +199,13 @@ PROBES = [
     _probe("customer", customer_actions, "unmask", _CUSTOMER, "/api/pii/unmask", "unmask-pii", {"entity_id": FAKE, "reason": REASON}),
 ]
 
+_PAGE_PROBES = (
+    ("upload", "/api/ingest/document"),
+    ("confirm_confident", "/api/mappings/confirm-confident"),
+    ("materialize", "/api/materialize"),
+)
+
+
 _RENDER = r"""
 const fs = require("fs");
 const {
@@ -278,6 +286,23 @@ def test_each_role_sees_only_the_actions_the_server_allows(client: TestClient):
                 "marker": probe["marker"],
                 "expect": offered,
             })
+        me = client.get("/api/me").json()
+        assert me["allowed_actions"] == page_actions(role, company=True)
+        for name, path in _PAGE_PROBES:
+            offered = name in me["allowed_actions"]
+            if name == "upload":
+                response = client.post(
+                    path,
+                    files={"file": ("ordine.txt", b"non e un ordine", "text/plain")},
+                )
+            else:
+                response = client.post(path)
+            assert (response.status_code != 403) is offered, (
+                role,
+                name,
+                response.status_code,
+                response.text,
+            )
 
     rendered = subprocess.run(
         ["node", "-e", _RENDER],
@@ -304,6 +329,10 @@ def test_a_new_quarantine_refusal_needs_a_reason_and_the_card_keeps_it_out_of_ht
             """,
             (open_id, company_id, other_id, company_id),
         )
+        conn.execute(
+            "UPDATE app.quarantine_documents SET created_at = '2020-01-02T00:00:00Z' WHERE id = %s",
+            (open_id,),
+        )
         conn.commit()
 
     login(client, "mapper")
@@ -322,6 +351,18 @@ def test_a_new_quarantine_refusal_needs_a_reason_and_the_card_keeps_it_out_of_ht
     assert shown["reason"] == "abcde"
     assert shown["history"][0]["actor"] == "mapper"
     assert shown["history"][0]["decision"] == "rejected"
+    with connect() as conn:
+        stored = conn.execute(
+            "SELECT created_at, decided_at FROM app.quarantine_documents WHERE id = %s",
+            (open_id,),
+        ).fetchone()
+    assert stored["created_at"].year == 2020
+    assert stored["decided_at"] is not None
+    assert stored["decided_at"] != stored["created_at"]
+    from services.revocation import rome_stamp
+
+    assert shown["history"][0]["decided_at"] == rome_stamp(stored["decided_at"])
+    assert "2020" not in shown["history"][0]["decided_at"]
 
     login(client, "approver")
     blocked = client.post(f"/api/quarantine/{other_id}/reject", json={"reason": REASON})
@@ -329,22 +370,30 @@ def test_a_new_quarantine_refusal_needs_a_reason_and_the_card_keeps_it_out_of_ht
 
     script = r"""
 const { quarantineCard } = require("./apps/web/escape.js");
+const sample = JSON.parse(require("fs").readFileSync(0, "utf8"));
 const card = quarantineCard({
   id: "q-reason",
   order_key: "9",
   reasons: [],
   status: "rejected",
-  reason: "<img src=x onerror=alert(1)>",
-  history: [{ decision: "rejected", actor: "mapper", decided_at: "2026-10-21T18:00:00" }],
+  reason: sample.reason,
+  history: [{ decision: "rejected", actor: "mapper", decided_at: sample.decided_at }],
 }, true, "mapper");
-if (card.includes("<img") || card.includes("onerror")) process.exit(1);
+if (card.includes(sample.reason) || card.includes("Motivo:")) process.exit(1);
 if (!card.includes('data-quarantine-reason="q-reason"')) process.exit(2);
-if (!card.includes("Rifiutato da mapper il 21/10/2026")) process.exit(3);
+if (!card.includes("Rifiutato da mapper il " + sample.decided_at)) process.exit(3);
+if (card.includes("Rifiutata")) process.exit(4);
 const app = require("fs").readFileSync("./apps/web/app.js", "utf8");
-if (!app.includes('slot.textContent = item.reason == null ? "" : String(item.reason)')) process.exit(4);
+if (!app.includes('slot.textContent = "Motivo: " + String(item.reason).trim()')) process.exit(5);
 process.stdout.write("ok\n");
 """
-    rendered = subprocess.run(["node", "-e", script], cwd=ROOT, text=True, capture_output=True)
+    rendered = subprocess.run(
+        ["node", "-e", script],
+        cwd=ROOT,
+        input=json.dumps({"reason": "<img src=x onerror=alert(1)>", "decided_at": shown["history"][0]["decided_at"]}),
+        text=True,
+        capture_output=True,
+    )
     assert rendered.returncode == 0, rendered.stderr
 
 
@@ -364,6 +413,8 @@ def test_old_rejected_document_stays_valid_and_a_new_one_needs_a_reason():
     assert "UPDATE" not in folded
     assert "NOT VALID" in folded
     assert "VALIDATE CONSTRAINT" not in folded
+    assert "DECIDED_AT" in folded
+    assert "DEFAULT" not in folded
 
     company_id = give_company("mapper", "Rifiuti vecchi")
     old_id = str(uuid.uuid4())
@@ -384,10 +435,36 @@ def test_old_rejected_document_stays_valid_and_a_new_one_needs_a_reason():
         )
         conn.execute(path.read_text(encoding="utf-8"))
         stored = conn.execute(
-            "SELECT status, reason FROM app.quarantine_documents WHERE id = %s",
+            """
+            SELECT status, reason, decided_at, created_at
+            FROM app.quarantine_documents WHERE id = %s
+            """,
             (old_id,),
         ).fetchone()
-        assert stored == {"status": "rejected", "reason": None}
+        assert stored["status"] == "rejected"
+        assert stored["reason"] is None
+        assert stored["decided_at"] is None
+        assert stored["created_at"] is not None
+        from services.revocation import state_histories
+
+        history = state_histories(
+            conn,
+            subject_table="app.quarantine_documents",
+            revocation_table="app.quarantine_decisions",
+            subject_ids=[old_id],
+            decision_for_status={"released": "released", "rejected": "rejected"},
+            when_column="decided_at",
+        )[old_id][0]
+        assert history["decided_at"] is None
+        assert history["actor"] == "mapper"
+        rendered = subprocess.run(
+            ["node", "-e", _UNDATED_REJECTION],
+            cwd=ROOT,
+            input=json.dumps(history),
+            text=True,
+            capture_output=True,
+        )
+        assert rendered.returncode == 0, rendered.stderr
         validated = conn.execute(
             """
             SELECT convalidated
@@ -439,10 +516,10 @@ def test_old_rejected_document_stays_valid_and_a_new_one_needs_a_reason():
             (company_id, open_id),
         )
         kept = conn.execute(
-            "SELECT status, reason FROM app.quarantine_documents WHERE id = %s",
+            "SELECT status, reason, decided_at FROM app.quarantine_documents WHERE id = %s",
             (old_id,),
         ).fetchone()
-        assert kept == {"status": "rejected", "reason": None}
+        assert kept == {"status": "rejected", "reason": None, "decided_at": None}
         fresh = conn.execute(
             "SELECT status, reason FROM app.quarantine_documents WHERE id = %s",
             (open_id,),
@@ -561,6 +638,24 @@ def test_outgoing_allocation_does_not_match_a_sales_invoice_or_reduce_the_balanc
     assert rendered.stdout == "ok\n"
 
 
+_UNDATED_REJECTION = r"""
+const { quarantineCard } = require("./apps/web/escape.js");
+const entry = JSON.parse(require("fs").readFileSync(0, "utf8"));
+const card = quarantineCard({
+  id: "q-old",
+  order_key: "1",
+  reasons: [],
+  status: "rejected",
+  reason: null,
+  history: [entry],
+}, true, "mapper");
+if (!card.includes("Rifiutato da mapper")) process.exit(1);
+if (card.includes(" il ") || card.includes("Rifiutata") || card.includes("quarantine-reason")) process.exit(2);
+if (card.includes("In attesa di conferma")) process.exit(3);
+process.stdout.write("ok\n");
+"""
+
+
 _INCASSO = r"""
 const { matchesIncasso } = require("./apps/web/escape.js");
 if (!matchesIncasso({ incoming: true, direction: "outgoing" })) process.exit(1);
@@ -595,3 +690,385 @@ def test_reject_document_still_hides_another_companys_row_before_the_reason():
             )
         assert caught.value.status == 404
         conn.rollback()
+
+
+def test_release_writes_the_decision_date(client: TestClient):
+    company_id = give_company("mapper", "Rilasci")
+    quarantine_id = str(uuid.uuid4())
+    with connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO app.quarantine_documents (
+              id, source_name, order_key, reasons, status, company_id, created_at
+            )
+            VALUES (%s, 'mail', '8', '[]'::jsonb, 'open', %s, '2020-03-03T00:00:00Z')
+            """,
+            (quarantine_id, company_id),
+        )
+        conn.commit()
+    login(client, "mapper")
+    released = client.post(f"/api/quarantine/{quarantine_id}/release")
+    assert released.status_code == 200, released.text
+    shown = next(
+        item for item in client.get("/api/quarantine").json()["documents"] if item["id"] == quarantine_id
+    )
+    assert shown["status"] == "released"
+    assert shown["history"][0]["decision"] == "released"
+    assert "2020" not in (shown["history"][0]["decided_at"] or "")
+    with connect() as conn:
+        stored = conn.execute(
+            "SELECT decided_at FROM app.quarantine_documents WHERE id = %s",
+            (quarantine_id,),
+        ).fetchone()
+    from services.revocation import rome_stamp
+
+    assert stored["decided_at"] is not None
+    assert shown["history"][0]["decided_at"] == rome_stamp(stored["decided_at"])
+
+
+def test_revoking_a_rejection_leaves_the_document_rejected(client: TestClient):
+    company_id = give_company("mapper", "Annulli")
+    quarantine_id = str(uuid.uuid4())
+    with connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO app.quarantine_documents (id, source_name, order_key, reasons, status, company_id)
+            VALUES (%s, 'mail', '7', '[]'::jsonb, 'open', %s)
+            """,
+            (quarantine_id, company_id),
+        )
+        conn.commit()
+    login(client, "mapper")
+    rejected = client.post(f"/api/quarantine/{quarantine_id}/reject", json={"reason": REASON})
+    assert rejected.status_code == 200, rejected.text
+    revoked = client.post(
+        f"/api/quarantine/{quarantine_id}/revoke",
+        json={"reason": "annullo il rifiuto"},
+    )
+    assert revoked.status_code == 200, revoked.text
+    shown = next(
+        item for item in client.get("/api/quarantine").json()["documents"] if item["id"] == quarantine_id
+    )
+    assert shown["status"] == "rejected"
+    assert "release" not in shown["allowed_actions"]
+    assert "reject" not in shown["allowed_actions"]
+    assert shown["history"][0]["revoked"] is True
+    rendered = subprocess.run(
+        ["node", "-e", _REVOKED_REJECTION],
+        cwd=ROOT,
+        input=json.dumps(shown),
+        text=True,
+        capture_output=True,
+    )
+    assert rendered.returncode == 0, rendered.stderr
+    assert rendered.stdout == "ok\n"
+
+
+def test_correct_stays_off_an_outgoing_payment():
+    outgoing = dict(_OPEN_PAYMENT)
+    outgoing["payment"] = {**_OPEN_PAYMENT["payment"], "direction": "outgoing"}
+    outgoing["allowed_actions"] = payment_actions("approver", outgoing, company=True)
+    incoming = dict(_OPEN_PAYMENT)
+    incoming["allowed_actions"] = payment_actions("approver", _OPEN_PAYMENT, company=True)
+    assert outgoing["allowed_actions"] == ["confirm", "reject"]
+    assert incoming["allowed_actions"] == ["confirm", "correct", "reject"]
+    rendered = subprocess.run(
+        ["node", "-e", _OUTGOING_CORRECT],
+        cwd=ROOT,
+        input=json.dumps({"outgoing": outgoing, "incoming": incoming}),
+        text=True,
+        capture_output=True,
+    )
+    assert rendered.returncode == 0, rendered.stderr
+    assert rendered.stdout == "ok\n"
+
+
+def test_the_page_uses_server_actions_for_its_buttons_and_file_types():
+    assert page_actions("mapper", company=False) == []
+    assert page_actions("approver", company=True) == []
+    assert page_actions("admin", company=True) == ["upload", "confirm_confident", "materialize"]
+    hostile = "<img src=x onerror=alert(1)>"
+    choices = [{"code": "order", "label": hostile}, {"code": "not_sure", "label": "Non so"}]
+    cases = []
+    for role in ROLES:
+        sample = {"file_id": "f1", "source_name": "ordini", "choices": choices}
+        cases.append({
+            "role": role,
+            "allowed_actions": file_actions(role, sample, company=True),
+            "choices": choices,
+            "hostile": hostile,
+        })
+    cases.append({
+        "role": "mapper-without-company",
+        "allowed_actions": file_actions("mapper", {"file_id": "f1", "choices": choices}, company=False),
+        "choices": choices,
+        "hostile": hostile,
+    })
+    rendered = subprocess.run(
+        ["node", "-e", _PAGE_DOM],
+        cwd=ROOT,
+        input=json.dumps(cases),
+        text=True,
+        capture_output=True,
+    )
+    assert rendered.returncode == 0, rendered.stderr
+    assert rendered.stdout == "ok\n"
+
+
+def test_balance_uses_the_newest_payment_direction():
+    company_id = give_company("mapper", "Direzioni")
+    model = load_merged()
+
+    def payment(conn, source_key: str, direction: str) -> str:
+        return write_payment(
+            conn,
+            model,
+            company_id=company_id,
+            source_key=source_key,
+            direction=direction,
+            paid_at="2026-04-01",
+            amount=Decimal("40.00"),
+            iban=IBAN,
+            causale="prova",
+            counterparty_name="Cliente Prova",
+            counterparty_vat="IT00000000001",
+            reference="FT-9",
+            source="banca",
+            source_class="external",
+            label_origin="rule",
+        )
+
+    def later_direction(conn, payment_id: str, direction: str) -> None:
+        current = conn.execute(
+            """
+            SELECT id FROM app.facts
+            WHERE entity_id = %s::uuid AND property = 'direction' AND valid_to IS NULL
+            """,
+            (payment_id,),
+        ).fetchone()
+        conn.execute(
+            "UPDATE app.facts SET valid_from = '2019-01-01T00:00:00Z' WHERE id = %s",
+            (current["id"],),
+        )
+        conn.execute(
+            """
+            INSERT INTO app.facts (
+              id, entity_id, property, value, classification, origin, source,
+              confidence, valid_from, valid_to, source_class, confidence_method,
+              confidence_rule, company_id
+            )
+            SELECT %s, entity_id, property, %s::jsonb, classification, origin, source,
+                   confidence, '2024-06-01T00:00:00Z', NULL, source_class, confidence_method,
+                   confidence_rule, company_id
+            FROM app.facts WHERE id = %s
+            """,
+            (str(uuid.uuid4()), json.dumps(direction), current["id"]),
+        )
+
+    def allocate(conn, payment_id: str, invoice_id: str, amount: str) -> None:
+        conn.execute(
+            """
+            INSERT INTO app.payment_decisions (
+              id, proposal_id, payment_entity_id, company_id, decision,
+              actor, actor_role, invoice_entity_id, allocated_amount,
+              failed_criteria, reason, source_name
+            )
+            VALUES (
+              %s, NULL, %s, %s, 'correct',
+              'approver', 'approver', %s, %s,
+              '[]'::jsonb, 'assegno gia salvato', 'banca'
+            )
+            """,
+            (str(uuid.uuid4()), payment_id, company_id, invoice_id, Decimal(amount)),
+        )
+
+    with connect() as conn:
+        invoice_id = write_invoice(
+            conn,
+            model,
+            company_id=company_id,
+            number="FT-9",
+            document_type="TD01",
+            issued_at="2026-04-01",
+            amount=Decimal("100.00"),
+            currency="EUR",
+            customer_name="Cliente Prova",
+            customer_vat="IT00000000001",
+            order_number=None,
+            due_dates=["2026-04-30"],
+            lines=[],
+            source="fatture",
+            source_class="system_of_record",
+            label_origin="rule",
+        )
+        turned_out = payment(conn, "INC-OUT-NEW", "incoming")
+        turned_in = payment(conn, "INC-IN-NEW", "outgoing")
+        later_direction(conn, turned_out, "outgoing")
+        later_direction(conn, turned_in, "incoming")
+        allocate(conn, turned_out, invoice_id, "25.00")
+        allocate(conn, turned_in, invoice_id, "10.00")
+        assert remaining_balance(conn, company_id, invoice_id) == Decimal("90.00")
+        conn.rollback()
+
+
+_REVOKED_REJECTION = r"""
+const { quarantineCard } = require("./apps/web/escape.js");
+const item = JSON.parse(require("fs").readFileSync(0, "utf8"));
+const card = quarantineCard(item, true, "mapper");
+if (!card.includes("Il documento resta rifiutato e non torna in coda.")) process.exit(1);
+if (card.includes(">Rilascia<") || card.includes(">Rifiuta<") || card.includes("data-reject-quarantine")) process.exit(2);
+if (!card.includes("revoked-decision") || !card.includes("Rifiutato da ")) process.exit(3);
+process.stdout.write("ok\n");
+"""
+
+
+_OUTGOING_CORRECT = r"""
+const { inboxCard } = require("./apps/web/escape.js");
+const sample = JSON.parse(require("fs").readFileSync(0, "utf8"));
+const outgoing = inboxCard(sample.outgoing, "approver", true);
+const incoming = inboxCard(sample.incoming, "approver", true);
+if (outgoing.includes('data-act="correct-match"') || outgoing.includes(">Correggi<")) process.exit(1);
+if (!outgoing.includes('data-act="confirm-match"') || !outgoing.includes('data-act="reject-match"')) process.exit(2);
+if (!incoming.includes('data-act="correct-match"')) process.exit(3);
+process.stdout.write("ok\n");
+"""
+
+
+_PAGE_DOM = r"""
+const fs = require("fs");
+const vm = require("vm");
+const ieolEscape = require("./apps/web/escape.js");
+const cases = JSON.parse(fs.readFileSync(0, "utf8"));
+
+function makeElement(tag) {
+  const el = {
+    tagName: tag || "div",
+    hidden: false,
+    textContent: "",
+    className: "",
+    value: "",
+    type: "",
+    disabled: false,
+    childNodes: [],
+    dataset: {},
+    style: {},
+    classList: { toggle() {}, add() {}, remove() {} },
+    _listeners: {},
+    addEventListener(type, fn) { this._listeners[type] = fn; },
+    append(...nodes) { this.childNodes.push(...nodes); },
+    appendChild(node) { this.childNodes.push(node); return node; },
+    replaceChildren(...nodes) { this.childNodes = nodes; },
+    setAttribute(name, value) { this[name] = value; },
+    removeAttribute() {},
+    querySelector() { return null; },
+    querySelectorAll() { return []; },
+  };
+  return el;
+}
+const cache = new Map();
+function query(selector) {
+  const key = String(selector);
+  if (!cache.has(key)) cache.set(key, makeElement(key));
+  return cache.get(key);
+}
+const document = {
+  querySelector: query,
+  querySelectorAll() { return []; },
+  createElement(tag) { return makeElement(tag); },
+  createTextNode(text) { return { nodeType: 3, textContent: String(text), childNodes: [] }; },
+};
+const context = {
+  console,
+  document,
+  fetch: async (url) => {
+    if (String(url).includes("/api/me")) return { ok: false, status: 401, json: async () => ({}) };
+    return {
+      ok: true,
+      json: async () => ({
+        recommendations: [], documents: [], drift: [], mappings: [], files: [],
+        events: [], total: 0, offset: 0, types: [], processes: [],
+      }),
+    };
+  },
+  FormData: class {},
+  setTimeout,
+  clearTimeout,
+};
+context.globalThis = context;
+context.ieolEscape = ieolEscape;
+context.window = context;
+vm.createContext(context);
+vm.runInContext(fs.readFileSync("./apps/web/app.js", "utf8"), context);
+const { fileTypeActions, enter } = context.ieolPage;
+
+function walk(node, visit) {
+  visit(node);
+  for (const child of node.childNodes || []) walk(child, visit);
+}
+
+for (const row of cases) {
+  const bar = fileTypeActions({
+    file_id: "f1",
+    choices: row.choices,
+    allowed_actions: row.allowed_actions,
+  });
+  const buttons = [];
+  const options = [];
+  let htmlAssigned = false;
+  walk(bar, (node) => {
+    if (node.innerHTML != null) htmlAssigned = true;
+    if (node.tagName === "button") buttons.push(node.textContent);
+    if (node.tagName === "option") options.push(node.textContent);
+  });
+  const listed = row.allowed_actions;
+  if (buttons.includes("Corretto") !== listed.includes("correct")) {
+    console.error(row.role, "correct", buttons, listed);
+    process.exit(1);
+  }
+  const wrongListed = listed.includes("wrong") || listed.includes("not_sure");
+  if (buttons.includes("Non è questo tipo") !== wrongListed) {
+    console.error(row.role, "wrong", buttons, listed);
+    process.exit(2);
+  }
+  if (htmlAssigned) {
+    console.error(row.role, "file type used innerHTML");
+    process.exit(3);
+  }
+  if (wrongListed && !options.includes(row.hostile)) {
+    console.error(row.role, "choice label was not textContent");
+    process.exit(3);
+  }
+  if (!wrongListed && options.includes(row.hostile)) {
+    console.error(row.role, "choice shown without an allowed action");
+    process.exit(3);
+  }
+  if (wrongListed) {
+    let picker = null;
+    let wrong = null;
+    walk(bar, (node) => {
+      if (node.className === "file-type-choice") picker = node;
+      if (node.textContent === "Non è questo tipo") wrong = node;
+    });
+    if (!picker || !picker.hidden || !wrong || !wrong._listeners.click) process.exit(4);
+    wrong._listeners.click();
+    if (picker.hidden) process.exit(5);
+  }
+}
+
+function hidden(id) { return query(id).hidden; }
+enter({ username: "approver", role: "approver", has_company: true, demo_mode: false, allowed_actions: [] });
+if (!hidden("#upload-label") || !hidden("#confirm-high") || !hidden("#materialize")) process.exit(6);
+enter({ username: "mapper", role: "mapper", has_company: true, demo_mode: false });
+if (!hidden("#upload-label") || !hidden("#confirm-high") || !hidden("#materialize")) process.exit(7);
+enter({
+  username: "mapper",
+  role: "mapper",
+  has_company: true,
+  demo_mode: false,
+  allowed_actions: ["upload", "confirm_confident", "materialize"],
+});
+if (hidden("#upload-label") || hidden("#confirm-high") || hidden("#materialize")) process.exit(8);
+enter({ username: "mapper", role: "mapper", has_company: true, demo_mode: false, allowed_actions: ["upload"] });
+if (hidden("#upload-label") || !hidden("#confirm-high") || !hidden("#materialize")) process.exit(9);
+process.stdout.write("ok\n");
+"""

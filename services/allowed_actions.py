@@ -1,13 +1,15 @@
 """One function per card. The page shows a button only when its name is here.
 
-The same function is what the route then allows for this role. A name left
-out is a 403. A name included is not refused because of the role. A viewer
-without a company receives an empty list: the route would answer 403.
+The routes keep their own checks. The tests verify that this list and those
+checks coincide: a name left out is a 403, and a name included is not refused
+because of the role. A viewer without a company receives an empty list.
 """
 
 from __future__ import annotations
 
 from typing import Any, Callable
+
+from services.ontology_view import is_incoming
 
 MAPPER = frozenset({"admin", "mapper"})
 APPROVER = frozenset({"admin", "approver"})
@@ -122,15 +124,34 @@ def payment_actions(
     *,
     company: bool = True,
 ) -> list[str]:
-    """Confirm, correct or reject a proposed match. Revoke after that decision."""
+    """Confirm or reject a proposed match. Correct only an incoming payment.
+
+    ``is_incoming`` is the same rule as the balance and the measure, so
+    Correggi stays off an outgoing payment. Revoke comes after a decision.
+    """
     if not company or role not in APPROVER:
         return []
     actions: list[str] = []
     if _status(item) == "proposed":
-        actions.extend(["confirm", "correct", "reject"])
+        actions.append("confirm")
+        payment = (item or {}).get("payment")
+        subject = payment if isinstance(payment, dict) else item
+        if is_incoming(subject):
+            actions.append("correct")
+        actions.append("reject")
     if _open_decision(item):
         actions.append("revoke")
     return actions
+
+
+def page_actions(role: str, *, company: bool = True) -> list[str]:
+    """Buttons of the Dati page: upload, confirm strong suggestions, rebuild.
+
+    The page shows a button only when its name is in this list.
+    """
+    if not company or role not in MAPPER:
+        return []
+    return ["upload", "confirm_confident", "materialize"]
 
 
 def file_actions(

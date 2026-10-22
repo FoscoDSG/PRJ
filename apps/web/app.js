@@ -68,10 +68,11 @@ function enter(me) {
   document.querySelector("#session").hidden = false;
   document.querySelector("#who").textContent = `${me.username} · ${me.role}`;
   document.querySelector("#load-fixture").hidden = !showFixtureButton(state.role, state.demoMode);
-  const canWrite = canWriteDecisions(state.hasCompany);
-  document.querySelector("#upload-label").hidden = !canWrite;
-  document.querySelector("#confirm-high").hidden = !canWrite;
-  document.querySelector("#materialize").hidden = !canWrite;
+  const pageActions = Array.isArray(me.allowed_actions) ? me.allowed_actions : [];
+  const allowsPage = (action) => pageActions.includes(action);
+  document.querySelector("#upload-label").hidden = !allowsPage("upload");
+  document.querySelector("#confirm-high").hidden = !allowsPage("confirm_confident");
+  document.querySelector("#materialize").hidden = !allowsPage("materialize");
   const companyNotice = document.querySelector("#company-notice");
   companyNotice.hidden = state.hasCompany;
   companyNotice.textContent = state.hasCompany ? "" : companyUploadNotice();
@@ -279,7 +280,9 @@ async function loadMappings() {
   quarantine.innerHTML = held.documents.map((item) => quarantineCard(item, canWrite, state.role)).join("");
   for (const item of held.documents) {
     const slot = quarantine.querySelector(`[data-quarantine-reason="${CSS.escape(String(item.id))}"]`);
-    if (slot) slot.textContent = item.reason == null ? "" : String(item.reason);
+    if (slot && item.reason != null && String(item.reason).trim() !== "") {
+      slot.textContent = "Motivo: " + String(item.reason).trim();
+    }
   }
   quarantine.querySelectorAll("button[data-release]").forEach((button) => {
     button.addEventListener("click", async () => {
@@ -713,5 +716,7 @@ document.querySelector("#audit-next").addEventListener("click", () => {
   auditState.offset += auditState.limit;
   loadAudit();
 });
+
+globalThis.ieolPage = { fileTypeActions, enter };
 
 boot();

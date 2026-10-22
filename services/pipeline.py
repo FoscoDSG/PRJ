@@ -202,7 +202,7 @@ def release_document(
     conn.execute(
         """
         UPDATE app.quarantine_documents
-        SET status = 'released', company_id = %s, actor = %s
+        SET status = 'released', company_id = %s, actor = %s, decided_at = now()
         WHERE id = %s
         """,
         (company_id, actor, quarantine_id),
@@ -235,7 +235,7 @@ def reject_document(
     conn.execute(
         """
         UPDATE app.quarantine_documents
-        SET status = 'rejected', company_id = %s, actor = %s, reason = %s
+        SET status = 'rejected', company_id = %s, actor = %s, reason = %s, decided_at = now()
         WHERE id = %s
         """,
         (company_id, actor, motive, quarantine_id),

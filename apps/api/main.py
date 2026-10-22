@@ -40,6 +40,7 @@ from services.allowed_actions import (
     file_actions,
     identity_actions,
     mapping_actions,
+    page_actions,
     payment_actions,
     quarantine_actions,
     recommendation_actions,
@@ -199,7 +200,13 @@ def _public_user(user: dict) -> dict:
     """
     with app_connect() as conn:
         company_id = company_id_for_user(conn, user["username"])
-    return {**user, "demo_mode": demo_mode(), "has_company": company_id is not None}
+    has_company = company_id is not None
+    return {
+        **user,
+        "demo_mode": demo_mode(),
+        "has_company": has_company,
+        "allowed_actions": page_actions(user["role"], company=has_company),
+    }
 
 
 def _require_company(username: str) -> None:
@@ -332,6 +339,7 @@ def quarantine(user: dict = Depends(require_user)) -> dict:
             revocation_table="app.quarantine_decisions",
             subject_ids=[row["id"] for row in rows],
             decision_for_status={"released": "released", "rejected": "rejected"},
+            when_column="decided_at",
         )
     for row in rows:
         row["history"] = histories.get(row["id"], [])
