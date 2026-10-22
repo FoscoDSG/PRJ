@@ -784,9 +784,9 @@ def test_orphan_stock_is_corrected_only_by_ieol_admin(client: TestClient):
 
 _CARD_BUTTONS = r"""
 const { driftCard, quarantineCard, identityCard, inboxCard, customerDetail, escapeHtml } = require("./apps/web/escape.js");
-const drift = { id: "d1", source_name: "ordini", diff: { added: ["x"] } };
-const held = { id: "q1", order_key: "1099", source_name: "mail", reasons: [] };
-const review = { id: "r1", entity_type: "Customer", reason: "Nomi vicini", score: 0.72 };
+const drift = { id: "d1", source_name: "ordini", diff: { added: ["x"] }, allowed_actions: [] };
+const held = { id: "q1", order_key: "1099", source_name: "mail", reasons: [], allowed_actions: [] };
+const review = { id: "r1", entity_type: "Customer", reason: "Nomi vicini", score: 0.72, allowed_actions: [] };
 const hiddenDrift = driftCard(drift, false);
 const hiddenHeld = quarantineCard(held, false);
 const hiddenReview = identityCard(review, false);
@@ -796,14 +796,17 @@ if (hiddenDrift.includes("<button") || hiddenHeld.includes("<button") || hiddenR
 if (!hiddenDrift.includes("ordini") || !hiddenHeld.includes("1099") || !hiddenReview.includes("Customer")) {
   process.exit(2);
 }
-if (!driftCard(drift).includes("Segna visto")) process.exit(3);
-if (!quarantineCard(held).includes("Rilascia")) process.exit(4);
-if (!identityCard(review).includes("Conferma fusione") || !identityCard(review).includes("Tieni separati")) {
+const shownDrift = Object.assign({}, drift, { allowed_actions: ["acknowledge"] });
+if (!driftCard(shownDrift).includes("Segna visto")) process.exit(3);
+const shownHeld = Object.assign({}, held, { allowed_actions: ["release"] });
+if (!quarantineCard(shownHeld).includes("Rilascia")) process.exit(4);
+const shownReview = Object.assign({}, review, { allowed_actions: ["confirm", "reject"] });
+if (!identityCard(shownReview).includes("Conferma fusione") || !identityCard(shownReview).includes("Tieni separati")) {
   process.exit(5);
 }
 const item = {
   id: "i1", status: "proposed", risk: "low", order_key: "1024", problem: "manca",
-  evidence_hash: "abc", actions: [], evidence: [],
+  evidence_hash: "abc", actions: [], evidence: [], allowed_actions: [],
 };
 const notice = "Non hai ancora un'azienda assegnata. Chiedi all'amministratore di collegarti.";
 const hiddenInbox = inboxCard(item, "approver", false);
@@ -811,29 +814,34 @@ if (hiddenInbox.includes("data-act") || hiddenInbox.includes("decision-bar")) pr
 if (!hiddenInbox.includes("1024") || !hiddenInbox.includes(escapeHtml(notice))) process.exit(7);
 if (hiddenInbox.includes("Sola lettura")) process.exit(9);
 const operatorInbox = inboxCard(item, "operator", true);
-if (!operatorInbox.includes("Sola lettura: l'operatore non approva.")) process.exit(10);
+if (operatorInbox.includes("data-act") || operatorInbox.includes("Sola lettura")) process.exit(10);
 if (operatorInbox.includes(notice)) process.exit(11);
-const ready = Object.assign({}, item, { status: "dry_run_ok" });
-if (!inboxCard(ready, "approver").includes("Esegui")) process.exit(12);
-if (inboxCard(ready, "approver", false).includes("Esegui") || inboxCard(ready, "admin", false).includes("data-act")) {
+const ready = Object.assign({}, item, { status: "dry_run_ok", allowed_actions: ["execute"] });
+if (!inboxCard(ready, "operator").includes("Esegui")) process.exit(12);
+const quiet = Object.assign({}, ready, { allowed_actions: [] });
+if (inboxCard(quiet, "approver", false).includes("Esegui") || inboxCard(quiet, "admin", false).includes("data-act")) {
   process.exit(13);
 }
-const executed = Object.assign({}, item, { status: "executed", executed: true });
+const executed = Object.assign({}, item, { status: "executed", executed: true, allowed_actions: [] });
 if (inboxCard(executed, "approver").includes(">Esegui<") || inboxCard(executed, "admin").includes(">Esegui<")) {
   process.exit(16);
 }
 const openDecision = Object.assign({}, item, {
   status: "dry_run_ok",
   history: [{ id: "dec-1", decision: "approve", revoked: false, actor: "approver" }],
+  allowed_actions: [],
 });
 if (inboxCard(openDecision, "operator", true).includes(">Annulla<")) process.exit(17);
-if (!inboxCard(openDecision, "approver", true).includes(">Annulla<")) process.exit(18);
-if (!inboxCard(openDecision, "admin", true).includes(">Annulla<")) process.exit(19);
-const customer = { id: "c1", company_name: "ACME", business_key: "C1", orders: [], edges: [], facts: [] };
-if (!customerDetail(customer, "admin").includes("Mostra dati personali")) process.exit(14);
-if (customerDetail(customer, "admin", false).includes("Mostra dati personali") || customerDetail(customer, "admin", false).includes("unmask-pii")) {
+const revocable = Object.assign({}, openDecision, { allowed_actions: ["revoke"] });
+if (!inboxCard(revocable, "operator", true).includes(">Annulla<")) process.exit(18);
+if (!inboxCard(revocable, "admin", true).includes(">Annulla<")) process.exit(19);
+const customer = { id: "c1", company_name: "ACME", business_key: "C1", orders: [], edges: [], facts: [], allowed_actions: ["unmask"] };
+if (!customerDetail(customer, "operator").includes("Mostra dati personali")) process.exit(14);
+const hiddenCustomer = Object.assign({}, customer, { allowed_actions: [] });
+if (customerDetail(hiddenCustomer, "admin", false).includes("Mostra dati personali") || customerDetail(hiddenCustomer, "admin", false).includes("unmask-pii")) {
   process.exit(15);
 }
-if (!inboxCard(item, "approver").includes("decision-bar")) process.exit(8);
+const listed = Object.assign({}, item, { allowed_actions: ["approve", "modify", "reject"] });
+if (!inboxCard(listed, "operator").includes("decision-bar")) process.exit(8);
 console.log("ok");
 """

@@ -7,7 +7,10 @@ Remaining = invoice amount
 The last decision of each rule proposal counts. A manual allocation,
 one a person recorded without a proposal, counts on its own: two
 allocations of the same payment are two amounts. A revoked decision
-does not count. A match that is only proposed does not. This function
+does not count. A match that is only proposed does not. An allocation
+that comes from an outgoing payment does not either: ``is_incoming``
+is the same rule the measure uses, so the residual and the measure
+stay aligned. A payment with no direction still counts. This function
 never writes.
 """
 
@@ -18,6 +21,7 @@ from decimal import Decimal
 import psycopg
 
 from services.agent.payment_match import money
+from services.ontology_view import is_incoming
 from services.text import stable
 
 _ZERO = Decimal("0.00")
@@ -111,11 +115,33 @@ def _human_allocations(
         else:
             key = f"decision:{row['id']}"
         latest[key] = row
+    directions = _payment_directions(
+        conn,
+        {row["payment_entity_id"] for row in latest.values() if row.get("payment_entity_id")},
+    )
     total = _ZERO
     for row in latest.values():
         if row["decision"] not in _KEPT:
             continue
         if row["invoice_entity_id"] != invoice_id or row["allocated_amount"] is None:
             continue
+        if not is_incoming({"direction": directions.get(row["payment_entity_id"])}):
+            continue
         total += money(row["allocated_amount"])
     return money(total)
+
+
+def _payment_directions(conn: psycopg.Connection, payment_ids: set[str]) -> dict[str, str | None]:
+    """Direction fact of each payment. A missing fact is absent from the map."""
+    if not payment_ids:
+        return {}
+    rows = conn.execute(
+        """
+        SELECT entity_id::text AS id, value #>> '{}' AS direction
+        FROM app.facts
+        WHERE property = 'direction' AND valid_to IS NULL
+          AND entity_id = ANY(%s::uuid[])
+        """,
+        (list(payment_ids),),
+    ).fetchall()
+    return {row["id"]: row["direction"] for row in rows}

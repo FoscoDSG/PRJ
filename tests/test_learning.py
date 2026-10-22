@@ -925,6 +925,7 @@ const learned = mappingRow({
   decision_id: "dec-1",
   band: "verificare",
   band_note: "sicuro",
+  allowed_actions: ["confirm", "reject", "revoke"],
 });
 if (!learned.includes("Da una correzione di ada del 17/10/2026")) process.exit(1);
 if (!learned.includes("Annulla correzione")) process.exit(2);

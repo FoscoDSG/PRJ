@@ -16,7 +16,7 @@ import psycopg
 from ontology.loader import Ontology
 from services.cash.balance import remaining_balance
 from services.errors import AppError
-from services.ontology_view import field_label, payment_label, payment_words, type_label
+from services.ontology_view import field_label, is_incoming, payment_label, payment_words, type_label
 from services.pii import (
     MASK,
     RESERVED,
@@ -192,6 +192,8 @@ def _present(
         "fields": fields,
         "links": _links(conn, row["id"], company_id, model),
     }
+    if row["type"] == "Payment":
+        payload["incoming"] = is_incoming({"direction": direction})
     if row["type"] == "Invoice":
         balance = remaining_balance(conn, company_id, row["id"])
         payload["remaining"] = None if balance is None else stable(balance)

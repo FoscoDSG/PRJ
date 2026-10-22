@@ -680,8 +680,10 @@ if (hidden.includes("<button") || hidden.includes("Conferma") || hidden.includes
   process.exit(5);
 }
 if (!hidden.includes("ordini") || !hidden.includes("cod")) process.exit(6);
-const shown = mappingRow(item, true);
+const shownItem = Object.assign({}, item, { allowed_actions: ["confirm", "reject", "revoke"] });
+const shown = mappingRow(shownItem, true);
 if (!shown.includes(">Conferma<") || !shown.includes(">Rifiuta<") || !shown.includes("Annulla correzione")) process.exit(7);
-if (!mappingRow(item).includes(">Conferma<")) process.exit(8);
+if (!mappingRow(shownItem).includes(">Conferma<")) process.exit(8);
+if (!mappingRow(shownItem, false).includes(">Conferma<")) process.exit(9);
 console.log("ok");
 """

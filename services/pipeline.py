@@ -217,23 +217,37 @@ def reject_document(
     *,
     actor: str,
     company_id: str | None,
+    reason: str | None = None,
 ) -> dict:
-    """Refuse a quarantined document. Another company's document is absent."""
+    """Refuse a quarantined document. Another company's document is absent.
+
+    The motive is required only once this company's open document is in
+    hand. A missing document stays a 404, and a short motive is a 422.
+    Spaces do not count toward the five characters.
+    """
     _require_mapper(role)
     if not company_id:
         raise AppError(403, USER_WITHOUT_COMPANY)
     row = _lock_quarantine(conn, quarantine_id, company_id)
     if row["status"] != "open":
         raise AppError(409, "Il documento non è in quarantena")
+    motive = _reject_reason(reason)
     conn.execute(
         """
         UPDATE app.quarantine_documents
-        SET status = 'rejected', company_id = %s, actor = %s
+        SET status = 'rejected', company_id = %s, actor = %s, reason = %s
         WHERE id = %s
         """,
-        (company_id, actor, quarantine_id),
+        (company_id, actor, motive, quarantine_id),
     )
-    return {"id": quarantine_id, "status": "rejected"}
+    return {"id": quarantine_id, "status": "rejected", "reason": motive}
+
+
+def _reject_reason(reason: str | None) -> str:
+    cleaned = (reason or "").strip()
+    if len(cleaned) < 5 or len(cleaned) > 500:
+        raise AppError(422, "Scrivi il motivo del rifiuto (almeno 5 caratteri).")
+    return cleaned
 
 
 def _lock_quarantine(conn: psycopg.Connection, quarantine_id: str, company_id: str) -> dict:

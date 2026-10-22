@@ -62,6 +62,13 @@ class RejectBody(BaseModel):
     reason: str = Field(min_length=5, max_length=500)
 
 
+class QuarantineRejectBody(BaseModel):
+    """Motive of a quarantine refusal. A short or missing motive is refused later."""
+
+    model_config = ConfigDict(extra="forbid")
+    reason: str | None = None
+
+
 class RevokeBody(BaseModel):
     """Motive of a revocation. company_id is not accepted."""
 
