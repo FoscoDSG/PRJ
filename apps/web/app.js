@@ -1,7 +1,14 @@
 const login = document.querySelector("#login");
 const app = document.querySelector("#app");
 const flash = document.querySelector("#flash");
-const state = { role: "", demoMode: false, ontology: null, todayProcess: "", objectType: "Order" };
+const state = {
+  role: "",
+  demoMode: false,
+  ontology: null,
+  todayProcess: "",
+  objectType: "Order",
+  objectFilter: "Order",
+};
 
 async function api(path, options = {}) {
   const headers = { ...(options.headers || {}) };
@@ -39,6 +46,7 @@ const {
   companyUploadNotice,
   canWriteDecisions,
   matchesIncasso,
+  matchesPagamento,
   allowsAction,
 } = globalThis.ieolEscape;
 
@@ -433,15 +441,40 @@ async function ensureOntology() {
   return state.ontology;
 }
 
+function objectPageFilters(types) {
+  const filters = [];
+  for (const typeDef of types || []) {
+    if (!typeDef || !typeDef.name) continue;
+    filters.push({
+      id: typeDef.name,
+      type: typeDef.name,
+      label: typeDef.label || typeDef.name,
+    });
+    if (typeDef.name === "Payment") {
+      filters.push({ id: "Pagamento", type: "Payment", label: "Pagamento" });
+    }
+  }
+  return filters;
+}
+
+function objectsForFilter(objects, filterId) {
+  const rows = Array.isArray(objects) ? objects : [];
+  if (filterId === "Payment") return rows.filter((object) => matchesIncasso(object));
+  if (filterId === "Pagamento") return rows.filter((object) => matchesPagamento(object));
+  return rows;
+}
+
 async function loadObjects() {
   const ontology = await ensureOntology();
   const types = OBJECT_PAGE_TYPES
     .map((name) => (ontology.types || []).find((item) => item && item.name === name))
     .filter(Boolean);
-  if (types.length && !types.some((item) => item.name === state.objectType)) {
-    state.objectType = types[0].name;
+  const filters = objectPageFilters(types);
+  if (filters.length && !filters.some((item) => item.id === state.objectFilter)) {
+    state.objectFilter = filters[0].id;
+    state.objectType = filters[0].type;
   }
-  renderObjectTypes(types);
+  renderObjectTypes(filters);
   const list = document.querySelector("#order-list");
   const detail = document.querySelector("#order-detail");
   detail.hidden = true;
@@ -456,8 +489,7 @@ async function loadObjects() {
     list.append(note);
     return;
   }
-  let objects = data.objects || [];
-  if (state.objectType === "Payment") objects = objects.filter((object) => matchesIncasso(object));
+  const objects = objectsForFilter(data.objects || [], state.objectFilter);
   if (!objects.length) {
     list.replaceChildren();
     const note = document.createElement("p");
@@ -469,18 +501,19 @@ async function loadObjects() {
   bindObjectOpen(list);
 }
 
-function renderObjectTypes(types) {
+function renderObjectTypes(filters) {
   const root = document.querySelector("#object-types");
   root.replaceChildren();
-  for (const typeDef of types) {
+  for (const filter of filters) {
     const button = document.createElement("button");
     button.type = "button";
     button.className = "ghost";
-    button.setAttribute("aria-pressed", state.objectType === typeDef.name ? "true" : "false");
-    button.textContent = typeDef.label || typeDef.name;
+    button.setAttribute("aria-pressed", state.objectFilter === filter.id ? "true" : "false");
+    button.textContent = filter.label;
     button.addEventListener("click", () => {
-      state.objectType = typeDef.name;
-      loadObjects();
+      state.objectFilter = filter.id;
+      state.objectType = filter.type;
+      return loadObjects();
     });
     root.append(button);
   }
@@ -717,6 +750,6 @@ document.querySelector("#audit-next").addEventListener("click", () => {
   loadAudit();
 });
 
-globalThis.ieolPage = { fileTypeActions, enter };
+globalThis.ieolPage = { fileTypeActions, enter, objectPageFilters, objectsForFilter, loadObjects };
 
 boot();
