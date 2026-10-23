@@ -885,6 +885,7 @@ def adjust_on_hand(
     on_hand: int,
     company_id: str | None = None,
     role: str | None = None,
+    ieol_admin: bool = False,
 ) -> list[str]:
     import json
 
@@ -909,7 +910,8 @@ def adjust_on_hand(
     ).fetchone()
     if row is None:
         raise AppError(404, "Giacenza assente")
-    if row["owner_id"] is None and role != "admin":
+    del role
+    if row["owner_id"] is None and not ieol_admin:
         raise AppError(403, ORPHAN_STOCK)
     prop = model.require_prop("StockPosition", "on_hand")
     _put_fact(

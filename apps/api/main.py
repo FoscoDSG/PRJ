@@ -47,7 +47,14 @@ from services.allowed_actions import (
     stamp,
 )
 from services.audit_read import list_readable
-from services.db import app_connect, assert_demo_database, authenticate, demo_mode, ensure_ready
+from services.db import (
+    app_connect,
+    assert_demo_database,
+    authenticate,
+    demo_mode,
+    ensure_ready,
+    ieol_admin_for_user,
+)
 from services.evidence import evidence_key
 from services.pii import install_log_redaction, read_cleartext, unmask_entity
 from services.migrate import require_migrated
@@ -151,10 +158,21 @@ async def app_error(_request: Request, exc: AppError) -> JSONResponse:
 
 
 def require_user(request: Request) -> dict:
-    user = request.session.get("user")
-    if not user:
+    stored = request.session.get("user")
+    if not stored:
         raise AppError(401, "Accesso richiesto")
-    return user
+    with app_connect() as conn:
+        flag = ieol_admin_for_user(conn, stored["username"])
+    if "ieol_admin" in stored:
+        request.session["user"] = {
+            "username": stored["username"],
+            "role": stored["role"],
+        }
+    return {
+        "username": stored["username"],
+        "role": stored["role"],
+        "ieol_admin": flag,
+    }
 
 
 def _ok(payload):
@@ -177,7 +195,7 @@ def login(request: Request, body: LoginBody) -> dict:
         user = authenticate(conn, body.username, body.password)
     if user is None:
         raise AppError(401, "Credenziali non valide")
-    request.session["user"] = user
+    request.session["user"] = {"username": user["username"], "role": user["role"]}
     return _public_user(user)
 
 
@@ -193,16 +211,19 @@ def me(user: dict = Depends(require_user)) -> dict:
 
 
 def _public_user(user: dict) -> dict:
-    """Session fields plus whether this user already has a company.
+    """Session fields plus the company flag and the IEOL administrator flag.
 
     The company id stays on the server. The page only needs the boolean,
     and it is read again here so an assignment is visible without a new login.
+    ieol_admin is read again too, so removing the flag takes effect at once.
     """
     with app_connect() as conn:
         company_id = company_id_for_user(conn, user["username"])
+        ieol_admin = ieol_admin_for_user(conn, user["username"])
     has_company = company_id is not None
     return {
         **user,
+        "ieol_admin": ieol_admin,
         "demo_mode": demo_mode(),
         "has_company": has_company,
         "allowed_actions": page_actions(user["role"], company=has_company),
@@ -220,8 +241,8 @@ def _require_company(username: str) -> None:
 def demo_load(user: dict = Depends(require_user)) -> dict:
     if not demo_mode():
         raise AppError(403, "Il demo è chiuso")
-    if user["role"] != "admin":
-        raise AppError(403, "Serve il ruolo admin")
+    if not user.get("ieol_admin"):
+        raise AppError(403, "Serve il permesso di amministratore IEOL")
     model = ontology()
     with app_connect() as conn:
         assert_demo_database(conn)
@@ -865,7 +886,12 @@ def payment_measure(user: dict = Depends(require_user)) -> dict:
 
     with app_connect() as conn:
         company_id = company_id_for_user(conn, user["username"])
-        return _ok(measure_for_viewer(conn, role=user["role"], company_id=company_id))
+        return _ok(measure_for_viewer(
+            conn,
+            role=user["role"],
+            company_id=company_id,
+            ieol_admin=bool(user.get("ieol_admin")),
+        ))
 
 
 @app.get("/api/inbox")
@@ -1132,7 +1158,13 @@ def adjust_stock(product_key: str, body: StockBody, user: dict = Depends(require
     with app_connect() as conn:
         company_id = company_id_for_user(conn, user["username"])
         expired = adjust_on_hand(
-            conn, ontology(), product_key, body.on_hand, company_id=company_id, role=user["role"]
+            conn,
+            ontology(),
+            product_key,
+            body.on_hand,
+            company_id=company_id,
+            role=user["role"],
+            ieol_admin=bool(user.get("ieol_admin")),
         )
         conn.commit()
     return {"expired": expired}

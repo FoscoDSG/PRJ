@@ -193,7 +193,15 @@ def test_legacy_sha256_login_rehashes_to_argon2(client: TestClient):
     assert body["role"] == "operator"
     assert isinstance(body["demo_mode"], bool)
     assert body["has_company"] is False
-    assert set(body) == {"username", "role", "demo_mode", "has_company", "allowed_actions"}
+    assert body["ieol_admin"] is False
+    assert set(body) == {
+        "username",
+        "role",
+        "demo_mode",
+        "has_company",
+        "allowed_actions",
+        "ieol_admin",
+    }
     assert body["allowed_actions"] == []
     with connect() as conn:
         upgraded = conn.execute(

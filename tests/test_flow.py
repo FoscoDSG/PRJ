@@ -565,7 +565,10 @@ if (!card.includes("provenienza sconosciuta") || !card.includes("confidenza non 
   console.error(card);
   process.exit(14);
 }
-if (!showFixtureButton("admin", true) || showFixtureButton("mapper", true) || showFixtureButton("admin", false)) {
+if (showFixtureButton("admin", true) || showFixtureButton("mapper", true) || showFixtureButton("admin", false)) {
+  process.exit(15);
+}
+if (!showFixtureButton("admin", true, true) || showFixtureButton("admin", true, false)) {
   process.exit(15);
 }
 const scoredCard = inboxCard({
