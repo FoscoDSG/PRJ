@@ -5,16 +5,18 @@
 --
 -- Predefiniti: prezzo ±1% e al massimo 5 € a riga, imposta ±0,01 €,
 -- totale ±0,05 €, ricevimento parziale ammesso.
+-- price_rate è una quota tra 0 e 1: 0,01 è l'1%, 1 è il 100%.
+-- Gli importi e le tolleranze assolute sono maggiori o uguali a zero.
 -- La quantità fatturata non supera quella ricevuta: non è una soglia da alzare.
 
 CREATE TABLE IF NOT EXISTS app.p2p_tolerances (
   id uuid PRIMARY KEY,
   company_id uuid NOT NULL REFERENCES app.companies (id),
   version integer NOT NULL CHECK (version >= 1),
-  price_rate numeric NOT NULL DEFAULT 0.01,
-  price_abs numeric NOT NULL DEFAULT 5,
-  vat_abs numeric NOT NULL DEFAULT 0.01,
-  total_abs numeric NOT NULL DEFAULT 0.05,
+  price_rate numeric NOT NULL DEFAULT 0.01 CHECK (price_rate >= 0 AND price_rate <= 1),
+  price_abs numeric NOT NULL DEFAULT 5 CHECK (price_abs >= 0),
+  vat_abs numeric NOT NULL DEFAULT 0.01 CHECK (vat_abs >= 0),
+  total_abs numeric NOT NULL DEFAULT 0.05 CHECK (total_abs >= 0),
   partial_receipt boolean NOT NULL DEFAULT true,
   created_at timestamptz NOT NULL DEFAULT now(),
   UNIQUE (company_id, version)
@@ -24,7 +26,7 @@ COMMENT ON TABLE app.p2p_tolerances IS
   'Tolleranze acquisti per azienda, a versioni. La versione corrente è il numero più alto. Nessuna riscrittura della riga precedente.';
 
 COMMENT ON COLUMN app.p2p_tolerances.price_rate IS
-  'Scostamento relativo del prezzo unitario. Predefinito 0,01, cioè ±1%.';
+  'Scostamento relativo del prezzo, come quota tra 0 e 1. Predefinito 0,01, cioè ±1%. Il valore 1 è il 100%, non l''1%.';
 
 COMMENT ON COLUMN app.p2p_tolerances.price_abs IS
   'Tetto in euro dello scostamento di prezzo per riga. Predefinito 5.';

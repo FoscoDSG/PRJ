@@ -9,6 +9,7 @@ from __future__ import annotations
 from decimal import Decimal
 from pathlib import Path
 
+import psycopg
 import pytest
 
 from ontology.loader import load_merged
@@ -140,6 +141,10 @@ def test_migration_0023_is_versioned_per_company_and_skips_0022():
     assert "DEFAULT 5" in script
     assert "DEFAULT 0.05" in script
     assert "DEFAULT true" in script
+    assert "CHECK (price_rate >= 0 AND price_rate <= 1)" in script
+    assert "CHECK (price_abs >= 0)" in script
+    assert "CHECK (vat_abs >= 0)" in script
+    assert "CHECK (total_abs >= 0)" in script
     company_a = give_company("mapper", "Tolleranze A")
     company_b = give_company("operator", "Tolleranze B")
     with connect() as conn:
@@ -187,6 +192,53 @@ def test_migration_0023_is_versioned_per_company_and_skips_0022():
                 """
             )
         conn.rollback()
+
+
+def test_tolerance_bounds_reject_a_negative_and_a_rate_above_one():
+    company = give_company("mapper", "Tolleranze limiti")
+    with connect() as conn:
+        with pytest.raises(AppError, match="tra 0 e 1"):
+            record_tolerances(conn, company, price_rate=Decimal("1.5"))
+        with pytest.raises(AppError, match="maggiori o uguali a zero"):
+            record_tolerances(conn, company, price_abs=Decimal("-1"))
+        with pytest.raises(AppError, match="maggiori o uguali a zero"):
+            record_tolerances(conn, company, vat_abs=Decimal("-0.01"))
+        with pytest.raises(AppError, match="maggiori o uguali a zero"):
+            record_tolerances(conn, company, total_abs=Decimal("-0.05"))
+        kept = record_tolerances(
+            conn,
+            company,
+            price_rate=Decimal("1"),
+            price_abs=Decimal("0"),
+            vat_abs=Decimal("0"),
+            total_abs=Decimal("0"),
+        )
+        assert kept["price_rate"] == Decimal("1")
+        assert kept["price_abs"] == Decimal("0")
+        assert kept["vat_abs"] == Decimal("0")
+        assert kept["total_abs"] == Decimal("0")
+        conn.commit()
+        with pytest.raises(psycopg.errors.CheckViolation):
+            conn.execute(
+                """
+                INSERT INTO app.p2p_tolerances (id, company_id, version, price_rate)
+                VALUES ('00000000-0000-0000-0000-0000000000a1', %s::uuid, 9, 1.5)
+                """,
+                (company,),
+            )
+        conn.rollback()
+        with pytest.raises(psycopg.errors.CheckViolation):
+            conn.execute(
+                """
+                INSERT INTO app.p2p_tolerances (id, company_id, version, price_abs)
+                VALUES ('00000000-0000-0000-0000-0000000000a2', %s::uuid, 8, -1)
+                """,
+                (company,),
+            )
+        conn.rollback()
+        still = current_tolerances(conn, company)
+        assert still["version"] == 1
+        assert still["price_rate"] == Decimal("1")
 
 
 def test_parser_reads_the_supplier_and_still_requires_synthetic():

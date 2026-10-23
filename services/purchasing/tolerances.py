@@ -20,6 +20,24 @@ TOTAL_ABS = Decimal("0.05")
 PARTIAL_RECEIPT = True
 
 _FIELDS = ("price_rate", "price_abs", "vat_abs", "total_abs", "partial_receipt")
+_AMOUNTS = ("price_abs", "vat_abs", "total_abs")
+
+
+def _decimal(value: Any) -> Decimal | None:
+    if isinstance(value, bool) or not isinstance(value, (Decimal, int)):
+        return None
+    return Decimal(value)
+
+
+def _require_bounds(stored: dict[str, Any]) -> None:
+    """Same limits as the 0023 checks. 1 is 100%, not 1%."""
+    rate = _decimal(stored["price_rate"])
+    if rate is None or rate < 0 or rate > 1:
+        raise AppError(422, "La tolleranza di prezzo relativa deve stare tra 0 e 1")
+    for name in _AMOUNTS:
+        amount = _decimal(stored[name])
+        if amount is None or amount < 0:
+            raise AppError(422, "Gli importi e le tolleranze assolute devono essere maggiori o uguali a zero")
 
 
 def defaults() -> dict[str, Any]:
@@ -75,6 +93,7 @@ def record_tolerances(
     current = current_tolerances(conn, company_id)
     version = 1 if current["version"] is None else current["version"] + 1
     stored = {name: values.get(name, current[name]) for name in _FIELDS}
+    _require_bounds(stored)
     conn.execute(
         """
         INSERT INTO app.p2p_tolerances (
