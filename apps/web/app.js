@@ -75,7 +75,11 @@ function enter(me) {
   state.hasCompany = me.has_company === true;
   document.querySelector("#session").hidden = false;
   document.querySelector("#who").textContent = `${me.username} · ${me.role}`;
-  document.querySelector("#load-fixture").hidden = !showFixtureButton(state.role, state.demoMode);
+  document.querySelector("#load-fixture").hidden = !showFixtureButton(
+    state.role,
+    state.demoMode,
+    me.ieol_admin,
+  );
   const pageActions = Array.isArray(me.allowed_actions) ? me.allowed_actions : [];
   const allowsPage = (action) => pageActions.includes(action);
   document.querySelector("#upload-label").hidden = !allowsPage("upload");

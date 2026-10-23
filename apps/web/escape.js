@@ -529,8 +529,9 @@
     return number.toFixed(2).replace(".", ",");
   }
 
-  function showFixtureButton(role, demoMode) {
-    return role === "admin" && demoMode === true;
+  function showFixtureButton(role, demoMode, ieolAdmin) {
+    void role;
+    return ieolAdmin === true && demoMode === true;
   }
 
   // Solo true abilita scrittura. La pagina nasconde i pulsanti di decisione.
