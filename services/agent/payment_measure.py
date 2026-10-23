@@ -32,14 +32,17 @@ def measure_for_viewer(
     *,
     role: str,
     company_id: str | None,
+    ieol_admin: bool = False,
 ) -> dict[str, Any]:
     """IEOL admin sees every non-demo company. That view decides ``misurata``.
 
-    Any other role sees only their company. A caller without a company
-    sees an empty measure. Demo companies are absent in both cases, so
-    names and counts of other companies are not in the payload.
+    The flag is separate from the company role. Any other caller sees only
+    their company. A caller without a company sees an empty measure.
+    Demo companies are absent in both cases, so names and counts of other
+    companies are not in the payload.
     """
-    if role == "admin":
+    del role
+    if ieol_admin:
         result = measure_payment_matches(conn)
         result["scope"] = "all"
         result["decides_rule"] = True

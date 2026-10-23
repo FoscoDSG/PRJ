@@ -220,7 +220,7 @@ def _require_company(username: str) -> None:
 def demo_load(user: dict = Depends(require_user)) -> dict:
     if not demo_mode():
         raise AppError(403, "Il demo è chiuso")
-    if user["role"] != "admin":
+    if not user.get("ieol_admin"):
         raise AppError(403, "Serve il ruolo admin")
     model = ontology()
     with app_connect() as conn:
@@ -865,7 +865,12 @@ def payment_measure(user: dict = Depends(require_user)) -> dict:
 
     with app_connect() as conn:
         company_id = company_id_for_user(conn, user["username"])
-        return _ok(measure_for_viewer(conn, role=user["role"], company_id=company_id))
+        return _ok(measure_for_viewer(
+            conn,
+            role=user["role"],
+            company_id=company_id,
+            ieol_admin=bool(user.get("ieol_admin")),
+        ))
 
 
 @app.get("/api/inbox")
@@ -1132,7 +1137,13 @@ def adjust_stock(product_key: str, body: StockBody, user: dict = Depends(require
     with app_connect() as conn:
         company_id = company_id_for_user(conn, user["username"])
         expired = adjust_on_hand(
-            conn, ontology(), product_key, body.on_hand, company_id=company_id, role=user["role"]
+            conn,
+            ontology(),
+            product_key,
+            body.on_hand,
+            company_id=company_id,
+            role=user["role"],
+            ieol_admin=bool(user.get("ieol_admin")),
         )
         conn.commit()
     return {"expired": expired}

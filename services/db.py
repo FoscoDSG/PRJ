@@ -242,7 +242,7 @@ def ensure_ready(conn: psycopg.Connection, packages: list) -> None:
 
 def authenticate(conn: psycopg.Connection, username: str, password: str) -> dict | None:
     row = conn.execute(
-        "SELECT username, role, password_hash FROM app.users WHERE username = %s",
+        "SELECT username, role, ieol_admin, password_hash FROM app.users WHERE username = %s",
         (username,),
     ).fetchone()
     if row is None or not _password_ok(row["password_hash"], password):
@@ -254,7 +254,11 @@ def authenticate(conn: psycopg.Connection, username: str, password: str) -> dict
             "UPDATE app.users SET password_hash = %s WHERE username = %s",
             (password_hash(password), row["username"]),
         )
-    return {"username": row["username"], "role": row["role"]}
+    return {
+        "username": row["username"],
+        "role": row["role"],
+        "ieol_admin": bool(row["ieol_admin"]),
+    }
 
 
 def _password_ok(stored: str, password: str) -> bool:
