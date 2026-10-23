@@ -33,6 +33,8 @@ PII_PROPERTIES = frozenset(
         "customer_vat",
         "counterparty_name",
         "counterparty_vat",
+        "supplier_vat",
+        "supplier_name",
         "address",
         "indirizzo",
         "codice_fiscale",
@@ -66,6 +68,8 @@ PII_KEYS = PII_PROPERTIES | frozenset(
         "customer_vat",
         "counterparty_name",
         "counterparty_vat",
+        "supplier_vat",
+        "supplier_name",
     }
 )
 

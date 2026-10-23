@@ -216,3 +216,57 @@ uncovered:
   - {target_type: PaymentAllocation, target_property: invoice_source_key, reason: "Collegamento alla fattura. Il pagamento non la salda da solo."}
   - {target_type: PaymentAllocation, target_property: allocated_amount, reason: "Importo assegnato, riservato. È il criterio amount della proposta."}
   - {target_type: PaymentAllocation, target_property: status, reason: "proposed o confirmed. Non è la chiusura della fattura."}
+  - {target_type: PaymentAllocation, target_property: supplier_invoice_source_key, reason: "Collegamento all'assegnazione della fattura fornitore. Non è una colonna del dizionario."}
+  - {target_type: PurchaseRequest, target_property: title, reason: "Ereditato da Document. Il numero della richiesta è PurchaseRequest.source_key."}
+  - {target_type: PurchaseRequest, target_property: source_key, reason: "Chiave della richiesta di acquisto, scritta dal processo, non da un export del dizionario."}
+  - {target_type: PurchaseRequest, target_property: status, reason: "Stato della richiesta, scritto dal processo."}
+  - {target_type: PurchaseRequest, target_property: requested_at, reason: "Data della richiesta. Non è una colonna delle fonti ammesse."}
+  - {target_type: PurchaseRequest, target_property: requester, reason: "Chi chiede l'acquisto. Non è una colonna delle fonti ammesse."}
+  - {target_type: PurchaseRequest, target_property: amount, reason: "Importo della richiesta, riservato. Il dizionario copre Order.amount."}
+  - {target_type: PurchaseOrder, target_property: amount, reason: "Ereditato da Transaction. Importo dell'ordine di acquisto, riservato."}
+  - {target_type: PurchaseOrder, target_property: source_key, reason: "Numero dell'ordine di acquisto, chiave del processo, non una colonna del dizionario."}
+  - {target_type: PurchaseOrder, target_property: status, reason: "Stato dell'ordine di acquisto, scritto dal processo."}
+  - {target_type: PurchaseOrder, target_property: ordered_at, reason: "Data dell'ordine di acquisto. Il dizionario tiene la data sull'ordine di vendita."}
+  - {target_type: PurchaseOrder, target_property: purchase_request_source_key, reason: "Collegamento alla richiesta. Non è una colonna del dizionario."}
+  - {target_type: PurchaseOrder, target_property: supplier_source_key, reason: "Collegamento al fornitore. Il dizionario ha Supplier.source_key, non questo riferimento."}
+  - {target_type: PurchaseOrder, target_property: supplier_vat, reason: "Partita IVA del fornitore sull'ordine. Il dizionario ha Customer.vat."}
+  - {target_type: PurchaseOrderLine, target_property: amount, reason: "Ereditato da Transaction. L'importo di riga è line_amount."}
+  - {target_type: PurchaseOrderLine, target_property: source_key, reason: "Chiave di riga dell'ordine di acquisto."}
+  - {target_type: PurchaseOrderLine, target_property: quantity, reason: "Quantità ordinata al fornitore. Non è una colonna delle fonti ammesse."}
+  - {target_type: PurchaseOrderLine, target_property: unit_price, reason: "Prezzo unitario di acquisto, riservato."}
+  - {target_type: PurchaseOrderLine, target_property: line_amount, reason: "Importo di riga dell'ordine di acquisto, riservato."}
+  - {target_type: PurchaseOrderLine, target_property: vat_rate, reason: "Aliquota della riga di acquisto. FatturaPA non è una fonte del dizionario."}
+  - {target_type: PurchaseOrderLine, target_property: order_source_key, reason: "Riferimento all'ordine di acquisto, collegamento del processo."}
+  - {target_type: PurchaseOrderLine, target_property: product_source_key, reason: "Prodotto della riga. Il dizionario ha Product.source_key."}
+  - {target_type: GoodsReceipt, target_property: title, reason: "Ereditato da Document. Il numero del ricevimento è GoodsReceipt.source_key."}
+  - {target_type: GoodsReceipt, target_property: source_key, reason: "Numero del DDT di ricevimento, chiave del processo."}
+  - {target_type: GoodsReceipt, target_property: status, reason: "Stato del ricevimento, scritto dal processo."}
+  - {target_type: GoodsReceipt, target_property: received_at, reason: "Data del ricevimento. Non è una colonna delle fonti ammesse."}
+  - {target_type: GoodsReceipt, target_property: order_source_key, reason: "Collegamento all'ordine di acquisto."}
+  - {target_type: GoodsReceiptLine, target_property: amount, reason: "Ereditato da Transaction. Il ricevimento conta la quantità."}
+  - {target_type: GoodsReceiptLine, target_property: source_key, reason: "Chiave di riga del ricevimento."}
+  - {target_type: GoodsReceiptLine, target_property: quantity, reason: "Quantità ricevuta. Non è una colonna delle fonti ammesse."}
+  - {target_type: GoodsReceiptLine, target_property: receipt_source_key, reason: "Riferimento al DDT."}
+  - {target_type: GoodsReceiptLine, target_property: order_line_source_key, reason: "Riferimento alla riga dell'ordine di acquisto."}
+  - {target_type: GoodsReceiptLine, target_property: product_source_key, reason: "Prodotto ricevuto. Il dizionario ha Product.source_key."}
+  - {target_type: SupplierInvoice, target_property: title, reason: "Ereditato da Document. La chiave è P.IVA, numero e anno."}
+  - {target_type: SupplierInvoice, target_property: source_key, reason: "Chiave composta. FatturaPA non è una fonte del dizionario."}
+  - {target_type: SupplierInvoice, target_property: supplier_vat, reason: "Partita IVA del fornitore, dato personale. Il dizionario ha Customer.vat."}
+  - {target_type: SupplierInvoice, target_property: supplier_name, reason: "Nome del fornitore, dato personale."}
+  - {target_type: SupplierInvoice, target_property: invoice_number, reason: "Numero della fattura del fornitore. I numeri si sovrappongono a quelli delle fatture emesse."}
+  - {target_type: SupplierInvoice, target_property: invoice_year, reason: "Anno della fattura fornitore, parte della chiave."}
+  - {target_type: SupplierInvoice, target_property: document_type, reason: "Tipo documento letto dal file di prova."}
+  - {target_type: SupplierInvoice, target_property: issued_at, reason: "Data della fattura fornitore."}
+  - {target_type: SupplierInvoice, target_property: due_at, reason: "Scadenza della fattura fornitore."}
+  - {target_type: SupplierInvoice, target_property: amount, reason: "Importo della fattura fornitore, riservato."}
+  - {target_type: SupplierInvoice, target_property: currency, reason: "Valuta della fattura fornitore."}
+  - {target_type: SupplierInvoice, target_property: order_source_key, reason: "Collegamento all'ordine di acquisto."}
+  - {target_type: SupplierInvoice, target_property: status, reason: "Stato della fattura fornitore, scritto dal processo."}
+  - {target_type: SupplierInvoiceLine, target_property: amount, reason: "Ereditato da Transaction. L'importo di riga è line_amount."}
+  - {target_type: SupplierInvoiceLine, target_property: source_key, reason: "Chiave di riga della fattura fornitore."}
+  - {target_type: SupplierInvoiceLine, target_property: description, reason: "Descrizione di riga letta dal file di prova."}
+  - {target_type: SupplierInvoiceLine, target_property: quantity, reason: "Quantità fatturata dal fornitore. FatturaPA resta fuori dal dizionario."}
+  - {target_type: SupplierInvoiceLine, target_property: unit_price, reason: "Prezzo unitario della riga fornitore, riservato."}
+  - {target_type: SupplierInvoiceLine, target_property: line_amount, reason: "Importo di riga della fattura fornitore, riservato."}
+  - {target_type: SupplierInvoiceLine, target_property: vat_rate, reason: "Aliquota della riga fornitore. FatturaPA non è una fonte del dizionario."}
+  - {target_type: SupplierInvoiceLine, target_property: supplier_invoice_source_key, reason: "Riferimento alla testata della fattura fornitore."}
