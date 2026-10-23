@@ -1,7 +1,7 @@
 """Acquisti: ontologia, tolleranze e fatture dei fornitori.
 
-La 0022 resta libera per un altro ramo. Il runner applica i file in ordine
-di numero e non chiede che i numeri siano consecutivi.
+Le migrazioni 0022 e 0023 sono entrambe presenti, in ordine di numero.
+Il runner non chiede che i numeri siano consecutivi.
 """
 
 from __future__ import annotations
@@ -126,10 +126,10 @@ def test_purchasing_package_declares_types_links_and_process():
     ]
 
 
-def test_migration_0023_is_versioned_per_company_and_skips_0022():
+def test_migration_0023_follows_0022_and_is_versioned_per_company():
     versions = [item.version for item in migration_files()]
-    assert "0022" not in versions
-    assert versions.index("0023") == versions.index("0021") + 1
+    assert versions.index("0022") == versions.index("0021") + 1
+    assert versions.index("0023") == versions.index("0022") + 1
     assert versions == sorted(versions, key=int)
     script = (ROOT / "db" / "migrations" / "0023_p2p_tolerances.sql").read_text(encoding="utf-8")
     assert migration_violation(script, "0023_p2p_tolerances.sql") is None
