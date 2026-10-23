@@ -827,6 +827,25 @@ if (pagamento.join("|") !== "PAG-1") fail(11, pagamento.join("|"));
 const pageTypes = ontology.types.filter((item) => item.name === "Order" || item.name === "Invoice" || item.name === "Payment");
 const pageLabels = objectPageFilters(pageTypes).map((filter) => filter.label);
 if (pageLabels.join("|") !== "Ordine|Fattura|Incasso|Pagamento") fail(12, pageLabels.join("|"));
+const named = objectPageFilters(pageTypes, { payment_labels: { outgoing: "Uscita" } });
+if (named.find((filter) => filter.id === "Pagamento").label !== "Uscita") fail(13, "etichetta");
+const reserve = objectPageFilters(pageTypes, { payment_labels: { outgoing: "" } });
+if (reserve.find((filter) => filter.id === "Pagamento").label !== "Pagamento") fail(13, "riserva");
+const maskedIn = {
+  id: "hid-in", type: "Payment", business_key: "MASK-IN", incoming: true,
+  fields: [{ name: "direction", value: "riservato", masked: true }],
+};
+const maskedOut = {
+  id: "hid-out", type: "Payment", business_key: "MASK-OUT", incoming: false,
+  fields: [{ name: "direction", value: "riservato", masked: true }],
+};
+const full = payments.concat([maskedIn, maskedOut]);
+if (objectsForFilter(full, "Order") !== full) fail(14, "elenco completo");
+if (objectsForFilter(full, "Invoice") !== full) fail(14, "fatture");
+const visibleIncasso = objectsForFilter(full, "Payment").map((object) => object.business_key);
+const visiblePagamento = objectsForFilter(full, "Pagamento").map((object) => object.business_key);
+if (visibleIncasso.join("|") !== "INC-1") fail(14, visibleIncasso.join("|"));
+if (visiblePagamento.join("|") !== "PAG-1") fail(14, visiblePagamento.join("|"));
 process.stdout.write("ok\n");
 })().catch((error) => {
   console.error(error);
@@ -839,9 +858,117 @@ def test_pagamento_filter_shows_only_outgoing_payments_and_leaves_the_others():
     page = (WEB / "app.js").read_text(encoding="utf-8")
     assert "matchesIncasso(" in page
     assert "matchesPagamento(" in page
-    assert 'label: "Pagamento"' in page
+    assert 'return "Pagamento"' in page
     rendered = subprocess.run(
         ["node", "-e", _OBJECT_FILTERS],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+    )
+    assert rendered.returncode == 0, rendered.stderr
+    assert rendered.stdout == "ok\n"
+
+
+_PAGE_ITALIAN = r"""
+const {
+  orderCard, orderDetail, objectCard, objectDetail,
+} = require("./apps/web/escape.js");
+
+function fail(message) {
+  console.error(message);
+  process.exit(1);
+}
+
+const order = orderCard({
+  id: "1",
+  business_key: "1024",
+  status: "open",
+  shortage_qty: 80,
+  customer_name: "C001",
+  amount: 60000,
+  margin: 0.6667,
+});
+if (!order.includes("Aperto") || !order.includes('class="pill open"')) fail(order);
+if (!order.includes("Importo 60.000,00 €") || order.includes("60000")) fail(order);
+if (!order.includes("Margine 66,7 %") || order.includes("0.6667")) fail(order);
+if (!order.includes("Quantità mancante") || order.includes("shortage")) fail(order);
+
+const detail = orderDetail({
+  business_key: "1024",
+  stock_formula: "disponibile = giacenza − impegnato",
+  status: "open",
+  lines: [{ product: "ART-X", quantity: 2, shortage: 1, stock: { available: 3, formula: "disponibile = giacenza − impegnato" } }],
+  edges: [
+    { direction: "out", rel: "contains", other_type: "Product", other_key: "ART-X" },
+    { direction: "in", rel: "places", other_type: "Customer", other_key: "C001" },
+  ],
+  facts: [
+    { property: "amount", value: 60000, source_class: "system_of_record", confidence: null, confidence_method: "unknown" },
+    { property: "margin", value: 0.6667, source_class: "system_of_record", confidence: null, confidence_method: "unknown" },
+    { property: "status", value: "open", source_class: "system_of_record", confidence: null, confidence_method: "unknown" },
+    { property: "direction", value: "outgoing", source_class: "system_of_record", confidence: null, confidence_method: "unknown" },
+    { property: "customer_source_key", value: "C001", source_class: "system_of_record", confidence: null, confidence_method: "unknown" },
+    { property: "ordered_at", value: "2026-10-01", source_class: "system_of_record", confidence: null, confidence_method: "unknown" },
+    { property: "source_key", value: "1024", source_class: "system_of_record", confidence: null, confidence_method: "unknown" },
+  ],
+});
+if (detail.includes("Grafo") || detail.includes("Nessun arco") || detail.includes("Stock") || detail.includes("shortage")) fail(detail);
+if (!detail.includes("Collegamenti") || !detail.includes("Fatti") || !detail.includes("Disponibile")) fail(detail);
+if (!detail.includes("Quantità 2") || !detail.includes("Mancanza 1")) fail(detail);
+if (!detail.includes("collegato a contiene Prodotto ART-X")) fail(detail);
+if (!detail.includes("collegato da effettua Cliente C001")) fail(detail);
+if (!detail.includes("Importo ordine: 60.000,00 €") || detail.includes(": 60000") || detail.includes("amount:")) fail(detail);
+if (!detail.includes("Margine: 66,7 %") || detail.includes("0.6667")) fail(detail);
+if (!detail.includes("Stato: Aperto") || detail.includes(": open")) fail(detail);
+if (!detail.includes("Direzione: In uscita") || detail.includes("outgoing")) fail(detail);
+if (!detail.includes("Cliente: C001") || detail.includes("customer_source_key:")) fail(detail);
+if (!detail.includes("Data ordine: 01/10/2026") || detail.includes("ordered_at:")) fail(detail);
+if (!detail.includes("Numero ordine: 1024") || detail.includes("source_key:")) fail(detail);
+
+const ontology = {
+  types: [{ name: "Payment", label: "Incasso", fields: [
+    { name: "direction", label: "Direzione" },
+    { name: "status", label: "Stato" },
+    { name: "margin", label: "Margine" },
+  ] }],
+  relations: [{ name: "settles", label: "salda" }, { name: "allocates", label: "assegna" }],
+  payment_labels: { incoming: "Incasso", outgoing: "Pagamento" },
+};
+const masked = objectCard({
+  id: "hid",
+  type: "Payment",
+  business_key: "MASK-1",
+  incoming: true,
+  fields: [
+    { name: "direction", value: "riservato", label: "Direzione", masked: true },
+    { name: "status", value: "received", label: "Stato", masked: false },
+  ],
+  links: [
+    { rel: "settles", direction: "out", type: "Invoice", type_label: "Fattura", key: "FT-1", id: "ft" },
+    { rel: "allocates", direction: "in", type: "Payment", type_label: "Pagamento", key: "PAG-9", id: "pg" },
+  ],
+}, ontology);
+if (!masked.includes("Direzione riservata") || masked.includes("Direzione: riservato")) fail(masked);
+if (!masked.includes("Stato: Ricevuto") || masked.includes(": received")) fail(masked);
+if (!masked.includes("collegato a salda Fattura FT-1")) fail(masked);
+if (!masked.includes("collegato da assegna Pagamento PAG-9")) fail(masked);
+
+const plain = objectDetail({
+  type: "Payment",
+  business_key: "INC-1",
+  incoming: true,
+  fields: [{ name: "direction", value: "incoming", label: "Direzione", masked: false }],
+  links: [],
+  history: [],
+}, ontology);
+if (!plain.includes("Direzione: In entrata") || plain.includes("incoming")) fail(plain);
+process.stdout.write("ok\n");
+"""
+
+
+def test_page_shows_italian_values_direction_and_links():
+    rendered = subprocess.run(
+        ["node", "-e", _PAGE_ITALIAN],
         cwd=ROOT,
         text=True,
         capture_output=True,

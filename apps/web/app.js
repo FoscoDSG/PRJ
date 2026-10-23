@@ -441,7 +441,14 @@ async function ensureOntology() {
   return state.ontology;
 }
 
-function objectPageFilters(types) {
+function paymentOutgoingLabel(ontology) {
+  const labels = ontology && ontology.payment_labels;
+  const outgoing = labels && labels.outgoing;
+  if (typeof outgoing === "string" && outgoing !== "") return outgoing;
+  return "Pagamento";
+}
+
+function objectPageFilters(types, ontology) {
   const filters = [];
   for (const typeDef of types || []) {
     if (!typeDef || !typeDef.name) continue;
@@ -451,7 +458,7 @@ function objectPageFilters(types) {
       label: typeDef.label || typeDef.name,
     });
     if (typeDef.name === "Payment") {
-      filters.push({ id: "Pagamento", type: "Payment", label: "Pagamento" });
+      filters.push({ id: "Pagamento", type: "Payment", label: paymentOutgoingLabel(ontology) });
     }
   }
   return filters;
@@ -469,7 +476,7 @@ async function loadObjects() {
   const types = OBJECT_PAGE_TYPES
     .map((name) => (ontology.types || []).find((item) => item && item.name === name))
     .filter(Boolean);
-  const filters = objectPageFilters(types);
+  const filters = objectPageFilters(types, ontology);
   if (filters.length && !filters.some((item) => item.id === state.objectFilter)) {
     state.objectFilter = filters[0].id;
     state.objectType = filters[0].type;
