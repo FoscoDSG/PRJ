@@ -6,6 +6,7 @@ Il residuo sottrae solo note di credito e decisioni umane ancora valide.
 
 from __future__ import annotations
 
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -667,3 +668,183 @@ def test_pages_show_reserved_only_when_the_server_sends_it():
     assert "Oggi" in page
     assert "Oggetti" in page
     assert "Dati" in page
+
+
+_OBJECT_FILTERS = r"""
+const fs = require("fs");
+const vm = require("vm");
+const { matchesIncasso, matchesPagamento } = require("./apps/web/escape.js");
+
+if (!matchesPagamento({ incoming: false, direction: "incoming" })) process.exit(1);
+if (matchesPagamento({ incoming: true, direction: "outgoing" })) process.exit(1);
+if (matchesPagamento({ direction: "outgoing" }) || matchesPagamento(null) || matchesPagamento({})) process.exit(1);
+if (matchesIncasso({ incoming: false }) || matchesPagamento({ incoming: true })) process.exit(1);
+
+const orders = [
+  { id: "o1", type: "Order", business_key: "ORD-1", incoming: false },
+  { id: "o2", type: "Order", business_key: "ORD-2", incoming: true },
+];
+const invoices = [{ id: "i1", type: "Invoice", business_key: "FT-1", incoming: false }];
+const payments = [
+  { id: "in", type: "Payment", business_key: "INC-1", incoming: true, direction: "outgoing" },
+  { id: "out", type: "Payment", business_key: "PAG-1", incoming: false, direction: "incoming" },
+  { id: "blank", type: "Payment", business_key: "OLD-1", direction: "outgoing" },
+];
+const ontology = {
+  types: [
+    { name: "Order", label: "Ordine" },
+    { name: "Invoice", label: "Fattura" },
+    { name: "Payment", label: "Incasso" },
+    { name: "Product", label: "Prodotto" },
+  ],
+};
+
+function makeElement(tag) {
+  return {
+    tagName: tag || "div",
+    hidden: false,
+    textContent: "",
+    className: "",
+    value: "",
+    type: "",
+    disabled: false,
+    childNodes: [],
+    dataset: {},
+    style: {},
+    classList: { toggle() {}, add() {}, remove() {} },
+    _listeners: {},
+    addEventListener(type, fn) { this._listeners[type] = fn; },
+    append(...nodes) { this.childNodes.push(...nodes); },
+    appendChild(node) { this.childNodes.push(node); return node; },
+    replaceChildren(...nodes) { this.childNodes = nodes; },
+    setAttribute(name, value) { this[name] = value; },
+    removeAttribute() {},
+    querySelector() { return null; },
+    querySelectorAll() { return []; },
+  };
+}
+const cache = new Map();
+function query(selector) {
+  const key = String(selector);
+  if (!cache.has(key)) cache.set(key, makeElement(key));
+  return cache.get(key);
+}
+const document = {
+  querySelector: query,
+  querySelectorAll() { return []; },
+  createElement(tag) { return makeElement(tag); },
+  createTextNode(text) { return { nodeType: 3, textContent: String(text), childNodes: [] }; },
+};
+const requests = [];
+const context = {
+  console,
+  document,
+  fetch: async (url) => {
+    const path = String(url);
+    requests.push(path);
+    if (path.includes("/api/me")) return { ok: false, status: 401, json: async () => ({}) };
+    if (path.includes("/api/ontology")) return { ok: true, json: async () => ontology };
+    if (path.includes("/api/objects")) {
+      const type = new URL(path, "http://local").searchParams.get("type");
+      const rows = type === "Order" ? orders : type === "Invoice" ? invoices : type === "Payment" ? payments : [];
+      return { ok: true, json: async () => ({ objects: rows }) };
+    }
+    return { ok: true, json: async () => ({}) };
+  },
+  FormData: class {},
+  setTimeout,
+  clearTimeout,
+  URL,
+};
+context.globalThis = context;
+context.ieolEscape = require("./apps/web/escape.js");
+context.window = context;
+vm.createContext(context);
+vm.runInContext(fs.readFileSync("./apps/web/app.js", "utf8"), context);
+
+function fail(code, message) {
+  console.error(message);
+  process.exit(code);
+}
+function buttons() {
+  return query("#object-types").childNodes.filter((node) => node.tagName === "button");
+}
+function listHtml() {
+  return String(query("#order-list").innerHTML || "");
+}
+function keysIn(html) {
+  return ["ORD-1", "ORD-2", "FT-1", "INC-1", "PAG-1", "OLD-1"].filter((key) => html.includes(key));
+}
+async function choose(label) {
+  const button = buttons().find((item) => item.textContent === label);
+  if (!button || typeof button._listeners.click !== "function") fail(2, "missing " + label);
+  await button._listeners.click();
+}
+
+(async () => {
+await new Promise((resolve) => setTimeout(resolve, 0));
+await context.ieolPage.loadObjects();
+
+const labels = buttons().map((button) => button.textContent);
+if (labels.join("|") !== "Ordine|Fattura|Incasso|Pagamento") fail(3, labels.join("|"));
+for (const button of buttons()) {
+  if (button.className !== "ghost") fail(4, button.className);
+  if (button.innerHTML != null) fail(4, "filter used innerHTML");
+  if (button["aria-pressed"] !== (button.textContent === "Ordine" ? "true" : "false")) fail(4, button.textContent);
+}
+if (keysIn(listHtml()).join("|") !== "ORD-1|ORD-2") fail(5, listHtml());
+if (!requests.at(-1).includes("type=Order")) fail(5, requests.at(-1));
+
+await choose("Fattura");
+if (buttons().find((button) => button["aria-pressed"] === "true").textContent !== "Fattura") fail(6, "fattura");
+if (keysIn(listHtml()).join("|") !== "FT-1") fail(6, listHtml());
+if (!requests.at(-1).includes("type=Invoice")) fail(6, requests.at(-1));
+
+await choose("Incasso");
+if (buttons().find((button) => button["aria-pressed"] === "true").textContent !== "Incasso") fail(7, "incasso");
+if (keysIn(listHtml()).join("|") !== "INC-1") fail(7, listHtml());
+if (!requests.at(-1).includes("type=Payment")) fail(7, requests.at(-1));
+
+await choose("Pagamento");
+if (buttons().find((button) => button["aria-pressed"] === "true").textContent !== "Pagamento") fail(8, "pagamento");
+if (keysIn(listHtml()).join("|") !== "PAG-1") fail(8, listHtml());
+if (!requests.at(-1).includes("type=Payment")) fail(8, requests.at(-1));
+
+await choose("Ordine");
+if (keysIn(listHtml()).join("|") !== "ORD-1|ORD-2") fail(9, listHtml());
+if (!requests.at(-1).includes("type=Order")) fail(9, requests.at(-1));
+
+const { objectsForFilter, objectPageFilters } = context.ieolPage;
+const mixed = orders.concat(invoices, payments);
+if (objectsForFilter(mixed, "Order") !== mixed) fail(10, "order filter changed the list");
+if (objectsForFilter(mixed, "Invoice") !== mixed) fail(10, "invoice filter changed the list");
+if (objectsForFilter(orders, "Order") !== orders) fail(10, "order rows changed");
+if (objectsForFilter(invoices, "Invoice") !== invoices) fail(10, "invoice rows changed");
+const incasso = objectsForFilter(payments, "Payment").map((object) => object.business_key);
+const pagamento = objectsForFilter(payments, "Pagamento").map((object) => object.business_key);
+if (incasso.join("|") !== "INC-1") fail(11, incasso.join("|"));
+if (pagamento.join("|") !== "PAG-1") fail(11, pagamento.join("|"));
+const pageTypes = ontology.types.filter((item) => item.name === "Order" || item.name === "Invoice" || item.name === "Payment");
+const pageLabels = objectPageFilters(pageTypes).map((filter) => filter.label);
+if (pageLabels.join("|") !== "Ordine|Fattura|Incasso|Pagamento") fail(12, pageLabels.join("|"));
+process.stdout.write("ok\n");
+})().catch((error) => {
+  console.error(error);
+  process.exit(1);
+});
+"""
+
+
+def test_pagamento_filter_shows_only_outgoing_payments_and_leaves_the_others():
+    page = (WEB / "app.js").read_text(encoding="utf-8")
+    assert "matchesIncasso(" in page
+    assert "matchesPagamento(" in page
+    assert 'label: "Pagamento"' in page
+    rendered = subprocess.run(
+        ["node", "-e", _OBJECT_FILTERS],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+    )
+    assert rendered.returncode == 0, rendered.stderr
+    assert rendered.stdout == "ok\n"

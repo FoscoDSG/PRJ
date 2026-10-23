@@ -708,6 +708,10 @@
     return Boolean(object && object.incoming === true);
   }
 
+  function matchesPagamento(object) {
+    return Boolean(object && object.incoming === false);
+  }
+
   function isIncoming(payment) {
     let direction = payment;
     if (payment && typeof payment === "object") {
@@ -913,6 +917,7 @@
     inboxCard,
     allowsAction,
     matchesIncasso,
+    matchesPagamento,
     fileActionBar,
     measureText,
     auditCard,
