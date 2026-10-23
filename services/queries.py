@@ -297,6 +297,26 @@ def _set_order_disposition(inbox: list[dict]) -> None:
         item["disposition"] = card_disposition(str(item.get("status") or ""), ORDER_DECIDABLE)
 
 
+def _payment_view(
+    *,
+    number: str,
+    paid_at: str,
+    amount: Any,
+    direction: str,
+    label: str,
+    hide_direction: bool,
+) -> dict[str, Any]:
+    shown = {
+        "number": number,
+        "paid_at": paid_at,
+        "amount": amount,
+        "label": label,
+    }
+    if not hide_direction:
+        shown["direction"] = direction
+    return shown
+
+
 def _payment_inbox(conn: psycopg.Connection, role: str, company_id: str, model) -> list[dict]:
     """Proposals of this company. Another company is not in the result."""
     from services.ontology_view import catalog_pair
@@ -379,8 +399,9 @@ def _payment_inbox(conn: psycopg.Connection, role: str, company_id: str, model) 
         disposition = card_disposition(status, PAYMENT_DECIDABLE)
         payment_facts = visible_facts(conn, row["payment_entity_id"])
         invoice_facts = visible_facts(conn, row["invoice_entity_id"])
-        direction = str(payment_facts.get("direction") or "")
-        movement = payment_label(direction)
+        hidden_direction = _hides_direction(role)
+        direction = "" if hidden_direction else str(payment_facts.get("direction") or "")
+        movement = "Movimento" if hidden_direction else payment_label(direction)
         balance = remaining_balance(conn, company_id, row["invoice_entity_id"])
         evidence = _mask_evidence(row["evidence"], role)
         evidence = redact(evidence)
@@ -428,13 +449,14 @@ def _payment_inbox(conn: psycopg.Connection, role: str, company_id: str, model) 
                 "payment_id": row["payment_entity_id"],
                 "allocated_amount": amount,
                 "disposition": disposition,
-                "payment": {
-                    "number": row["business_key"],
-                    "paid_at": payment_facts.get("paid_at") or "",
-                    "amount": payment_facts.get("amount"),
-                    "direction": direction,
-                    "label": movement,
-                },
+                "payment": _payment_view(
+                    number=row["business_key"],
+                    paid_at=payment_facts.get("paid_at") or "",
+                    amount=payment_facts.get("amount"),
+                    direction=direction,
+                    label=movement,
+                    hide_direction=hidden_direction,
+                ),
                 "invoice": {
                     "number": row["invoice_number"],
                     "amount": invoice_facts.get("amount"),
@@ -446,6 +468,10 @@ def _payment_inbox(conn: psycopg.Connection, role: str, company_id: str, model) 
                 },
             }
         )
+        if hidden_direction:
+            from services.objects_read import scrub_direction_text
+
+            items[-1] = scrub_direction_text(items[-1])
     return items
 
 
@@ -503,7 +529,17 @@ def get_cash_document(
         detail["remaining"] = None if balance is None else stable(balance)
     from services.objects_read import document_history
 
-    detail["history"] = document_history(conn, row["id"], type_name, company_id)
+    detail["history"] = document_history(
+        conn,
+        row["id"],
+        type_name,
+        company_id,
+        hide_direction=_hides_direction(role) and type_name == "Payment",
+    )
+    if _hides_direction(role) and type_name == "Payment":
+        from services.objects_read import scrub_direction_text
+
+        detail = scrub_direction_text(detail)
     note_clear_personal_view(
         conn,
         actor=actor,
@@ -663,6 +699,12 @@ def _with_provenance(evidence: Any, classes: dict[str, str | None]) -> Any:
     return enriched
 
 
+def _hides_direction(role: str) -> bool:
+    from services.objects_read import hides_payment_direction
+
+    return hides_payment_direction(role)
+
+
 def _operator_hides(role: str, name: str | None) -> bool:
     """Operators see amounts. Margin and cost stay masked for them."""
     return role not in PRIVILEGED and hides_margin(name)
@@ -682,6 +724,9 @@ def _mask_evidence(evidence: Any, role: str) -> Any:
             copy["value"] = MASK
             copy["masked"] = True
         elif _operator_hides(role, copy.get("property")):
+            copy["value"] = ROLE_HIDDEN
+            copy["masked"] = True
+        elif copy.get("property") == "direction" and _hides_direction(role):
             copy["value"] = ROLE_HIDDEN
             copy["masked"] = True
         masked.append(copy)
@@ -823,6 +868,9 @@ def _facts(
             item["value"] = MASK
             item["masked"] = True
         elif _operator_hides(role, item["property"]):
+            item["value"] = ROLE_HIDDEN
+            item["masked"] = True
+        elif item["property"] == "direction" and _hides_direction(role):
             item["value"] = ROLE_HIDDEN
             item["masked"] = True
         item["calibrated"] = False

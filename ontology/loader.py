@@ -24,6 +24,7 @@ class PropertyDef:
     origin: str
     identifier: bool = False
     identity: bool = False
+    unit: str | None = None
 
 
 @dataclass
@@ -103,6 +104,7 @@ def _property(raw: dict, package: str) -> PropertyDef:
         origin=raw.get("origin", "original"),
         identifier=bool(raw.get("identifier", False)),
         identity=bool(raw.get("identity", False)),
+        unit=str(raw["unit"]) if raw.get("unit") else None,
     )
 
 

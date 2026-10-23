@@ -28,7 +28,7 @@ TYPE_LABELS = {
     "InvoiceLine": "Riga fattura",
     "CreditNote": "Nota di credito",
     "Payment": "Incasso",
-    "PaymentAllocation": "Assegnazione incasso",
+    "PaymentAllocation": "Assegnazione",
     "PurchaseRequest": "Richiesta di acquisto",
     "PurchaseOrder": "Ordine di acquisto",
     "PurchaseOrderLine": "Riga ordine di acquisto",
@@ -146,12 +146,42 @@ RELATION_LABELS = {
 PAYMENT_DIRECTION_LABELS = {
     "incoming": "Incasso",
     "outgoing": "Pagamento",
+    "movements": "Movimenti",
 }
 
 PAYMENT_OUTGOING_FIELDS = {
     "amount": "Importo pagamento",
     "source_key": "Numero pagamento",
     "paid_at": "Data pagamento",
+}
+
+# Shown words for a stored code. «open» is not the same word on every type.
+VALUE_LABELS = {
+    ("Order", "status"): {"open": "Aperto", "closed": "Chiuso"},
+    ("Invoice", "status"): {
+        "open": "Aperta",
+        "issued": "Emessa",
+        "paid": "Pagata",
+        "closed": "Chiusa",
+    },
+    ("CreditNote", "status"): {"open": "Aperta", "issued": "Emessa"},
+    ("Payment", "status"): {"received": "Ricevuto", "open": "In corso"},
+    ("Shipment", "status"): {"open": "In corso"},
+    ("Payment", "direction"): {"incoming": "In entrata", "outgoing": "In uscita"},
+}
+
+# A link reads as a sentence. `out` leaves this object, `in` arrives here.
+RELATION_PHRASES = {
+    "places": {"out": "effettua", "in": "effettuato da"},
+    "contains": {"out": "contiene", "in": "contenuto in"},
+    "suppliedBy": {"out": "fornito da", "in": "fornisce"},
+    "storedAt": {"out": "depositato in", "in": "ospita"},
+    "triggered": {"out": "genera", "in": "generato da"},
+    "generates": {"out": "genera", "in": "generata da"},
+    "fulfills": {"out": "evade", "in": "evaso da"},
+    "allocates": {"out": "assegna", "in": "assegnato da"},
+    "settles": {"out": "salda", "in": "saldato da"},
+    "sameOrganization": {"out": "stessa organizzazione di", "in": "stessa organizzazione di"},
 }
 
 
@@ -178,6 +208,7 @@ def describe_ontology(
                     "name": prop.name,
                     "label": field_label(name, prop.name),
                     "type": prop.type,
+                    "unit": prop.unit,
                     "classification": prop.classification,
                     "origin": prop.origin,
                     "from_source": not computed,
@@ -225,10 +256,8 @@ def describe_ontology(
             for package in model.packages
         ],
         "types": types,
-        "relations": [
-            {**dict(item), "label": relation_label(str(item.get("name") or ""))}
-            for item in model.relations
-        ],
+        "relations": [_relation_view(item) for item in model.relations],
+        "value_labels": _value_labels(),
         "payment_labels": dict(PAYMENT_DIRECTION_LABELS),
         "payment_field_labels": {"outgoing": dict(PAYMENT_OUTGOING_FIELDS)},
         "processes": processes,
@@ -257,6 +286,25 @@ def relation_label(name: str | None) -> str:
     if not name:
         return ""
     return RELATION_LABELS.get(name) or name
+
+
+def _relation_view(item: dict) -> dict:
+    name = str(item.get("name") or "")
+    phrases = RELATION_PHRASES.get(name) or {}
+    label = relation_label(name)
+    return {
+        **dict(item),
+        "label": label,
+        "out": phrases.get("out") or label,
+        "in": phrases.get("in") or label,
+    }
+
+
+def _value_labels() -> dict[str, dict[str, dict[str, str]]]:
+    found: dict[str, dict[str, dict[str, str]]] = {}
+    for (type_name, prop_name), labels in VALUE_LABELS.items():
+        found.setdefault(type_name, {})[prop_name] = dict(labels)
+    return found
 
 
 def is_incoming(payment: Any) -> bool:
