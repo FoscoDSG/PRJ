@@ -192,6 +192,12 @@ def reset_password(conn: psycopg.Connection, role: str) -> None:
 
 
 def seed_users(conn: psycopg.Connection) -> None:
+    """Insert the four roles when they are missing.
+
+    The insert lists username, password_hash and role only. It never
+    writes ieol_admin, so a new row stays false, including username admin.
+    Only the database owner turns that flag on.
+    """
     for role in ROLES:
         password = _seed_password(role)
         row = conn.execute(
@@ -238,6 +244,17 @@ def ensure_ready(conn: psycopg.Connection, packages: list) -> None:
                 (str(uuid.uuid4()), package.name, package.version, package.changelog),
             )
     conn.commit()
+
+
+def ieol_admin_for_user(conn: psycopg.Connection, username: str) -> bool:
+    """IEOL administrator flag. Read on each request, never from the cookie."""
+    row = conn.execute(
+        "SELECT ieol_admin FROM app.users WHERE username = %s",
+        (username,),
+    ).fetchone()
+    if row is None:
+        return False
+    return bool(row["ieol_admin"])
 
 
 def authenticate(conn: psycopg.Connection, username: str, password: str) -> dict | None:

@@ -492,7 +492,7 @@ def test_demo_load_is_admin_only_on_ieol_demo(client: TestClient):
         login(client, role)
         denied = client.post("/api/demo/load")
         assert denied.status_code == 403
-        assert "admin" in denied.json()["detail"]
+        assert denied.json()["detail"] == "Serve il permesso di amministratore IEOL"
     login(client, "admin")
     denied = client.post("/api/demo/load")
     assert denied.status_code == 409

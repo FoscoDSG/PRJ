@@ -329,8 +329,8 @@
   }
 
   function showFixtureButton(role, demoMode, ieolAdmin) {
-    const allowed = ieolAdmin == null ? role === "admin" : ieolAdmin === true;
-    return allowed && demoMode === true;
+    void role;
+    return ieolAdmin === true && demoMode === true;
   }
 
   // Solo true abilita scrittura. La pagina nasconde i pulsanti di decisione.

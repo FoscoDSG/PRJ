@@ -42,6 +42,10 @@ def test_migration_copies_today_admin_and_the_copy_can_be_restored():
     script = (ROOT / "db" / "migrations" / "0022_ieol_admin.sql").read_text(encoding="utf-8")
     assert migration_violation(script, "0022_ieol_admin.sql") is None
     assert "DROP " not in script.upper()
+    assert "CREATE TRIGGER" not in script.upper()
+    assert "SECURITY DEFINER" not in script.upper()
+    assert "GRANT EXECUTE" not in script.upper()
+    assert "REVOKE DELETE ON app.users FROM ieol_app" in script
     with connect() as conn:
         wipe_test_database(conn)
         _ensure_registry(conn)
@@ -89,8 +93,27 @@ def test_migration_copies_today_admin_and_the_copy_can_be_restored():
         }
 
 
-def test_app_seed_marks_only_the_builtin_admin():
+def test_app_cannot_delete_and_reinsert_an_ieol_admin():
+    with connect() as conn:
+        granted = conn.execute(
+            "SELECT ieol_admin FROM app.users WHERE username = 'admin'"
+        ).fetchone()
+    assert granted["ieol_admin"] is True
     with app_connect() as conn:
+        with pytest.raises(psycopg.errors.InsufficientPrivilege):
+            conn.execute("DELETE FROM app.users WHERE username = 'admin'")
+            conn.execute(
+                """
+                INSERT INTO app.users (username, password_hash, role)
+                VALUES ('admin', 'x', 'admin')
+                """
+            )
+        conn.rollback()
+        kept = conn.execute(
+            "SELECT ieol_admin FROM app.users WHERE username = 'admin'"
+        ).fetchone()
+    assert kept["ieol_admin"] is True
+    with connect() as conn:
         conn.execute("DELETE FROM app.users")
         seed_users(conn)
         conn.commit()
@@ -120,7 +143,7 @@ def test_app_seed_marks_only_the_builtin_admin():
             "SELECT ieol_admin FROM app.users WHERE username = 'altro-admin'"
         ).fetchone()
     assert flags == {
-        "admin": ("admin", True),
+        "admin": ("admin", False),
         "mapper": ("mapper", False),
         "operator": ("operator", False),
         "approver": ("approver", False),
@@ -145,30 +168,35 @@ def test_platform_powers_follow_the_flag_not_the_role(client: TestClient):
     assert demo.status_code == 409
     assert demo.json()["detail"] == "Il demo si carica solo sul database ieol_demo"
 
+    with connect() as conn:
+        conn.execute("UPDATE app.users SET ieol_admin = false WHERE username = 'admin'")
+        conn.commit()
+
+    narrowed = client.get("/api/payment-match/measure")
+    assert narrowed.status_code == 200, narrowed.text
+    assert narrowed.json()["scope"] == "company"
+    assert narrowed.json()["decides_rule"] is False
+    assert client.get("/api/me").json()["ieol_admin"] is False
+    still_denied = client.post("/api/demo/load")
+    assert still_denied.status_code == 403
+    assert still_denied.json()["detail"] == "Serve il permesso di amministratore IEOL"
+
     login(client, "mapper")
     own = client.get("/api/payment-match/measure")
     assert own.status_code == 200, own.text
     assert own.json()["scope"] == "company"
     denied = client.post("/api/demo/load")
     assert denied.status_code == 403
-    assert denied.json()["detail"] == "Serve il ruolo admin"
+    assert denied.json()["detail"] == "Serve il permesso di amministratore IEOL"
 
     with connect() as conn:
-        conn.execute("UPDATE app.users SET ieol_admin = false WHERE username = 'admin'")
         conn.execute("UPDATE app.users SET ieol_admin = true WHERE username = 'mapper'")
         conn.commit()
 
-    login(client, "admin")
-    narrowed = client.get("/api/payment-match/measure")
-    assert narrowed.json()["scope"] == "company"
-    assert narrowed.json()["decides_rule"] is False
-    still_denied = client.post("/api/demo/load")
-    assert still_denied.status_code == 403
-
-    login(client, "mapper")
     widened = client.get("/api/payment-match/measure")
     assert widened.json()["scope"] == "all"
     assert widened.json()["decides_rule"] is True
+    assert client.get("/api/me").json()["ieol_admin"] is True
     passed = client.post("/api/demo/load")
     assert passed.status_code == 409
 
@@ -189,23 +217,23 @@ def test_orphan_stock_follows_the_flag(client: TestClient):
         conn.execute("UPDATE app.users SET ieol_admin = true WHERE username = 'mapper'")
         conn.execute("UPDATE app.users SET ieol_admin = false WHERE username = 'admin'")
         conn.commit()
+    allowed = client.post("/api/stock/ART-X", json={"on_hand": 11})
+    assert allowed.status_code == 200, allowed.text
     login(client, "admin")
     refused = client.post("/api/stock/ART-X", json={"on_hand": 11})
     assert refused.status_code == 403
     assert refused.json()["detail"] == ORPHAN_STOCK
-    login(client, "mapper")
-    allowed = client.post("/api/stock/ART-X", json={"on_hand": 11})
-    assert allowed.status_code == 200, allowed.text
 
 
 _FIXTURE_BUTTON = r"""
 const { showFixtureButton } = require("./apps/web/escape.js");
-if (!showFixtureButton("admin", true)) process.exit(1);
+if (showFixtureButton("admin", true)) process.exit(1);
 if (showFixtureButton("mapper", true)) process.exit(2);
 if (showFixtureButton("admin", false)) process.exit(3);
 if (showFixtureButton("admin", true, false)) process.exit(4);
 if (!showFixtureButton("mapper", true, true)) process.exit(5);
 if (showFixtureButton("mapper", false, true)) process.exit(6);
+if (!showFixtureButton("admin", true, true)) process.exit(7);
 process.stdout.write("ok\n");
 """
 

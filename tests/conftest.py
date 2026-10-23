@@ -54,5 +54,14 @@ def fresh_database():
             sql.SQL("ALTER ROLE ieol_pii WITH LOGIN PASSWORD {}").format(sql.Literal(PII_PASSWORD))
         )
         seed_users(conn)
+        # seed_users leaves ieol_admin false. The fixture admin stands for
+        # an owner grant, which is the only way to turn the flag on.
+        conn.execute(
+            """
+            UPDATE app.users
+            SET ieol_admin = true
+            WHERE username = 'admin' AND role = 'admin'
+            """
+        )
         conn.commit()
     yield

@@ -1,8 +1,10 @@
 -- Amministratore IEOL, separato dal ruolo aziendale.
--- Chi ha già il ruolo admin resta amministratore IEOL.
--- Gli altri ruoli non guadagnano questo permesso.
--- Il flag si può rileggere dal ruolo: solo admin era vero oggi.
--- Una seconda esecuzione non cambia chi ha già il valore giusto.
+-- Il valore iniziale lo mette solo questa migrazione, per chi ha già il ruolo admin.
+-- Un utente inserito dopo, anche con ruolo admin, resta spento.
+-- Il seme dei conti non accende il flag.
+-- Lo può accendere solo il proprietario del database.
+-- ieol_app non può cancellare app.users: cancellare e reinserire non ricrea il permesso.
+-- Una seconda esecuzione non toglie un permesso dato dopo, e non lo dà a chi non è admin.
 
 ALTER TABLE app.users
   ADD COLUMN IF NOT EXISTS ieol_admin boolean NOT NULL DEFAULT false;
@@ -12,40 +14,8 @@ SET ieol_admin = true
 WHERE role = 'admin' AND ieol_admin IS DISTINCT FROM true;
 
 COMMENT ON COLUMN app.users.ieol_admin IS
-  'Amministratore IEOL. È separato dal ruolo aziendale. Alla nascita copia chi aveva già il ruolo admin, così nessuno perde o guadagna permessi.';
+  'Amministratore IEOL. È separato dal ruolo aziendale. La migrazione lo accende solo per chi aveva già il ruolo admin. Un inserimento successivo resta spento: il flag lo può dare solo il proprietario del database.';
 
--- Il conto di partenza si chiama admin. ieol_app può inserire solo
--- username, password_hash e role: non può scrivere questo flag.
--- Il trigger lo accende solo per quel conto, all'inserimento.
--- Un admin aziendale con un altro nome resta spento.
-
-CREATE OR REPLACE FUNCTION app.users_builtin_ieol_admin()
-RETURNS trigger
-LANGUAGE plpgsql
-SECURITY DEFINER
-SET search_path = pg_catalog
-AS $$
-BEGIN
-  IF NEW.username = 'admin' AND NEW.role = 'admin' THEN
-    NEW.ieol_admin := true;
-  END IF;
-  RETURN NEW;
-END;
-$$;
-
-REVOKE ALL ON FUNCTION app.users_builtin_ieol_admin() FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION app.users_builtin_ieol_admin() TO ieol_app;
-
-DO $$
-BEGIN
-  IF NOT EXISTS (
-    SELECT 1 FROM pg_trigger
-    WHERE tgname = 'users_builtin_ieol_admin'
-      AND tgrelid = 'app.users'::regclass
-      AND NOT tgisinternal
-  ) THEN
-    CREATE TRIGGER users_builtin_ieol_admin
-    BEFORE INSERT ON app.users
-    FOR EACH ROW EXECUTE FUNCTION app.users_builtin_ieol_admin();
-  END IF;
-END $$;
+-- 0011 revoca INSERT e UPDATE, ma lascia il DELETE.
+-- Senza questo REVOKE il conto dell'app cancella la riga e la reinserisce.
+REVOKE DELETE ON app.users FROM ieol_app;
