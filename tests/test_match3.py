@@ -220,6 +220,36 @@ def test_vat_is_compared_by_rate_across_lines():
         total="110",
     )
     assert rate.outcome == "VAT_MISMATCH"
+    assert rate.comparison["invoice_tax"] == []
+    compared = rate.comparison["lines"][0]
+    assert compared["vat_rate"] == "10"
+    assert compared["order_vat_rate"] == "22"
+    declared = summed.comparison["invoice_tax"]
+    assert declared == [{"rate": "22", "amount": "44.00"}]
+
+
+def test_mismatch_card_names_both_rates_and_the_decision():
+    result = _matched(
+        lines=[_line("ART-1", "12.5", "10", rate="10", amount="125")],
+        order=_order([_line("ART-1", "12.5", "10", amount="125")]),
+        receipts=[_line("ART-1", "12.5", "0", rate="0")],
+        total="137.50",
+    )
+    assert result.outcome == "VAT_MISMATCH"
+    assert result.comparison["invoice_tax"] == []
+    line = result.comparison["lines"][0]
+    assert line["vat_rate"] == "10"
+    assert line["order_vat_rate"] == "22"
+    assert line["invoiced_qty"] == "12.5"
+    rendered = subprocess.run(
+        ["node", "-e", _CARD],
+        cwd=ROOT,
+        input=json.dumps({"comparison": result.comparison}),
+        text=True,
+        capture_output=True,
+    )
+    assert rendered.returncode == 0, rendered.stderr
+    assert rendered.stdout == "ok\n"
 
 
 def test_price_within_tolerance_matches_when_the_invoice_is_coherent():
@@ -651,6 +681,12 @@ def test_latest_tolerance_partial_duplicate_and_the_page(client: TestClient):
     catalog = describe_ontology(load_merged(), None)
     assert catalog["match3_labels"]["outcomes"]["PRICE_OUT_OF_TOL"] == "Prezzo fuori tolleranza"
     assert catalog["match3_labels"]["outcomes"]["DUPLICATE_INVOICE"] == "Fattura già presente"
+    assert catalog["match3_labels"]["failures"]["vat"] == "Aliquota IVA diversa dall'ordine"
+    assert catalog["match3_labels"]["failures"]["price"] == "Prezzo fuori tolleranza"
+    assert catalog["match3_labels"]["captions"]["expected_tax"] == "Imposta attesa"
+    assert catalog["match3_labels"]["captions"]["invoice_tax"] == "Imposta in fattura"
+    assert catalog["value_labels"]["SupplierInvoice"]["status"]["open"] == "Aperta"
+    assert catalog["value_labels"]["SupplierInvoice"]["status"]["received"] == "Ricevuta"
     company = give_company("mapper", "Tre vie pagina")
     _assign("approver", company)
     _assign("operator", company)
@@ -747,6 +783,96 @@ def test_latest_tolerance_partial_duplicate_and_the_page(client: TestClient):
         json={"decision": "confirm", "evidence_hash": shown["evidence_hash"]},
     )
     assert again.status_code == 409
+    refreshed = client.get("/api/inbox").json()["recommendations"]
+    decided = next(item for item in refreshed if item["id"] == shown["id"])
+    assert decided["problem"].startswith("Eccezione rifiutata")
+    assert decided["history"][0]["reason"] == "prezzo non dovuto"
+    assert decided["history"][0]["actor"] == "approver"
+    assert "revoke" in decided["allowed_actions"]
+
+
+_CARD = r"""
+const { inboxCard, objectDetail } = require("./apps/web/escape.js");
+let raw = "";
+process.stdin.setEncoding("utf8");
+process.stdin.on("data", (chunk) => { raw += chunk; });
+process.stdin.on("end", () => {
+  const input = JSON.parse(raw);
+  const ontology = {
+    match3_labels: {
+      outcomes: { VAT_MISMATCH: "IVA non coincidente" },
+      failures: { vat: "Aliquota IVA diversa dall'ordine" },
+      captions: {
+        expected_tax: "Imposta attesa",
+        invoice_tax: "Imposta in fattura",
+        vat_rate: "Aliquota fattura",
+        order_vat_rate: "Aliquota ordine",
+        ordered_qty: "ordinata",
+        received_qty: "ricevuta",
+        invoiced_qty: "fatturata",
+        expected_line: "Atteso",
+        invoiced_line: "fatturato",
+        threshold: "soglia",
+        vat_heading: "IVA",
+      },
+    },
+    types: [
+      { name: "SupplierInvoice", label: "Fattura fornitore" },
+      { name: "PurchaseOrder", label: "Ordine di acquisto" },
+      { name: "GoodsReceipt", label: "Ricevimento" },
+    ],
+    value_labels: { SupplierInvoice: { status: { open: "Aperta", received: "Ricevuta" } } },
+  };
+  const card = {
+    id: "p1",
+    kind: "three_way",
+    status: "rejected",
+    outcome: "VAT_MISMATCH",
+    invoice_number: "FT-9",
+    order_number: "PO-9",
+    headline: "Fattura fornitore FT-9",
+    problem: "Eccezione rifiutata. La fattura fornitore non viene chiusa.",
+    evidence_hash: "abc",
+    failed_criteria: ["vat"],
+    allowed_actions: ["revoke"],
+    comparison: input.comparison,
+    history: [{
+      id: "d1",
+      decision: "reject",
+      actor: "approver",
+      decided_at: "2026-05-04T10:00:00",
+      revoked: false,
+      reason: "aliquota diversa",
+    }],
+  };
+  const html = inboxCard(card, "operator", true, ontology);
+  const open = objectDetail({
+    type: "SupplierInvoice",
+    business_key: "FT-OPEN",
+    fields: [{ name: "status", value: "open", label: "Stato", masked: false }],
+    links: [],
+    history: [],
+  }, ontology);
+  function fail(message) {
+    console.error(message);
+    process.exit(1);
+  }
+  if (!html.includes("fatturata 12,5")) fail(html);
+  if (!html.includes("Aliquota fattura 10%") || !html.includes("Aliquota ordine 22%")) fail(html);
+  if (!html.includes("Imposta attesa") || !html.includes("IVA 10%: 12,50 €")) fail(html);
+  if (html.includes("Imposta in fattura")) fail(html);
+  if (!html.includes("Aliquota IVA diversa dall")) fail(html);
+  if (!html.includes("Ordine di acquisto PO-9")) fail(html);
+  if (!html.includes("Eccezione rifiutata")) fail(html);
+  if (!html.includes("Rifiutato da approver il 04/05/2026. aliquota diversa")) fail(html);
+  if (!html.includes(">Annulla il rifiuto<")) fail(html);
+  if (!open.includes("Stato: Aperta") || open.includes("Stato: open")) fail(open);
+  for (const word of ["Incasso", "incasso", "incoming", "outgoing", "pagamento a fornitore", "IT999"]) {
+    if (html.includes(word)) fail(word);
+  }
+  process.stdout.write("ok\n");
+});
+"""
 
 
 _PAGE = r"""
@@ -767,8 +893,13 @@ process.stdin.on("end", () => {
     process.exit(1);
   }
   if (!operator.includes("Prezzo fuori tolleranza")) fail(operator);
+  if (!operator.includes("Aliquota fattura") || !operator.includes("Aliquota ordine")) fail(operator);
+  if (!operator.includes("22%")) fail(operator);
+  if (!operator.includes("Imposta attesa") || operator.includes("Imposta in fattura")) fail(operator);
+  if (!operator.includes("Ordine di acquisto PO-1")) fail(operator);
   if (!operator.includes("Fattura fornitore")) fail(operator);
   if (!detail.includes("Prezzo fuori tolleranza")) fail(detail);
+  if (!detail.includes("Stato: Ricevuta") || detail.includes("Stato: open") || detail.includes("Stato: received")) fail(detail);
   if (operator.includes("confirm-match3") || operator.includes("correct-match3") || operator.includes("reject-match3")) fail(operator);
   if (detail.includes("confirm-match3")) fail(detail);
   if (!approver.includes('data-act="confirm-match3"') || !approver.includes('data-act="reject-match3"')) fail(approver);

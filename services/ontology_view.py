@@ -176,6 +176,30 @@ MATCH3_CRITERIA = {
     "total": "Totale",
 }
 
+# Frasi dei criteri falliti. La pagina non mostra la parola isolata.
+MATCH3_FAILURES = {
+    "unique": "Fattura già presente",
+    "order": "Ordine assente",
+    "quantity": "Quantità non coerente con il ricevuto",
+    "price": "Prezzo fuori tolleranza",
+    "vat": "Aliquota IVA diversa dall'ordine",
+    "total": "Totale fuori tolleranza",
+}
+
+MATCH3_CAPTIONS = {
+    "expected_tax": "Imposta attesa",
+    "invoice_tax": "Imposta in fattura",
+    "vat_rate": "Aliquota fattura",
+    "order_vat_rate": "Aliquota ordine",
+    "ordered_qty": "ordinata",
+    "received_qty": "ricevuta",
+    "invoiced_qty": "fatturata",
+    "expected_line": "Atteso",
+    "invoiced_line": "fatturato",
+    "threshold": "soglia",
+    "vat_heading": "IVA",
+}
+
 # Shown words for a stored code. «open» is not the same word on every type.
 VALUE_LABELS = {
     ("Order", "status"): {"open": "Aperto", "closed": "Chiuso"},
@@ -188,6 +212,7 @@ VALUE_LABELS = {
     ("CreditNote", "status"): {"open": "Aperta", "issued": "Emessa"},
     ("Payment", "status"): {"received": "Ricevuto", "open": "In corso"},
     ("Shipment", "status"): {"open": "In corso"},
+    ("SupplierInvoice", "status"): {"open": "Aperta", "received": "Ricevuta"},
     ("Payment", "direction"): {"incoming": "In entrata", "outgoing": "In uscita"},
 }
 
@@ -284,6 +309,8 @@ def describe_ontology(
         "match3_labels": {
             "outcomes": dict(MATCH3_OUTCOMES),
             "criteria": dict(MATCH3_CRITERIA),
+            "failures": dict(MATCH3_FAILURES),
+            "captions": dict(MATCH3_CAPTIONS),
         },
         "processes": processes,
         "step_transitions": step_transitions,

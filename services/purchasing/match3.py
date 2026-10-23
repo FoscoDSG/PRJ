@@ -260,8 +260,8 @@ def evaluate(
         )
     computed_tax = {key: base * Decimal(key) / _HUNDRED for key, base in bases.items()}
     tax_fail = rate_mismatch or order is None
-    if order is not None and invoice.declared_tax is not None:
-        declared = _declared(invoice.declared_tax)
+    declared = _declared(invoice.declared_tax) if order is not None and invoice.declared_tax is not None else None
+    if declared is not None:
         for key in set(computed_tax) | set(declared):
             left = computed_tax.get(key, Decimal("0"))
             right = declared.get(key, Decimal("0"))
@@ -269,7 +269,6 @@ def evaluate(
                 tax_fail = True
     expected_total = sum(bases.values(), Decimal("0")) + sum(computed_tax.values(), Decimal("0"))
     total_fail = order is None or cents(abs(invoice.total - expected_total)) > cents(total_abs)
-    invoice_tax = computed_tax
     criteria = {
         "unique": not duplicate,
         "order": order is not None,
@@ -288,7 +287,9 @@ def evaluate(
     comparison = {
         "lines": shown_lines,
         "expected_tax": [_tax_row(key, amount) for key, amount in sorted(computed_tax.items())],
-        "invoice_tax": [_tax_row(key, amount) for key, amount in sorted(computed_tax.items())],
+        "invoice_tax": [
+            _tax_row(key, amount) for key, amount in sorted(declared.items())
+        ] if declared is not None else [],
         "expected_total": _money(expected_total),
         "invoice_total": _money(invoice.total),
         "total_tolerance": _money(total_abs),
@@ -646,6 +647,7 @@ def inbox_cards(conn: psycopg.Connection, company_id: str, model: Ontology) -> l
                     "decision": decision["decision"],
                     "actor": decision["actor"],
                     "decided_at": _when(decision["decided_at"]),
+                    "reason": (decision.get("reason") or "").strip(),
                     "revoked": decision["id"] in revoked,
                     "failed_criteria": decision.get("failed_criteria") or [],
                 }
@@ -668,8 +670,9 @@ def inbox_cards(conn: psycopg.Connection, company_id: str, model: Ontology) -> l
                 "kind": "three_way",
                 "invoice_id": row["supplier_invoice_entity_id"],
                 "invoice_number": number,
+                "order_number": facts.get("order_source_key") or "",
                 "headline": f"{type_label('SupplierInvoice')} {number}".strip(),
-                "problem": "Proposta delle tre vie. La fattura fornitore non viene chiusa.",
+                "problem": _problem(status),
                 "outcome": row["outcome"],
                 "comparison": comparison,
                 "criteria": {key: bool(criteria.get(key)) for key in CRITERIA},
@@ -697,6 +700,16 @@ def inbox_cards(conn: psycopg.Connection, company_id: str, model: Ontology) -> l
             }
         )
     return items
+
+
+def _problem(status: str) -> str:
+    if status == "confirmed":
+        return "Tre vie confermate. La fattura fornitore non viene chiusa."
+    if status == "corrected":
+        return "Eccezione corretta. La fattura fornitore non viene chiusa."
+    if status == "rejected":
+        return "Eccezione rifiutata. La fattura fornitore non viene chiusa."
+    return "Proposta delle tre vie. La fattura fornitore non viene chiusa."
 
 
 def _company(conn, actor: str) -> str:
