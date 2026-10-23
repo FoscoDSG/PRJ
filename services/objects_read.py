@@ -265,6 +265,12 @@ def _present(
     if row["type"] == "Invoice":
         balance = remaining_balance(conn, company_id, row["id"])
         payload["remaining"] = None if balance is None else stable(balance)
+    if detail and row["type"] == "SupplierInvoice":
+        from services.purchasing.match3 import for_invoice
+
+        card = for_invoice(conn, row["id"], company_id, model)
+        if card is not None:
+            payload["match3"] = card
     if detail:
         payload["history"] = document_history(
             conn,

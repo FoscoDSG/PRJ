@@ -19,6 +19,8 @@ from __future__ import annotations
 ORDER_DECIDABLE = frozenset({"detected", "proposed", "modified"})
 # A payment card shows the decision buttons only while it is proposed.
 PAYMENT_DECIDABLE = frozenset({"proposed"})
+# A three-way card accepts confirm, correct or reject only while it is proposed.
+MATCH3_DECIDABLE = frozenset({"proposed"})
 
 
 def card_disposition(status: str, decidable: frozenset[str]) -> str:

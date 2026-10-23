@@ -392,6 +392,7 @@ function bindRevokes(root, reload) {
     ["button[data-revoke-mapping]", (button) => button.dataset.revokeMapping, (id) => `/api/mapping-decisions/${id}/revoke`],
     ["button[data-revoke-inbox]", (button) => button.dataset.revokeInbox, (id) => `/api/decisions/${id}/revoke`],
     ["button[data-revoke-payment]", (button) => button.dataset.revokePayment, (id) => `/api/payment-decisions/${id}/revoke`],
+    ["button[data-revoke-match3]", (button) => button.dataset.revokeMatch3, (id) => `/api/match3-decisions/${id}/revoke`],
     ["button[data-revoke-quarantine]", (button) => button.dataset.revokeQuarantine, (id) => `/api/quarantine/${id}/revoke`],
     ["button[data-revoke-identity]", (button) => button.dataset.revokeIdentity, (id) => `/api/identity-reviews/${id}/revoke`],
     ["button[data-revoke-drift]", (button) => button.dataset.revokeDrift, (id) => `/api/drift/${id}/revoke`],
@@ -578,6 +579,13 @@ async function openObject(id) {
   detail.innerHTML = objectDetail(object, ontology);
   detail.querySelector("#back-objects").addEventListener("click", loadObjects);
   bindObjectOpen(detail);
+  const match3 = detail.querySelector("article[data-hash]");
+  if (match3) {
+    match3.querySelectorAll("button[data-act]").forEach((button) => {
+      button.addEventListener("click", () => act(match3.dataset.id, button.dataset.act, match3, () => openObject(id)));
+    });
+    bindRevokes(match3, () => openObject(id));
+  }
 }
 
 async function openOrder(id) {
@@ -659,9 +667,9 @@ async function loadInbox() {
     if (item && item.disposition === "closed") decidedItems.push(item);
     else openItems.push(item);
   }
-  const openHtml = openItems.map((item) => inboxCard(item, state.role, canWrite)).join("");
+  const openHtml = openItems.map((item) => inboxCard(item, state.role, canWrite, ontology)).join("");
   const decidedHtml = decidedItems.length
-    ? `<h3 class="section-heading">Già decise</h3>${decidedItems.map((item) => inboxCard(item, state.role, canWrite)).join("")}`
+    ? `<h3 class="section-heading">Già decise</h3>${decidedItems.map((item) => inboxCard(item, state.role, canWrite, ontology)).join("")}`
     : "";
   root.innerHTML = openHtml + decidedHtml;
   bindRevokes(root, loadInbox);
@@ -672,7 +680,7 @@ async function loadInbox() {
   });
 }
 
-async function act(id, action, card) {
+async function act(id, action, card, reload) {
   try {
     const evidenceHash = card.dataset.hash;
     if (action === "modify") {
@@ -724,6 +732,31 @@ async function act(id, action, card) {
         method: "POST",
         body: JSON.stringify({ decision: "reject", evidence_hash: evidenceHash, reason }),
       });
+    } else if (action === "confirm-match3") {
+      await api(`/api/match3-proposals/${id}/confirm`, {
+        method: "POST",
+        body: JSON.stringify({ decision: "confirm", evidence_hash: evidenceHash }),
+      });
+    } else if (action === "reject-match3") {
+      const reason = card.querySelector("[data-reject-reason]").value.trim();
+      if (reason.length < 5) {
+        showFlash("Scrivi un motivo di almeno 5 caratteri.");
+        return;
+      }
+      await api(`/api/match3-proposals/${id}/reject`, {
+        method: "POST",
+        body: JSON.stringify({ decision: "reject", evidence_hash: evidenceHash, reason }),
+      });
+    } else if (action === "correct-match3") {
+      const reason = card.querySelector("[data-correct-reason]").value.trim();
+      if (reason.length < 5) {
+        showFlash("Scrivi un motivo di almeno 5 caratteri.");
+        return;
+      }
+      await api(`/api/match3-proposals/${id}/correct`, {
+        method: "POST",
+        body: JSON.stringify({ decision: "correct", evidence_hash: evidenceHash, reason }),
+      });
     } else if (action === "correct-match") {
       const reason = card.querySelector("[data-correct-reason]").value.trim();
       const invoiceId = card.querySelector("[data-invoice]").value.trim();
@@ -743,11 +776,13 @@ async function act(id, action, card) {
         }),
       });
     }
-    loadInbox();
+    if (typeof reload === "function") reload();
+    else loadInbox();
   } catch (err) {
     showFlash(err.message);
     if (err.status === 409) {
-      await loadInbox();
+      if (typeof reload === "function") reload();
+      else await loadInbox();
     }
   }
 }

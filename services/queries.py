@@ -288,6 +288,9 @@ def list_inbox(conn: psycopg.Connection, role: str, company_id: str | None = Non
     _set_order_disposition(inbox)
     if company_id:
         inbox.extend(_payment_inbox(conn, role, company_id, model))
+        from services.purchasing.match3 import inbox_cards
+
+        inbox.extend(inbox_cards(conn, company_id, model))
     return inbox
 
 
