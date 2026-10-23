@@ -67,8 +67,11 @@ def _line(product, qty, unit, rate="22", amount=None):
     )
 
 
-def _invoice(lines, total, number="FT-1"):
-    return WayDocument(lines=lines, total=Decimal(str(total)), number=number)
+def _invoice(lines, total, number="FT-1", declared_tax=None):
+    tax = None
+    if declared_tax is not None:
+        tax = {str(key): Decimal(str(value)) for key, value in declared_tax.items()}
+    return WayDocument(lines=lines, total=Decimal(str(total)), number=number, declared_tax=tax)
 
 
 def _order(lines):
@@ -79,7 +82,11 @@ def _matched(**kwargs):
     lines = kwargs.pop("lines", None)
     if lines is None:
         lines = [_line("ART-1", "10", "10", amount="100")]
-    invoice = kwargs.pop("invoice", None) or _invoice(lines, kwargs.pop("total", "122"))
+    declared_tax = kwargs.pop("declared_tax", None)
+    already = kwargs.pop("already", None)
+    invoice = kwargs.pop("invoice", None) or _invoice(
+        lines, kwargs.pop("total", "122"), declared_tax=declared_tax
+    )
     order = kwargs.pop("order", _order([_line("ART-1", "10", "10", amount="100")]))
     receipts = kwargs.pop("receipts", [_line("ART-1", "10", "0", rate="0")])
     duplicate = kwargs.pop("duplicate", False)
@@ -91,6 +98,7 @@ def _matched(**kwargs):
         receipts,
         tolerances,
         duplicate=duplicate,
+        already_invoiced=already,
         policy=policy,
     )
 
@@ -124,42 +132,42 @@ def test_each_outcome_and_the_tolerance_edges():
         lines=[_line("ART-1", "1", "1000", rate="0", amount="1005")],
         order=_order([_line("ART-1", "1", "1000", rate="0", amount="1000")]),
         receipts=[_line("ART-1", "1", "0", rate="0")],
-        total="1000",
+        total="1005",
     )
     assert on_threshold.outcome == "MATCH_OK"
     above = _matched(
         lines=[_line("ART-1", "1", "1000", rate="0", amount="1005.01")],
         order=_order([_line("ART-1", "1", "1000", rate="0", amount="1000")]),
         receipts=[_line("ART-1", "1", "0", rate="0")],
-        total="1000",
+        total="1005.01",
     )
     assert above.outcome == "PRICE_OUT_OF_TOL"
     small_on = _matched(
         lines=[_line("ART-1", "1", "100", rate="0", amount="101")],
         order=_order([_line("ART-1", "1", "100", rate="0", amount="100")]),
         receipts=[_line("ART-1", "1", "0", rate="0")],
-        total="100",
+        total="101",
     )
     assert small_on.outcome == "MATCH_OK"
     small_above = _matched(
         lines=[_line("ART-1", "1", "100", rate="0", amount="101.01")],
         order=_order([_line("ART-1", "1", "100", rate="0", amount="100")]),
         receipts=[_line("ART-1", "1", "0", rate="0")],
-        total="100",
+        total="101.01",
     )
     assert small_above.outcome == "PRICE_OUT_OF_TOL"
     rounded_ok = _matched(
         lines=[_line("ART-1", "1", "33.335", rate="0", amount="33.669")],
         order=_order([_line("ART-1", "1", "33.335", rate="0", amount="33.335")]),
         receipts=[_line("ART-1", "1", "0", rate="0")],
-        total="33.335",
+        total="33.669",
     )
     assert rounded_ok.outcome == "MATCH_OK"
     rounded_over = _matched(
         lines=[_line("ART-1", "1", "33.335", rate="0", amount="33.670")],
         order=_order([_line("ART-1", "1", "33.335", rate="0", amount="33.335")]),
         receipts=[_line("ART-1", "1", "0", rate="0")],
-        total="33.335",
+        total="33.670",
     )
     assert rounded_over.outcome == "PRICE_OUT_OF_TOL"
 
@@ -191,9 +199,12 @@ def test_vat_is_compared_by_rate_across_lines():
         ],
         order=_order(order_lines),
         receipts=receipts,
-        total="244",
+        total="244.0976",
+        declared_tax={"22": "44.00"},
     )
     assert summed.outcome == "VAT_MISMATCH"
+    assert summed.criteria["price"] is True
+    assert summed.criteria["total"] is True
     offset = _matched(
         lines=[
             _line("ART-1", "1", "100", amount="100.10"),
@@ -209,6 +220,129 @@ def test_vat_is_compared_by_rate_across_lines():
         total="110",
     )
     assert rate.outcome == "VAT_MISMATCH"
+
+
+def test_price_within_tolerance_matches_when_the_invoice_is_coherent():
+    result = _matched(
+        lines=[_line("ART-1", "1", "1000", amount="1005")],
+        order=_order([_line("ART-1", "1", "1000", amount="1000")]),
+        receipts=[_line("ART-1", "1", "0", rate="0")],
+        total="1226.10",
+    )
+    assert result.outcome == "MATCH_OK"
+    assert result.criteria == {
+        "unique": True,
+        "order": True,
+        "quantity": True,
+        "price": True,
+        "vat": True,
+        "total": True,
+    }
+
+
+def test_quantity_is_the_sum_of_the_same_article():
+    split = _matched(
+        lines=[
+            _line("ART-1", "6", "10", amount="60"),
+            _line("ART-1", "6", "10", amount="60"),
+        ],
+        order=_order([
+            _line("ART-1", "6", "10", amount="60"),
+            _line("ART-1", "6", "10", amount="60"),
+        ]),
+        receipts=[_line("ART-1", "10", "0", rate="0")],
+        total="146.40",
+    )
+    assert split.outcome == "QTY_OVER"
+    summed = _matched(
+        lines=[_line("ART-1", "10", "10", amount="100")],
+        order=_order([
+            _line("ART-1", "4", "10", amount="40"),
+            _line("ART-1", "6", "10", amount="60"),
+        ]),
+        receipts=[_line("ART-1", "10", "0", rate="0")],
+    )
+    assert summed.outcome == "MATCH_OK"
+    assert summed.comparison["lines"][0]["ordered_qty"] == "10"
+    conflict = _matched(
+        lines=[_line("ART-1", "2", "10", amount="20")],
+        order=_order([
+            _line("ART-1", "1", "10", amount="10"),
+            _line("ART-1", "1", "12", amount="12"),
+        ]),
+        receipts=[_line("ART-1", "2", "0", rate="0")],
+        total="24.40",
+    )
+    assert conflict.outcome == "PRICE_OUT_OF_TOL"
+    assert conflict.comparison["price_conflicts"] == ["ART-1"]
+
+
+def test_partial_receipt_false_is_not_a_match():
+    short = _matched(
+        lines=[_line("ART-1", "6", "10", amount="60")],
+        receipts=[_line("ART-1", "6", "0", rate="0")],
+        total="73.20",
+        partial_receipt=False,
+    )
+    assert short.outcome == "QTY_NOT_RECEIVED"
+    allowed = _matched(
+        lines=[_line("ART-1", "6", "10", amount="60")],
+        receipts=[_line("ART-1", "6", "0", rate="0")],
+        total="73.20",
+    )
+    assert allowed.outcome == "MATCH_OK"
+
+
+def test_a_later_invoice_for_the_same_goods_is_over_received():
+    company = give_company("mapper", "Tre vie seconda fattura")
+    model = load_merged()
+    with connect() as conn:
+        _books(conn, model, company)
+        write_supplier_invoice(
+            conn,
+            model,
+            company_id=company,
+            supplier_vat="IT99999999999",
+            supplier_name="Fornitore Prova",
+            number="FT-2",
+            issued_at="2026-05-04",
+            amount=Decimal("122.00"),
+            currency="EUR",
+            document_type="TD01",
+            label_origin="synthetic",
+            source="fatture_fornitori",
+            source_class="external",
+            order_number="PO-1",
+            lines=[
+                {
+                    "number": "1",
+                    "description": "Merce",
+                    "product_source_key": "ART-1",
+                    "quantity": Decimal("10"),
+                    "unit_price": Decimal("10"),
+                    "line_amount": Decimal("100.00"),
+                    "vat_rate": Decimal("22"),
+                }
+            ],
+        )
+        from services.purchasing.match3 import propose_company
+
+        propose_company(conn, model, company)
+        conn.commit()
+        rows = conn.execute(
+            """
+            SELECT p.outcome, f.value #>> '{}' AS number
+            FROM app.match3_proposals p
+            JOIN app.facts f ON f.entity_id = p.supplier_invoice_entity_id
+              AND f.valid_to IS NULL AND f.property = 'invoice_number'
+            WHERE p.company_id = %s::uuid
+            """,
+            (company,),
+        ).fetchall()
+        assert {row["number"]: row["outcome"] for row in rows} == {
+            "FT-1": "MATCH_OK",
+            "FT-2": "QTY_OVER",
+        }
 
 
 def _write(conn, model, company, type_name, key, values):

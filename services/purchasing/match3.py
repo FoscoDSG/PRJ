@@ -6,9 +6,10 @@ non diventa MATCH_OK. Quantità oltre il ricevuto, ricevimento assente,
 ordine assente e duplicato non passano mai, qualunque sia la soglia.
 
 Il prezzo usa la soglia ``min(price_rate × importo atteso della riga, price_abs)``,
-estremi inclusi. I calcoli restano in Decimal e si arrotondano con
-ROUND_HALF_UP solo al confronto, al centesimo. L'imposta si somma per
-aliquota, non riga per riga.
+estremi inclusi, contro il prezzo dell'ordine. I calcoli restano in Decimal
+e si arrotondano con ROUND_HALF_UP solo al confronto, al centesimo.
+Imposta e totale controllano la fattura: imponibile fatturato per aliquota,
+e somma delle righe più imposta contro l'importo.
 """
 
 from __future__ import annotations
@@ -78,6 +79,16 @@ class WayDocument:
     lines: list[WayLine] = field(default_factory=list)
     total: Decimal = Decimal("0")
     number: str = ""
+    declared_tax: dict[str, Decimal] | None = None
+
+
+@dataclass
+class _OrderProduct:
+    quantity: Decimal
+    unit_price: Decimal
+    vat_rate: Decimal
+    price_conflict: bool
+    rate_conflict: bool
 
 
 @dataclass
@@ -134,10 +145,23 @@ def _line_amount(line: WayLine) -> Decimal:
     return line.unit_price * line.quantity
 
 
-def _by_product(lines: list[WayLine]) -> dict[str, WayLine]:
-    found: dict[str, WayLine] = {}
+def _by_product(lines: list[WayLine]) -> dict[str, _OrderProduct]:
+    """Sum the order quantity of one article. Different prices are a conflict."""
+    found: dict[str, _OrderProduct] = {}
     for line in lines:
-        found.setdefault(line.product, line)
+        current = found.get(line.product)
+        if current is None:
+            found[line.product] = _OrderProduct(
+                line.quantity, line.unit_price, line.vat_rate, False, False
+            )
+            continue
+        found[line.product] = _OrderProduct(
+            current.quantity + line.quantity,
+            current.unit_price,
+            current.vat_rate,
+            current.price_conflict or current.unit_price != line.unit_price,
+            current.rate_conflict or current.vat_rate != line.vat_rate,
+        )
     return found
 
 
@@ -155,34 +179,50 @@ def evaluate(
     tolerances: dict[str, Any],
     *,
     duplicate: bool = False,
+    already_invoiced: dict[str, Decimal] | None = None,
     policy: Match3Policy | None = None,
 ) -> Match3Result:
-    """One outcome for the invoice. Nothing is written and nothing is closed."""
+    """One outcome for the invoice. Nothing is written and nothing is closed.
+
+    Price stays on the order, line by line. Tax and total check the invoice
+    itself. Quantity is the sum per article, after earlier invoices on the
+    same order. A receipt shorter than the order is not MATCH_OK when
+    ``partial_receipt`` is false.
+    """
     chosen = policy or default_policy()
     rate = Decimal(tolerances["price_rate"])
     price_abs = Decimal(tolerances["price_abs"])
     vat_abs = Decimal(tolerances["vat_abs"])
     total_abs = Decimal(tolerances["total_abs"])
+    partial_ok = bool(tolerances.get("partial_receipt", True))
     order_lines = _by_product(order.lines) if order is not None else {}
     received = _received(receipts)
+    prior = already_invoiced or {}
+    invoiced_qty = _received(invoice.lines)
     quantity_missing = False
     quantity_over = False
+    quantity_short = False
+    available: dict[str, Decimal] = {}
+    for product, qty in invoiced_qty.items():
+        ordered = order_lines.get(product)
+        if product not in received:
+            quantity_missing = True
+            available[product] = Decimal("0")
+        else:
+            remaining = received[product] - prior.get(product, Decimal("0"))
+            available[product] = remaining
+            if qty > remaining:
+                quantity_over = True
+            if ordered is not None and not partial_ok and received[product] < ordered.quantity:
+                quantity_short = True
     price_fail = False
     rate_mismatch = False
-    expected_tax: dict[str, Decimal] = {}
-    invoice_tax: dict[str, Decimal] = {}
-    expected_net = Decimal("0")
+    price_conflicts: list[str] = []
+    bases: dict[str, Decimal] = {}
     shown_lines = []
     for line in invoice.lines:
         ordered = order_lines.get(line.product)
-        got = received.get(line.product)
-        if got is None:
-            quantity_missing = True
-            got_qty = Decimal("0")
-        else:
-            got_qty = got
-            if line.quantity > got_qty:
-                quantity_over = True
+        got_qty = available.get(line.product, Decimal("0"))
         actual = _line_amount(line)
         if ordered is None:
             expected_line = Decimal("0")
@@ -193,18 +233,17 @@ def evaluate(
         else:
             expected_line = ordered.unit_price * line.quantity
             threshold = min(rate * expected_line, price_abs)
-            if cents(abs(actual - expected_line)) > cents(threshold):
+            if ordered.price_conflict:
+                price_fail = True
+                if line.product not in price_conflicts:
+                    price_conflicts.append(line.product)
+            elif cents(abs(actual - expected_line)) > cents(threshold):
                 price_fail = True
             order_rate = ordered.vat_rate
-            if line.vat_rate != order_rate:
+            if ordered.rate_conflict or line.vat_rate != order_rate:
                 rate_mismatch = True
-            expected_net += expected_line
-            bucket = _rate_key(order_rate)
-            expected_tax[bucket] = expected_tax.get(bucket, Decimal("0")) + (
-                expected_line * order_rate / _HUNDRED
-            )
         bucket = _rate_key(line.vat_rate)
-        invoice_tax[bucket] = invoice_tax.get(bucket, Decimal("0")) + (actual * line.vat_rate / _HUNDRED)
+        bases[bucket] = bases.get(bucket, Decimal("0")) + actual
         ordered_qty = ordered.quantity if ordered is not None else Decimal("0")
         shown_lines.append(
             {
@@ -219,40 +258,44 @@ def evaluate(
                 "order_vat_rate": _rate_key(order_rate),
             }
         )
-    tax_fail = rate_mismatch
-    rates = set(expected_tax) | set(invoice_tax)
-    if order is None:
-        tax_fail = True
-    else:
-        for key in rates:
-            left = invoice_tax.get(key, Decimal("0"))
-            right = expected_tax.get(key, Decimal("0"))
+    computed_tax = {key: base * Decimal(key) / _HUNDRED for key, base in bases.items()}
+    tax_fail = rate_mismatch or order is None
+    if order is not None and invoice.declared_tax is not None:
+        declared = _declared(invoice.declared_tax)
+        for key in set(computed_tax) | set(declared):
+            left = computed_tax.get(key, Decimal("0"))
+            right = declared.get(key, Decimal("0"))
             if cents(abs(left - right)) > cents(vat_abs):
                 tax_fail = True
-    expected_total = expected_net + sum(expected_tax.values(), Decimal("0"))
+    expected_total = sum(bases.values(), Decimal("0")) + sum(computed_tax.values(), Decimal("0"))
     total_fail = order is None or cents(abs(invoice.total - expected_total)) > cents(total_abs)
+    invoice_tax = computed_tax
     criteria = {
         "unique": not duplicate,
         "order": order is not None,
-        "quantity": not quantity_missing and not quantity_over,
+        "quantity": not quantity_missing and not quantity_over and not quantity_short,
         "price": order is not None and not price_fail,
         "vat": order is not None and not tax_fail,
         "total": not total_fail,
     }
     if quantity_missing:
         quantity_code = "QTY_NOT_RECEIVED"
-    else:
+    elif quantity_over:
         quantity_code = "QTY_OVER"
+    else:
+        quantity_code = "QTY_NOT_RECEIVED"
     outcome = _outcome(criteria, quantity_code, chosen)
     comparison = {
         "lines": shown_lines,
-        "expected_tax": [_tax_row(key, amount) for key, amount in sorted(expected_tax.items())],
-        "invoice_tax": [_tax_row(key, amount) for key, amount in sorted(invoice_tax.items())],
+        "expected_tax": [_tax_row(key, amount) for key, amount in sorted(computed_tax.items())],
+        "invoice_tax": [_tax_row(key, amount) for key, amount in sorted(computed_tax.items())],
         "expected_total": _money(expected_total),
         "invoice_total": _money(invoice.total),
         "total_tolerance": _money(total_abs),
         "vat_tolerance": _money(vat_abs),
     }
+    if price_conflicts:
+        comparison["price_conflicts"] = price_conflicts
     failed = [key for key in CRITERIA if not criteria[key]]
     return Match3Result(
         outcome=outcome,
@@ -265,6 +308,13 @@ def evaluate(
 
 def _tax_row(rate: str, amount: Decimal) -> dict[str, str]:
     return {"rate": rate, "amount": _money(amount)}
+
+
+def _declared(raw: dict[str, Decimal]) -> dict[str, Decimal]:
+    found: dict[str, Decimal] = {}
+    for key, value in raw.items():
+        found[_rate_key(Decimal(str(key)))] = Decimal(str(value))
+    return found
 
 
 def _outcome(criteria: dict[str, bool], quantity_code: str, policy: Match3Policy) -> str:
@@ -338,7 +388,16 @@ def _store_proposal(conn, ontology: Ontology, company_id: str, row, tolerances, 
         number=number,
     )
     duplicate = _duplicate(conn, company_id, row["business_key"], row["id"])
-    result = evaluate(invoice, order, receipts, tolerances, duplicate=duplicate, policy=policy)
+    prior = _prior_invoiced(conn, company_id, order_key, row["id"], invoice_facts) if order_key else {}
+    result = evaluate(
+        invoice,
+        order,
+        receipts,
+        tolerances,
+        duplicate=duplicate,
+        already_invoiced=prior,
+        policy=policy,
+    )
     if result.outcome not in _OUTCOMES:
         raise AppError(500, "Esito delle tre vie sconosciuto")
     entity_ids = [row["id"]]
@@ -790,6 +849,61 @@ def _find(conn, company_id: str, type_name: str, key: str) -> str | None:
         (type_name, key, company_id),
     ).fetchone()
     return None if row is None else row["id"]
+
+
+def _prior_invoiced(
+    conn,
+    company_id: str,
+    order_key: str,
+    invoice_id: str,
+    invoice_facts: dict[str, str],
+) -> dict[str, Decimal]:
+    """Quantity already billed on this order by an earlier invoice that was not rejected."""
+    rows = conn.execute(
+        """
+        SELECT e.id::text, e.business_key
+        FROM app.entities e
+        JOIN app.facts f ON f.entity_id = e.id AND f.valid_to IS NULL AND f.property = 'order_source_key'
+        WHERE e.type = 'SupplierInvoice' AND e.valid_to IS NULL AND e.company_id = %s::uuid
+          AND f.value #>> '{}' = %s AND e.id <> %s::uuid
+        """,
+        (company_id, order_key, invoice_id),
+    ).fetchall()
+    current = _stamp(invoice_facts, invoice_id)
+    totals: dict[str, Decimal] = {}
+    for row in rows:
+        facts = _facts(conn, row["id"])
+        if _stamp(facts, row["id"]) >= current:
+            continue
+        if _rejected(conn, row["id"]):
+            continue
+        for line in _invoice_lines(conn, company_id, row["business_key"]):
+            totals[line.product] = totals.get(line.product, Decimal("0")) + line.quantity
+    return totals
+
+
+def _stamp(facts: dict[str, str], entity_id: str) -> tuple[str, str, str]:
+    return (facts.get("issued_at") or "", facts.get("invoice_number") or "", entity_id)
+
+
+def _rejected(conn, invoice_id: str) -> bool:
+    row = conn.execute(
+        """
+        SELECT d.decision
+        FROM app.match3_decisions d
+        JOIN app.match3_proposals p ON p.id = d.proposal_id
+        WHERE p.supplier_invoice_entity_id = %s::uuid
+          AND d.decision <> 'revoked'
+          AND NOT EXISTS (
+            SELECT 1 FROM app.match3_decisions later
+            WHERE later.revokes_decision_id = d.id
+          )
+        ORDER BY d.decided_at DESC, d.id DESC
+        LIMIT 1
+        """,
+        (invoice_id,),
+    ).fetchone()
+    return row is not None and row["decision"] == "reject"
 
 
 def _duplicate(conn, company_id: str, key: str, invoice_id: str) -> bool:
