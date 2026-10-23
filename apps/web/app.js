@@ -38,6 +38,8 @@ const {
   showFixtureButton,
   companyUploadNotice,
   canWriteDecisions,
+  matchesIncasso,
+  allowsAction,
 } = globalThis.ieolEscape;
 
 const auditState = { offset: 0, limit: 50 };
@@ -66,10 +68,11 @@ function enter(me) {
   document.querySelector("#session").hidden = false;
   document.querySelector("#who").textContent = `${me.username} · ${me.role}`;
   document.querySelector("#load-fixture").hidden = !showFixtureButton(state.role, state.demoMode);
-  const canWrite = canWriteDecisions(state.hasCompany);
-  document.querySelector("#upload-label").hidden = !canWrite;
-  document.querySelector("#confirm-high").hidden = !canWrite;
-  document.querySelector("#materialize").hidden = !canWrite;
+  const pageActions = Array.isArray(me.allowed_actions) ? me.allowed_actions : [];
+  const allowsPage = (action) => pageActions.includes(action);
+  document.querySelector("#upload-label").hidden = !allowsPage("upload");
+  document.querySelector("#confirm-high").hidden = !allowsPage("confirm_confident");
+  document.querySelector("#materialize").hidden = !allowsPage("materialize");
   const companyNotice = document.querySelector("#company-notice");
   companyNotice.hidden = state.hasCompany;
   companyNotice.textContent = state.hasCompany ? "" : companyUploadNotice();
@@ -186,7 +189,8 @@ function renderProfileLabels(mappings, files) {
     row.append(source, document.createTextNode(" "), text);
     container.append(row);
     const file = bySource.get(item.source_name);
-    if (file && file.file_id && Array.isArray(file.choices) && canWriteDecisions(state.hasCompany)) {
+    const fileActions = allowsAction(file, "correct") || allowsAction(file, "wrong") || allowsAction(file, "not_sure");
+    if (file && file.file_id && Array.isArray(file.choices) && fileActions) {
       container.append(fileTypeActions(file));
     }
   }
@@ -199,6 +203,7 @@ function fileTypeActions(file) {
   ok.type = "button";
   ok.textContent = "Corretto";
   ok.addEventListener("click", () => submitFileType(file.file_id, "correct"));
+  if (allowsAction(file, "correct")) actions.append(ok);
   const wrong = document.createElement("button");
   wrong.type = "button";
   wrong.className = "ghost";
@@ -235,7 +240,10 @@ function fileTypeActions(file) {
     if (code === "not_sure") submitFileType(file.file_id, "not_sure");
     else submitFileType(file.file_id, "wrong", code);
   });
-  actions.append(ok, document.createTextNode(" "), wrong, document.createTextNode(" "), picker);
+  if (allowsAction(file, "wrong") || allowsAction(file, "not_sure")) {
+    if (actions.childNodes.length) actions.append(document.createTextNode(" "));
+    actions.append(wrong, document.createTextNode(" "), picker);
+  }
   return actions;
 }
 
@@ -270,6 +278,12 @@ async function loadMappings() {
   const quarantine = document.querySelector("#quarantine");
   const held = await api("/api/quarantine");
   quarantine.innerHTML = held.documents.map((item) => quarantineCard(item, canWrite, state.role)).join("");
+  for (const item of held.documents) {
+    const slot = quarantine.querySelector(`[data-quarantine-reason="${CSS.escape(String(item.id))}"]`);
+    if (slot && item.reason != null && String(item.reason).trim() !== "") {
+      slot.textContent = "Motivo: " + String(item.reason).trim();
+    }
+  }
   quarantine.querySelectorAll("button[data-release]").forEach((button) => {
     button.addEventListener("click", async () => {
       try {
@@ -283,8 +297,19 @@ async function loadMappings() {
   });
   quarantine.querySelectorAll("button[data-reject-quarantine]").forEach((button) => {
     button.addEventListener("click", async () => {
+      const field = quarantine.querySelector(
+        `[data-quarantine-reason-input="${CSS.escape(button.dataset.rejectQuarantine)}"]`,
+      );
+      const reason = field ? field.value.trim() : "";
+      if (reason.length < 5) {
+        showFlash("Scrivi il motivo del rifiuto (almeno 5 caratteri).");
+        return;
+      }
       try {
-        await api(`/api/quarantine/${button.dataset.rejectQuarantine}/reject`, { method: "POST" });
+        await api(`/api/quarantine/${button.dataset.rejectQuarantine}/reject`, {
+          method: "POST",
+          body: JSON.stringify({ reason }),
+        });
         showFlash("Documento rifiutato.");
         loadMappings();
       } catch (err) {
@@ -431,7 +456,8 @@ async function loadObjects() {
     list.append(note);
     return;
   }
-  const objects = data.objects || [];
+  let objects = data.objects || [];
+  if (state.objectType === "Payment") objects = objects.filter((object) => matchesIncasso(object));
   if (!objects.length) {
     list.replaceChildren();
     const note = document.createElement("p");
@@ -690,5 +716,7 @@ document.querySelector("#audit-next").addEventListener("click", () => {
   auditState.offset += auditState.limit;
   loadAudit();
 });
+
+globalThis.ieolPage = { fileTypeActions, enter };
 
 boot();

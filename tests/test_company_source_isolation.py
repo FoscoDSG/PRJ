@@ -589,6 +589,7 @@ def test_other_company_cannot_release_or_reject_a_shopify_document(tmp_path: Pat
             "mapper",
             actor="mapper_a",
             company_id=company_a,
+            reason="documento non accettato",
         )
         assert opened["status"] == "released"
         assert refused["status"] == "rejected"
@@ -642,8 +643,10 @@ _QUARANTINE_FIELDS = {
     "order_key",
     "reasons",
     "status",
+    "reason",
     "history",
     "executed",
+    "allowed_actions",
 }
 
 

@@ -46,6 +46,7 @@ const html = [
     decided_at: value,
     band: "forte",
     band_note: value,
+    allowed_actions: ["revoke"],
     history: [{
       id: value,
       decision: "confirm",
@@ -170,6 +171,7 @@ const html = [
     confidence: 0.5,
     disposition: "closed",
     blocked_reason: value,
+    allowed_actions: ["approve", "modify", "reject"],
     actions: [{ type: "createPurchaseOrder", params: { quantity: 1 } }],
   }, "approver"),
   inboxCard({
@@ -455,22 +457,20 @@ const openQuarantine = {
   source_name: "mail",
   reasons: [],
   status: "open",
+  allowed_actions: [],
 };
-for (const role of ["approver", "operator"]) {
+for (const role of ["mapper", "admin", "approver", "operator"]) {
   const card = quarantineCard(openQuarantine, true, role);
-  if (card.includes("data-reject-quarantine") || card.includes(">Rifiuta<")) {
-    console.error(`quarantine reject shown to ${role}`);
-    process.exit(2);
-  }
-  if (!card.includes(">Rilascia<")) {
-    console.error(`quarantine release hidden from ${role}`);
+  if (card.includes(">Rilascia<") || card.includes("data-reject-quarantine") || card.includes(">Rifiuta<")) {
+    console.error(`quarantine buttons shown without allowed_actions to ${role}`);
     process.exit(2);
   }
 }
-for (const role of ["mapper", "admin"]) {
-  const card = quarantineCard(openQuarantine, true, role);
-  if (!card.includes("data-reject-quarantine") || !card.includes(">Rifiuta<")) {
-    console.error(`quarantine reject hidden from ${role}`);
+const listedQuarantine = Object.assign({}, openQuarantine, { allowed_actions: ["release", "reject"] });
+for (const role of ["approver", "operator", "mapper", "admin"]) {
+  const card = quarantineCard(listedQuarantine, true, role);
+  if (!card.includes(">Rilascia<") || !card.includes("data-reject-quarantine") || !card.includes(">Rifiuta<")) {
+    console.error(`quarantine buttons ignored allowed_actions for ${role}`);
     process.exit(2);
   }
 }
@@ -479,13 +479,17 @@ const rejectedQuarantine = quarantineCard({
   order_key: "1099",
   reasons: [],
   status: "rejected",
+  reason: "documento illeggibile",
   history: [{ decision: "rejected", actor: "mapper", decided_at: "2026-10-21T18:00:00" }],
 }, true, "approver");
 if (
   rejectedQuarantine.includes("In attesa di conferma") ||
-  !rejectedQuarantine.includes("Rifiutato da mapper il 21/10/2026")
+  rejectedQuarantine.includes("Rifiutata") ||
+  !rejectedQuarantine.includes("Rifiutato da mapper il 21/10/2026") ||
+  rejectedQuarantine.includes("documento illeggibile") ||
+  !rejectedQuarantine.includes('data-quarantine-reason="q-rejected"')
 ) {
-  console.error("rejected quarantine still looks pending");
+  console.error("rejected quarantine still looks pending or repeats the note");
   process.exit(2);
 }
 const rejectedBare = quarantineCard({
@@ -493,10 +497,65 @@ const rejectedBare = quarantineCard({
   order_key: "1100",
   reasons: [],
   status: "rejected",
-  history: [],
+  reason: null,
+  history: [{ decision: "rejected", actor: null, decided_at: null }],
 }, true, "mapper");
-if (!rejectedBare.includes("Rifiutato") || rejectedBare.includes("In attesa di conferma") || rejectedBare.includes("Rifiutato da")) {
-  console.error("a rejection without a person still looks pending");
+if (
+  !rejectedBare.includes("Rifiutato") ||
+  rejectedBare.includes("In attesa di conferma") ||
+  rejectedBare.includes("Rifiutato da") ||
+  rejectedBare.includes(" il ") ||
+  rejectedBare.includes("Rifiutata") ||
+  rejectedBare.includes("quarantine-reason")
+) {
+  console.error("a rejection without a person or a date still looks pending");
+  process.exit(2);
+}
+const hostileReason = quarantineCard({
+  id: "q-reason",
+  order_key: "1099",
+  reasons: [],
+  status: "rejected",
+  reason: value,
+  history: [{ decision: "rejected", actor: "mapper", decided_at: "2026-10-21T18:00:00" }],
+}, true, "mapper");
+if (
+  hostileReason.includes(value) ||
+  hostileReason.includes("Motivo:") ||
+  !hostileReason.includes('data-quarantine-reason="q-reason"') ||
+  !hostileReason.includes("Rifiutato da mapper il 21/10/2026")
+) {
+  console.error("reject reason was written into the card html");
+  process.exit(2);
+}
+const revokedRejection = quarantineCard({
+  id: "q-revoked",
+  order_key: "1098",
+  reasons: [],
+  status: "rejected",
+  reason: "documento illeggibile",
+  allowed_actions: [],
+  history: [{
+    decision: "rejected",
+    actor: "mapper",
+    decided_at: "2026-10-21T18:00:00",
+    revoked: true,
+  }],
+}, true, "mapper");
+if (
+  !revokedRejection.includes("Il documento resta rifiutato e non torna in coda.") ||
+  !revokedRejection.includes("revoked-decision") ||
+  !revokedRejection.includes("Rifiutato da mapper il 21/10/2026") ||
+  revokedRejection.includes(">Rilascia<") ||
+  revokedRejection.includes(">Rifiuta<") ||
+  revokedRejection.includes("data-reject-quarantine")
+) {
+  console.error("a revoked rejection offers the queue again");
+  process.exit(2);
+}
+const page = fs.readFileSync(require("path").join(__dirname, "../apps/web/app.js"), "utf8");
+if (!page.includes('slot.textContent = "Motivo: " + String(item.reason).trim()')) {
+  console.error("reject reason is not assigned with textContent");
   process.exit(2);
 }
 const bareProcess = inboxCard({
@@ -545,6 +604,7 @@ const paymentCard = inboxCard({
   process: { id: "order_to_cash", label: "Ordine e incasso" },
   step: { id: "match_proposed", label: "Proposta" },
   evidence_hash: "abc",
+  allowed_actions: ["confirm", "correct", "reject"],
 }, "approver", true);
 if (!paymentCard.includes("data-correct-reason") || !paymentCard.includes("data-reject-reason")) {
   console.error("correct and reject need separate reason fields");

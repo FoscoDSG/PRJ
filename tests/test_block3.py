@@ -1138,6 +1138,7 @@ const html = customerDetail({
   orders: [],
   edges: [],
   facts: [],
+  allowed_actions: ["unmask"],
 }, "admin");
 if (!html.includes("data-reason") || !html.includes("unmask-pii")) process.exit(3);
 if (html.includes("window.prompt")) process.exit(4);

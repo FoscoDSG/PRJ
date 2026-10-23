@@ -20,7 +20,7 @@ from services.cash.catalog import CASH_PROCESS_ID, STEP_CONFIRMED
 from services.cash.documents import confirm_allocation_status
 from services.cash.events import record_process_event
 from services.companies import USER_WITHOUT_COMPANY
-from services.ontology_view import payment_label
+from services.ontology_view import is_incoming, payment_label
 from services.errors import AppError
 from services.mapping.corrections import company_id_for_user
 
@@ -116,6 +116,8 @@ def correct_unmatched(
     company_id = _company(conn, actor)
     payment = _payment(conn, payment_id, company_id)
     invoice = _resolve_invoice(conn, company_id, invoice_id, invoice_number)
+    if not is_incoming(payment):
+        raise AppError(422, "Un pagamento in uscita non si abbina a una fattura di vendita")
     amount = money(allocated_amount)
     if amount <= 0:
         raise AppError(400, "L'importo assegnato deve essere positivo")

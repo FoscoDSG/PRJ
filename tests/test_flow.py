@@ -582,6 +582,7 @@ const scoredCard = inboxCard({
   actions: [{ type: "createPurchaseOrder", params: { quantity: 1 } }],
   requires_cfo: false,
   preview: { formula: "disponibile", payloads: [] },
+  allowed_actions: ["approve", "modify", "reject"],
 }, "approver");
 if (!scoredCard.includes("0,93 · punteggio di regola, non calibrato · order-agent.baseline@v1")) {
   console.error(scoredCard);
@@ -609,6 +610,7 @@ const blockedCard = inboxCard({
   requires_cfo: false,
   blocked_reason: "provenienza sconosciuta",
   preview: { formula: "disponibile", payloads: [] },
+  allowed_actions: ["approve", "modify", "reject"],
 }, "approver");
 if (!blockedCard.includes('data-act="approve" disabled') || !blockedCard.includes("provenienza sconosciuta")) {
   console.error(blockedCard);

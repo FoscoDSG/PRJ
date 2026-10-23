@@ -26,12 +26,25 @@ from apps.api.schemas import (
     PaymentConfirmBody,
     PaymentCorrectBody,
     PaymentRejectBody,
+    QuarantineRejectBody,
     RejectBody,
     RevokeBody,
     SqlIngestBody,
     StockBody,
     UnmaskBody,
     UnmatchedPaymentBody,
+)
+from services.allowed_actions import (
+    customer_actions,
+    drift_actions,
+    file_actions,
+    identity_actions,
+    mapping_actions,
+    page_actions,
+    payment_actions,
+    quarantine_actions,
+    recommendation_actions,
+    stamp,
 )
 from services.audit_read import list_readable
 from services.db import app_connect, assert_demo_database, authenticate, demo_mode, ensure_ready
@@ -187,7 +200,13 @@ def _public_user(user: dict) -> dict:
     """
     with app_connect() as conn:
         company_id = company_id_for_user(conn, user["username"])
-    return {**user, "demo_mode": demo_mode(), "has_company": company_id is not None}
+    has_company = company_id is not None
+    return {
+        **user,
+        "demo_mode": demo_mode(),
+        "has_company": has_company,
+        "allowed_actions": page_actions(user["role"], company=has_company),
+    }
 
 
 def _require_company(username: str) -> None:
@@ -305,7 +324,7 @@ def quarantine(user: dict = Depends(require_user)) -> dict:
         rows = list(
             conn.execute(
                 """
-                SELECT id::text, source_name, order_key, reasons, status
+                SELECT id::text, source_name, order_key, reasons, status, reason
                 FROM app.quarantine_documents
                 WHERE company_id IS NULL
                    OR (%s::uuid IS NOT NULL AND company_id = %s::uuid)
@@ -320,10 +339,12 @@ def quarantine(user: dict = Depends(require_user)) -> dict:
             revocation_table="app.quarantine_decisions",
             subject_ids=[row["id"] for row in rows],
             decision_for_status={"released": "released", "rejected": "rejected"},
+            when_column="decided_at",
         )
     for row in rows:
         row["history"] = histories.get(row["id"], [])
         row["executed"] = False
+    stamp(rows, user["role"], quarantine_actions, company=company_id is not None)
     return _ok({"documents": rows})
 
 
@@ -345,7 +366,11 @@ def release(quarantine_id: str, user: dict = Depends(require_user)) -> dict:
 
 
 @app.post("/api/quarantine/{quarantine_id}/reject")
-def reject_quarantine(quarantine_id: str, user: dict = Depends(require_user)) -> dict:
+def reject_quarantine(
+    quarantine_id: str,
+    body: QuarantineRejectBody,
+    user: dict = Depends(require_user),
+) -> dict:
     _require_company(user["username"])
     with app_connect() as conn:
         company_id = company_id_for_user(conn, user["username"])
@@ -355,6 +380,7 @@ def reject_quarantine(quarantine_id: str, user: dict = Depends(require_user)) ->
             user["role"],
             actor=user["username"],
             company_id=company_id,
+            reason=body.reason,
         )
         conn.commit()
     return _ok(result)
@@ -366,7 +392,9 @@ def identity_reviews(user: dict = Depends(require_user)) -> dict:
 
     with app_connect() as conn:
         company_id = company_id_for_user(conn, user["username"])
-        return _ok({"reviews": list_reviews(conn, company_id)})
+        reviews = list_reviews(conn, company_id)
+    stamp(reviews, user["role"], identity_actions, company=company_id is not None)
+    return _ok({"reviews": reviews})
 
 
 @app.post("/api/identity-reviews/{review_id}/confirm")
@@ -421,11 +449,14 @@ def ingest_sql_route(body: SqlIngestBody, user: dict = Depends(require_user)) ->
 def mappings(user: dict = Depends(require_user)) -> dict:
     with app_connect() as conn:
         company_id = company_id_for_user(conn, user["username"])
-        return _ok({
-            "mappings": list_mappings(conn, user["role"], ontology(), company_id),
-            "drift": list_drift(conn, company_id),
-            "files": list_table_files(conn, company_id),
-        })
+        mappings = list_mappings(conn, user["role"], ontology(), company_id)
+        drift = list_drift(conn, company_id)
+        files = list_table_files(conn, company_id)
+    company = company_id is not None
+    stamp(mappings, user["role"], mapping_actions, company=company)
+    stamp(drift, user["role"], drift_actions, company=company)
+    stamp(files, user["role"], file_actions, company=company)
+    return _ok({"mappings": mappings, "drift": drift, "files": files})
 
 
 @app.post("/api/mappings/{mapping_id}/confirm")
@@ -685,9 +716,11 @@ def order_detail(order_id: str, user: dict = Depends(require_user)) -> dict:
 @app.get("/api/customers/{customer_id}")
 def customer_detail(customer_id: str, user: dict = Depends(require_user)) -> dict:
     with app_connect() as conn:
+        company_id = company_id_for_user(conn, user["username"])
         detail = get_customer(conn, customer_id, user["role"])
     if detail is None:
         raise AppError(404, "Cliente assente")
+    stamp([detail], user["role"], customer_actions, company=company_id is not None)
     return _ok(detail)
 
 
@@ -840,6 +873,10 @@ def inbox(user: dict = Depends(require_user)) -> dict:
     with app_connect() as conn:
         company_id = company_id_for_user(conn, user["username"])
         rows = list_inbox(conn, user["role"], company_id)
+    company = company_id is not None
+    for row in rows:
+        choose = payment_actions if row.get("kind") == "payment_match" else recommendation_actions
+        row["allowed_actions"] = choose(user["role"], row, company=company)
     return _ok({"recommendations": rows})
 
 

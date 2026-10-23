@@ -130,15 +130,31 @@
     return Object.prototype.hasOwnProperty.call(DECISION_LABELS, code) ? DECISION_LABELS[code] : String(code ?? "");
   }
 
-  function decisionHistory(entries) {
+  function defaultHistoryText(entry) {
+    const label = decisionLabel(entry && entry.decision);
+    const amount = entry && entry.allocated_amount != null && entry.allocated_amount !== ""
+      ? ` · ${euroText(entry.allocated_amount)}`
+      : "";
+    const when = entry && entry.decided_at ? ` · ${formatDay(entry.decided_at)}` : "";
+    const who = entry && entry.actor ? ` · ${entry.actor}` : "";
+    return `${label}${amount}${who}${when}`;
+  }
+
+  function rejectedHistoryText(entry) {
+    const who = entry && entry.actor != null ? String(entry.actor).trim() : "";
+    const whenRaw = entry && entry.decided_at != null ? String(entry.decided_at).trim() : "";
+    const when = whenRaw ? formatDay(whenRaw) : "";
+    if (who && when) return `Rifiutato da ${who} il ${when}`;
+    if (who) return `Rifiutato da ${who}`;
+    if (when) return `Rifiutato il ${when}`;
+    return "Rifiutato";
+  }
+
+  function decisionHistory(entries, kind) {
     const items = (entries || []).map((entry) => {
-      const label = decisionLabel(entry && entry.decision);
-      const amount = entry && entry.allocated_amount != null && entry.allocated_amount !== ""
-        ? ` · ${euroText(entry.allocated_amount)}`
-        : "";
-      const when = entry && entry.decided_at ? ` · ${formatDay(entry.decided_at)}` : "";
-      const who = entry && entry.actor ? ` · ${entry.actor}` : "";
-      const text = `${label}${amount}${who}${when}`;
+      const text = kind === "quarantine" && entry && entry.decision === "rejected"
+        ? rejectedHistoryText(entry)
+        : defaultHistoryText(entry);
       const line = entry && entry.revoked
         ? `<span class="revoked-decision">${escapeHtml(text)}</span>`
         : escapeHtml(text);
@@ -169,12 +185,34 @@
     return `<label class="revoke-reason">Motivo dell'annullamento <input data-revoke-reason="${escapeHtml(decisionId)}" data-revoke-kind="${escapeHtml(kind)}" required minlength="5" maxlength="500" /></label> <button type="button" class="ghost" data-revoke-${escapeHtml(kind)}="${escapeHtml(decisionId)}">Annulla</button>`;
   }
 
+  function allows(item, action) {
+    const list = item && item.allowed_actions;
+    return Array.isArray(list) && list.includes(action);
+  }
+
+  function allowsAction(item, action) {
+    return allows(item, action);
+  }
+
+  function fileActionBar(file) {
+    const id = file && file.file_id != null ? file.file_id : "";
+    const parts = [];
+    if (allows(file, "correct")) {
+      parts.push(`<button type="button" data-type-ok="${escapeHtml(id)}">Corretto</button>`);
+    }
+    if (allows(file, "wrong") || allows(file, "not_sure")) {
+      parts.push(`<button type="button" class="ghost" data-type-wrong="${escapeHtml(id)}">Non è questo tipo</button>`);
+    }
+    if (!parts.length) return "";
+    return `<div class="file-type-actions">${parts.join(" ")}</div>`;
+  }
+
   function revokeBar(item, canWrite, kind, role) {
-    if (canWrite === false || role === "operator") return "";
     if (item && item.executed) {
       const message = item.executed_message || "L'azione è già stata eseguita e non si può annullare da qui.";
       return `<p class="executed-note">${escapeHtml(message)}</p>`;
     }
+    if (!allows(item, "revoke")) return "";
     const open = (item && item.history || []).filter((entry) => entry && entry.id && !entry.revoked);
     if (!open.length) return "";
     return open.map((entry) => revokeFields(entry.id, kind)).join(" ");
@@ -185,6 +223,9 @@
     if (!revoked) return "";
     if (kind === "quarantine" && item.status === "released") {
       return `<p class="executed-note">Il documento resta rilasciato.</p>`;
+    }
+    if (kind === "quarantine" && item.status === "rejected") {
+      return `<p class="executed-note">Il documento resta rifiutato e non torna in coda.</p>`;
     }
     if (kind === "identity" && item.status === "confirmed") {
       return `<p class="executed-note">I clienti restano uniti.</p>`;
@@ -199,49 +240,42 @@
   }
 
   function driftCard(item, canWrite, role) {
-    const queued = !item.status || item.status === "open";
-    const button = canWrite !== false && queued
+    const button = allows(item, "acknowledge")
       ? `<button type="button" data-drift="${escapeHtml(item.id)}">Segna visto</button>`
       : "";
     return `<article class="card"><strong>Schema drift su ${escapeHtml(item.source_name)}</strong><pre>${escapeHtml(JSON.stringify(item.diff, null, 2))}</pre>${decisionHistory(item.history)}${button}${revokeBar(item, canWrite, "drift", role)}</article>`;
   }
 
-  function rejectedQuarantineNote(item) {
-    const history = item && Array.isArray(item.history) ? item.history : [];
-    const entry = history.find((row) => row && row.decision === "rejected") || null;
-    const who = entry && entry.actor != null ? String(entry.actor).trim() : "";
-    const whenRaw = entry && entry.decided_at != null ? String(entry.decided_at).trim() : "";
-    const when = whenRaw ? formatDay(whenRaw) : "";
-    if (who && when) return `Rifiutato da ${who} il ${when}`;
-    if (who) return `Rifiutato da ${who}`;
-    if (when) return `Rifiutato il ${when}`;
-    return "Rifiutato";
-  }
-
   function quarantineCard(item, canWrite, role) {
     const reasons = (item.reasons || []).filter((reason) => reason != null && String(reason) !== "").join("; ");
     let note = "In attesa di conferma, nessuna scrittura ERP.";
-    if (item.status === "rejected") note = rejectedQuarantineNote(item);
+    if (item.status === "rejected") note = "";
     else if (reasons) note = reasons;
     else if (item.status === "released") note = "Documento rilasciato.";
     const title = item.order_key || item.source_name;
-    const queued = !item.status || item.status === "open";
-    const canReject = role === "admin" || role === "mapper";
-    const release = canWrite !== false && queued
+    const release = allows(item, "release")
       ? `<button type="button" data-release="${escapeHtml(item.id)}">Rilascia</button>`
       : "";
-    const reject = canWrite !== false && queued && canReject
-      ? `<button type="button" class="ghost" data-reject-quarantine="${escapeHtml(item.id)}">Rifiuta</button>`
+    const reject = allows(item, "reject")
+      ? `<label class="revoke-reason">Motivo del rifiuto <input data-quarantine-reason-input="${escapeHtml(item.id)}" required minlength="5" maxlength="500" /></label> <button type="button" class="ghost" data-reject-quarantine="${escapeHtml(item.id)}">Rifiuta</button>`
+      : "";
+    const reasonText = item && item.reason != null ? String(item.reason).trim() : "";
+    const reasonSlot = item.status === "rejected" && reasonText
+      ? `<p class="quarantine-reason" data-quarantine-reason="${escapeHtml(item.id)}"></p>`
       : "";
     const button = [release, reject].filter(Boolean).join(" ");
-    return `<article class="card"><strong>Quarantena ${escapeHtml(title)}</strong><p>${escapeHtml(note)}</p>${decisionHistory(item.history)}${keptEffect(item, "quarantine")}${button}${revokeBar(item, canWrite, "quarantine", role)}</article>`;
+    const noteHtml = note ? `<p>${escapeHtml(note)}</p>` : "";
+    return `<article class="card"><strong>Quarantena ${escapeHtml(title)}</strong>${noteHtml}${reasonSlot}${decisionHistory(item.history, "quarantine")}${keptEffect(item, "quarantine")}${button}${revokeBar(item, canWrite, "quarantine", role)}</article>`;
   }
 
   function identityCard(item, canWrite, role) {
-    const queued = !item.status || item.status === "open";
-    const buttons = canWrite !== false && queued
-      ? `<button type="button" data-merge="${escapeHtml(item.id)}">Conferma fusione</button> <button type="button" class="ghost" data-split="${escapeHtml(item.id)}">Tieni separati</button>`
+    const confirm = allows(item, "confirm")
+      ? `<button type="button" data-merge="${escapeHtml(item.id)}">Conferma fusione</button>`
       : "";
+    const reject = allows(item, "reject")
+      ? `<button type="button" class="ghost" data-split="${escapeHtml(item.id)}">Tieni separati</button>`
+      : "";
+    const buttons = [confirm, reject].filter(Boolean).join(" ");
     return `<article class="card"><strong>Identità ${escapeHtml(item.entity_type)}</strong><p>${escapeHtml(item.reason)} (${escapeHtml(item.score)})</p>${decisionHistory(item.history)}${keptEffect(item, "identity")}${buttons}${revokeBar(item, canWrite, "identity", role)}</article>`;
   }
 
@@ -353,15 +387,23 @@
   };
 
   function mappingRow(item, canWrite, role) {
-    const writable = canWrite !== false;
-    const confirm = writable && item.status === "proposed"
-      ? `<button type="button" data-confirm="${escapeHtml(item.id)}">Conferma</button> <button type="button" class="ghost" data-reject="${escapeHtml(item.id)}">Rifiuta</button>`
+    const confirm = allows(item, "confirm")
+      ? `<button type="button" data-confirm="${escapeHtml(item.id)}">Conferma</button>`
       : "";
-    const revoke = writable && item.origin === "learned" && item.decision_id
+    const reject = allows(item, "reject")
+      ? `<button type="button" class="ghost" data-reject="${escapeHtml(item.id)}">Rifiuta</button>`
+      : "";
+    const pair = [confirm, reject].filter(Boolean).join(" ");
+    const revoke = allows(item, "revoke") && item.origin === "learned" && item.decision_id
       ? `<label class="revoke-reason">Motivo dell'annullamento <input data-revoke-reason="${escapeHtml(item.decision_id)}" required minlength="5" maxlength="500" /></label> <button type="button" class="ghost" data-revoke="${escapeHtml(item.decision_id)}">Annulla correzione</button>`
       : "";
-    const decided = revokeBar({ history: item.history, executed: item.executed, executed_message: item.executed_message }, canWrite, "mapping", role);
-    const actions = [confirm, revoke, decided].filter(Boolean).join(" ");
+    const decided = revokeBar({
+      history: item.history,
+      executed: item.executed,
+      executed_message: item.executed_message,
+      allowed_actions: item.allowed_actions,
+    }, canWrite, "mapping", role);
+    const actions = [pair, revoke, decided].filter(Boolean).join(" ");
     const shown = suggestionBand(item);
     const note = shown.note
       ? `<p class="suggestion-note">${escapeHtml(shown.note)}</p>`
@@ -427,7 +469,7 @@
     <ul class="edges">${edges}</ul>
     <h3>Fatti</h3>
     ${factList(customer.facts)}
-    ${role === "admin" && canWrite !== false ? `<label>Motivo dello smascheramento <input data-reason required minlength="5" maxlength="500" /></label><p><button type="button" id="unmask-pii" data-entity="${escapeHtml(customer.id)}">Mostra dati personali</button></p><pre id="unmask-result"></pre>` : ""}
+    ${allows(customer, "unmask") ? `<label>Motivo dello smascheramento <input data-reason required minlength="5" maxlength="500" /></label><p><button type="button" id="unmask-pii" data-entity="${escapeHtml(customer.id)}">Mostra dati personali</button></p><pre id="unmask-result"></pre>` : ""}
   `;
   }
 
@@ -556,66 +598,67 @@
   }
 
   function paymentButtons(item, role, canWrite) {
-    if (canWrite === false) {
-      return `<p>${escapeHtml(companyUploadNotice())}</p>`;
+    const parts = [];
+    if (canWrite === false) parts.push(`<p>${escapeHtml(companyUploadNotice())}</p>`);
+    const confirm = allows(item, "confirm");
+    const correct = allows(item, "correct");
+    const reject = allows(item, "reject");
+    if (!confirm && !correct && !reject) return parts.join("");
+    if (correct) {
+      parts.push(`<label>Fattura <input data-invoice value="${escapeHtml(invoiceNumberValue(item))}" /></label>`);
+      parts.push(`<label>Importo assegnato <input data-amount value="${escapeHtml(allocationAmountValue(item))}" /></label>`);
+      parts.push(`<label>Motivo della correzione <input data-correct-reason required minlength="5" maxlength="500" /></label>`);
     }
-    if (role !== "approver" && role !== "admin") {
-      return "<p>Sola lettura: l'operatore non approva.</p>";
+    if (reject) {
+      parts.push(`<label>Motivo del rifiuto <input data-reject-reason required minlength="5" maxlength="500" /></label>`);
     }
-    if (item.status !== "proposed") return "";
-    return `<label>Fattura <input data-invoice value="${escapeHtml(invoiceNumberValue(item))}" /></label>
-      <label>Importo assegnato <input data-amount value="${escapeHtml(allocationAmountValue(item))}" /></label>
-      <label>Motivo della correzione <input data-correct-reason required minlength="5" maxlength="500" /></label>
-      <label>Motivo del rifiuto <input data-reject-reason required minlength="5" maxlength="500" /></label>
-      <div class="decision-bar">
-        <button type="button" data-act="confirm-match">Conferma</button>
-        <button type="button" class="ghost" data-act="correct-match">Correggi</button>
-        <button type="button" class="ghost" data-act="reject-match">Rifiuta</button>
-      </div>`;
+    const buttons = [
+      confirm ? `<button type="button" data-act="confirm-match">Conferma</button>` : "",
+      correct ? `<button type="button" class="ghost" data-act="correct-match">Correggi</button>` : "",
+      reject ? `<button type="button" class="ghost" data-act="reject-match">Rifiuta</button>` : "",
+    ].filter(Boolean).join("\n        ");
+    parts.push(`<div class="decision-bar">\n        ${buttons}\n      </div>`);
+    return parts.join("\n      ");
+  }
+
+  function recommendationButtons(item, canWrite) {
+    const parts = [];
+    if (canWrite === false) parts.push(`<p>${escapeHtml(companyUploadNotice())}</p>`);
+    const approve = allows(item, "approve");
+    const modify = allows(item, "modify");
+    const reject = allows(item, "reject");
+    if (approve || modify || reject) {
+      const blocked = item.blocked_reason ? String(item.blocked_reason) : "";
+      const approveButton = approve
+        ? (blocked
+          ? `<button type="button" data-act="approve" disabled>Approva</button> <span class="blocked-reason">${escapeHtml(blocked)}</span>`
+          : `<button type="button" data-act="approve">Approva</button>`)
+        : "";
+      const fields = [];
+      if (modify) fields.push(`<label>Quantità acquisto <input data-qty value="${escapeHtml((item.actions || []).find((action) => action.type === "createPurchaseOrder")?.params.quantity ?? "")}" /></label>`);
+      if (reject) fields.push(`<label>Motivo del rifiuto <input data-reason required minlength="5" maxlength="500" /></label>`);
+      const buttons = [
+        approveButton,
+        modify ? `<button type="button" class="ghost" data-act="modify">Modifica</button>` : "",
+        reject ? `<button type="button" class="ghost" data-act="reject">Rifiuta</button>` : "",
+      ].filter(Boolean).join("\n        ");
+      parts.push(`${fields.join("\n      ")}\n      <div class="decision-bar">\n        ${buttons}\n      </div>`);
+    }
+    if (allows(item, "execute")) {
+      parts.push(`<div class="decision-bar"><button type="button" data-act="execute">Esegui</button></div>`);
+    }
+    return parts.join("");
   }
 
   function inboxCard(item, role, canWrite) {
-    const purchase = (item.actions || []).find((action) => action.type === "createPurchaseOrder");
-    const qty = purchase?.params.quantity ?? "";
     const preview = item.preview || {};
     const payloads = preview.payloads || item.dry_run || [];
     const evidence = (item.evidence || [])
       .map((fact) => `<li>${escapeHtml(fact.property)}: ${escapeHtml(fact.value)}<p>${escapeHtml(provenanceLabel(fact.source_class))}</p></li>`)
       .join("");
     const cfo = item.requires_cfo ? '<span class="pill high">CFO</span>' : "";
-    const blocked = item.blocked_reason ? String(item.blocked_reason) : "";
-    const pending = item.status === "proposed" || item.status === "detected";
-    const approvalRevoked = (item.history || []).some((entry) => entry && entry.revoked);
-    const alreadyRun = item.status === "executed" || item.executed === true;
-    const executeButton = !approvalRevoked && !alreadyRun && item.status === "dry_run_ok"
-      ? '<button type="button" data-act="execute">Esegui</button>'
-      : "";
-    const approveButton = blocked
-      ? `<button type="button" data-act="approve" disabled>Approva</button> <span class="blocked-reason">${escapeHtml(blocked)}</span>`
-      : `<button type="button" data-act="approve">Approva</button>`;
     const payment = item.kind === "payment_match";
-    let buttons;
-    if (payment) {
-      buttons = paymentButtons(item, role, canWrite);
-    } else if (canWrite === false) {
-      buttons = `<p>${escapeHtml(companyUploadNotice())}</p>`;
-    } else if (role === "operator") {
-      buttons = "<p>Sola lettura: l'operatore non approva.</p>";
-    } else if (role === "approver" || role === "admin") {
-      const decide = pending
-        ? `<label>Quantità acquisto <input data-qty value="${escapeHtml(qty)}" /></label>
-      <label>Motivo del rifiuto <input data-reason required minlength="5" maxlength="500" /></label>
-      <div class="decision-bar">
-        ${approveButton}
-        <button type="button" class="ghost" data-act="modify">Modifica</button>
-        <button type="button" class="ghost" data-act="reject">Rifiuta</button>
-      </div>`
-        : "";
-      const run = executeButton ? `<div class="decision-bar">${executeButton}</div>` : "";
-      buttons = `${decide}${run}`;
-    } else {
-      buttons = "<p>Sola lettura: l'operatore non approva.</p>";
-    }
+    const buttons = payment ? paymentButtons(item, role, canWrite) : recommendationButtons(item, canWrite);
     const title = item && typeof item.headline === "string" && item.headline !== ""
       ? item.headline
       : `Ordine ${item.order_key ?? ""}`;
@@ -659,6 +702,10 @@
     const fields = object && Array.isArray(object.fields) ? object.fields : [];
     const found = fields.find((field) => field && field.name === "direction" && !field.masked);
     return found && found.value != null ? String(found.value) : "";
+  }
+
+  function matchesIncasso(object) {
+    return Boolean(object && object.incoming === true);
   }
 
   function isIncoming(payment) {
@@ -864,6 +911,9 @@
     objectCard,
     objectDetail,
     inboxCard,
+    allowsAction,
+    matchesIncasso,
+    fileActionBar,
     measureText,
     auditCard,
     readableCard,

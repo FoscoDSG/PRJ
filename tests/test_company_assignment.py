@@ -347,8 +347,9 @@ def test_user_without_a_company_cannot_write_a_decision(client: TestClient):
     assert still_blocked.status_code == 403
     assert still_blocked.json()["detail"] == "Serve il ruolo mapper"
     page = (ROOT / "apps" / "web" / "app.js").read_text(encoding="utf-8")
-    assert 'querySelector("#confirm-high").hidden = !canWrite' in page
-    assert 'querySelector("#materialize").hidden = !canWrite' in page
+    assert 'querySelector("#upload-label").hidden = !allowsPage("upload")' in page
+    assert 'querySelector("#confirm-high").hidden = !allowsPage("confirm_confident")' in page
+    assert 'querySelector("#materialize").hidden = !allowsPage("materialize")' in page
     assert "mappingRow(item, canWriteDecisions(state.hasCompany), state.role)" in page
     assert "canWriteDecisions(state.hasCompany)" in page
     assert "innerHTML" not in page.split("companyNotice")[1].split("show(")[0]
@@ -680,8 +681,10 @@ if (hidden.includes("<button") || hidden.includes("Conferma") || hidden.includes
   process.exit(5);
 }
 if (!hidden.includes("ordini") || !hidden.includes("cod")) process.exit(6);
-const shown = mappingRow(item, true);
+const shownItem = Object.assign({}, item, { allowed_actions: ["confirm", "reject", "revoke"] });
+const shown = mappingRow(shownItem, true);
 if (!shown.includes(">Conferma<") || !shown.includes(">Rifiuta<") || !shown.includes("Annulla correzione")) process.exit(7);
-if (!mappingRow(item).includes(">Conferma<")) process.exit(8);
+if (!mappingRow(shownItem).includes(">Conferma<")) process.exit(8);
+if (!mappingRow(shownItem, false).includes(">Conferma<")) process.exit(9);
 console.log("ok");
 """
