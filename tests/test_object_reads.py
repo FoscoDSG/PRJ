@@ -18,7 +18,7 @@ from services.agent.payment_measure import score_cases
 from services.disposition import ORDER_DECIDABLE, PAYMENT_DECIDABLE, card_disposition
 from services.pii import MASK, RESERVED, ROLE_HIDDEN, note_clear_personal_view
 from tests.test_flow import decide, give_company, load_demo, login
-from tests.test_order_to_cash import SYNTHETIC, _assign, _status, _upload
+from tests.test_order_to_cash import SYNTHETIC, _assign, _entity, _insert_proposal, _status, _upload
 
 ROOT = Path(__file__).resolve().parents[1]
 WEB = ROOT / "apps" / "web"
@@ -673,7 +673,7 @@ def test_pages_show_reserved_only_when_the_server_sends_it():
 _OBJECT_FILTERS = r"""
 const fs = require("fs");
 const vm = require("vm");
-const { matchesIncasso, matchesPagamento } = require("./apps/web/escape.js");
+const { matchesIncasso, matchesPagamento, inboxCard, objectDetail } = require("./apps/web/escape.js");
 
 if (!matchesPagamento({ incoming: false, direction: "incoming" })) process.exit(1);
 if (matchesPagamento({ incoming: true, direction: "outgoing" })) process.exit(1);
@@ -851,6 +851,63 @@ const visibleIncasso = objectsForFilter(full, "Payment").map((object) => object.
 const visiblePagamento = objectsForFilter(full, "Pagamento").map((object) => object.business_key);
 if (visibleIncasso.join("|") !== "INC-1") fail(14, visibleIncasso.join("|"));
 if (visiblePagamento.join("|") !== "PAG-1") fail(14, visiblePagamento.join("|"));
+const hiddenPayments = [
+  { id: "h1", type: "Payment", business_key: "HID-B", incoming: false, fields: [{ name: "direction", value: "outgoing", masked: true }] },
+  { id: "h2", type: "Payment", business_key: "HID-A", incoming: true, fields: [{ name: "direction", value: "incoming", masked: true }] },
+];
+const withHidden = objectPageFilters(pageTypes, ontology, hiddenPayments);
+if (withHidden.map((filter) => filter.label).join("|") !== "Ordine|Fattura|Incasso|Pagamento|Movimenti") fail(15, withHidden.map((filter) => filter.label).join("|"));
+if (withHidden.map((filter) => filter.id).join("|") !== "Order|Invoice|Payment|Pagamento|Movimenti") fail(15, "ordine filtri");
+const movementButton = withHidden.find((filter) => filter.id === "Movimenti");
+if (movementButton.label !== "Movimenti" || /\d/.test(movementButton.label) || movementButton.label.includes("·")) fail(15, movementButton.label);
+const listed = objectsForFilter(hiddenPayments, "Movimenti").map((object) => object.business_key);
+if (listed.join("|") !== "HID-B|HID-A") fail(16, listed.join("|"));
+if (objectsForFilter(hiddenPayments, "Payment").length !== 0 || objectsForFilter(hiddenPayments, "Pagamento").length !== 0) fail(16, "filtro diviso");
+if (objectPageFilters(pageTypes, ontology, payments).some((filter) => filter.id === "Movimenti")) fail(17, "approvatore");
+const namedMove = objectPageFilters(pageTypes, { payment_labels: { movements: "Flussi" } }, hiddenPayments);
+if (namedMove.find((filter) => filter.id === "Movimenti").label !== "Flussi") fail(18, "ontologia");
+const reserveMove = objectPageFilters(pageTypes, { payment_labels: { movements: "" } }, hiddenPayments);
+if (reserveMove.find((filter) => filter.id === "Movimenti").label !== "Movimenti") fail(18, "riserva");
+function heading(payment) {
+  return inboxCard({
+    id: "h",
+    kind: "payment_match",
+    status: "proposed",
+    risk: "low",
+    problem: "scheda",
+    confidence: 1,
+    confidence_method: "rule",
+    evidence_hash: "abc",
+    payment,
+    invoice: { number: "FT-1", amount: 10, due_at: "2026-04-02" },
+    allocation: { amount: 10, remaining: 0 },
+    criteria: {},
+    failed_criteria: [],
+  }, "operator", true);
+}
+const hiddenHeading = heading({ number: "INC-2026-0421", paid_at: "2026-04-02", amount: 10, label: "" });
+if (!hiddenHeading.includes(">Movimento<") || hiddenHeading.includes("Incasso") || hiddenHeading.includes("Pagamento")) fail(19, hiddenHeading);
+const visibleBlank = heading({ number: "INC-2026-0421", paid_at: "2026-04-02", amount: 10, direction: "", label: "" });
+if (!visibleBlank.includes(">Incasso<") || visibleBlank.includes("Movimento") || visibleBlank.includes("Pagamento")) fail(19, visibleBlank);
+const visibleOut = heading({ number: "PAG-1", paid_at: "2026-04-02", amount: 10, direction: "outgoing", label: "" });
+if (!visibleOut.includes(">Pagamento<") || visibleOut.includes("Movimento")) fail(19, visibleOut);
+const maskedLink = objectDetail({
+  type: "Invoice",
+  business_key: "FT-1",
+  fields: [],
+  links: [{ rel: "settles", direction: "in", type: "Payment", type_label: "", masked: true, key: "INC-2026-0421", id: "p" }],
+  history: [],
+}, { types: [{ name: "Payment", label: "Incasso" }], relations: [{ name: "settles", in: "saldato da" }] });
+if (!maskedLink.includes("Movimento INC-2026-0421") || maskedLink.includes("Incasso") || maskedLink.includes("Pagamento")) fail(20, maskedLink);
+payments.push({ id: "hid", type: "Payment", business_key: "HID-1", fields: [{ name: "direction", value: "x", masked: true }] });
+await context.ieolPage.loadObjects();
+if (buttons().map((button) => button.textContent).join("|") !== "Ordine|Fattura|Incasso|Pagamento|Movimenti") fail(21, buttons().map((button) => button.textContent).join("|"));
+if (buttons().some((button) => /\d|·/.test(button.textContent))) fail(21, "conteggio");
+await choose("Movimenti");
+const movementList = listHtml();
+if (!movementList.includes("HID-1") || movementList.includes("INC-1") || movementList.includes("PAG-1") || movementList.includes("OLD-1")) fail(22, movementList);
+await choose("Incasso");
+if (keysIn(listHtml()).join("|") !== "INC-1") fail(22, listHtml());
 process.stdout.write("ok\n");
 })().catch((error) => {
   console.error(error);
@@ -863,7 +920,9 @@ def test_pagamento_filter_shows_only_outgoing_payments_and_leaves_the_others():
     page = (WEB / "app.js").read_text(encoding="utf-8")
     assert "matchesIncasso(" in page
     assert "matchesPagamento(" in page
+    assert "matchesMovimenti(" in page
     assert 'return "Pagamento"' in page
+    assert 'return "Movimenti"' in page
     rendered = subprocess.run(
         ["node", "-e", _OBJECT_FILTERS],
         cwd=ROOT,
@@ -1194,3 +1253,84 @@ def test_operator_cannot_tell_incasso_from_pagamento(client: TestClient):
     ) == "Pagamento"
     assert incoming_id
     assert outgoing_id
+
+
+def test_missing_direction_uses_the_same_word_on_both_pages(client: TestClient):
+    """A payment stored without a direction stays masked for the operator.
+
+    Oggetti and Oggi use one word. An approver still reads it as an incoming
+    payment. ``is_incoming`` itself is unchanged.
+    """
+    from decimal import Decimal
+
+    from ontology.loader import load_merged
+    from services.cash.documents import write_payment
+    from services.ontology_view import is_incoming
+    from tests.test_order_to_cash import IBAN
+
+    assert is_incoming({"direction": None}) is True
+    assert is_incoming("") is True
+    assert is_incoming("outgoing") is False
+    company = give_company("mapper", "Direzione assente")
+    _assign("operator", company)
+    _assign("approver", company)
+    model = load_merged()
+    with connect() as conn:
+        payment_id = write_payment(
+            conn,
+            model,
+            company_id=company,
+            source_key="INC-2026-0421",
+            direction="incoming",
+            paid_at="2026-04-02",
+            amount=Decimal("10.00"),
+            iban=IBAN,
+            causale="prova",
+            counterparty_name="Cliente Prova",
+            counterparty_vat="IT00000000001",
+            reference="R1",
+            source="registro",
+            source_class="external",
+            label_origin="rule",
+        )
+        conn.execute(
+            """
+            UPDATE app.facts
+            SET valid_to = now()
+            WHERE entity_id = %s::uuid AND property = 'direction' AND valid_to IS NULL
+            """,
+            (payment_id,),
+        )
+        invoice_id = _entity(conn, "Invoice", "FT-0421", company)
+        allocation_id = _entity(conn, "PaymentAllocation", "ALLOC-0421", company)
+        _insert_proposal(conn, company, payment_id, invoice_id, allocation_id)
+        conn.commit()
+
+    def titles() -> tuple[str, str, dict]:
+        listed = client.get("/api/objects", params={"type": "Payment"}).json()
+        row = next(item for item in listed["objects"] if item["business_key"] == "INC-2026-0421")
+        detail = client.get(f"/api/objects/{row['id']}").json()
+        inbox = client.get("/api/inbox").json()
+        card = next(item for item in inbox["recommendations"] if item.get("order_key") == "INC-2026-0421")
+        assert detail["type_label"] == row["type_label"]
+        assert card["headline"].split()[0] == row["type_label"]
+        assert card["payment"]["label"] == row["type_label"]
+        return row["type_label"], card["headline"], row
+
+    login(client, "operator")
+    operator_word, operator_headline, operator_row = titles()
+    assert operator_word == "Movimento"
+    assert operator_headline == "Movimento INC-2026-0421"
+    assert "incoming" not in operator_row
+    direction = _field(operator_row, "direction")
+    assert direction["masked"] is True
+    assert direction["value"] == ROLE_HIDDEN
+    assert "Incasso" not in operator_headline
+    assert "Pagamento" not in operator_headline
+
+    login(client, "approver")
+    approver_word, approver_headline, approver_row = titles()
+    assert approver_word == "Incasso"
+    assert approver_headline == "Incasso INC-2026-0421"
+    assert approver_row["incoming"] is True
+    assert all(item["name"] != "direction" for item in approver_row["fields"])

@@ -233,6 +233,8 @@ def _present(
     detail: bool,
 ) -> dict[str, Any]:
     fields = _fields(conn, row["id"], row["type"], role)
+    if row["type"] == "Payment" and hides_payment_direction(role):
+        _ensure_hidden_direction(fields)
     hidden = row["type"] == "Payment" and _direction_masked(fields)
     if hidden:
         _neutralize_payment(fields)
@@ -279,6 +281,20 @@ def _present(
 
 def _direction_masked(fields: list[dict[str, Any]]) -> bool:
     return any(field.get("name") == "direction" and field.get("masked") for field in fields)
+
+
+def _ensure_hidden_direction(fields: list[dict[str, Any]]) -> None:
+    """A viewer who must not see direction also misses a direction that was never stored."""
+    if any(field.get("name") == "direction" for field in fields):
+        return
+    fields.append(
+        {
+            "name": "direction",
+            "label": "Direzione",
+            "value": ROLE_HIDDEN,
+            "masked": True,
+        }
+    )
 
 
 def _neutralize_payment(fields: list[dict[str, Any]]) -> None:

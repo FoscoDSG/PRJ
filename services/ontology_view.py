@@ -118,6 +118,7 @@ RELATION_LABELS = {
 PAYMENT_DIRECTION_LABELS = {
     "incoming": "Incasso",
     "outgoing": "Pagamento",
+    "movements": "Movimenti",
 }
 
 PAYMENT_OUTGOING_FIELDS = {

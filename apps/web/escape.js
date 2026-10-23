@@ -805,6 +805,9 @@
 
   function paymentHeading(payment) {
     if (payment && typeof payment.label === "string" && payment.label !== "") return payment.label;
+    if (payment && typeof payment === "object" && !Object.prototype.hasOwnProperty.call(payment, "direction")) {
+      return "Movimento";
+    }
     return isIncoming(payment) ? "Incasso" : "Pagamento";
   }
 
@@ -957,6 +960,10 @@
     return Boolean(object && object.incoming === false && !directionMasked(object));
   }
 
+  function matchesMovimenti(object) {
+    return Boolean(object && object.type === "Payment" && directionMasked(object));
+  }
+
   function isIncoming(payment) {
     let direction = payment;
     if (payment && typeof payment === "object") {
@@ -1030,6 +1037,7 @@
   function linkedTypeLabel(ontology, link) {
     if (link && link.type === "Payment") {
       if (typeof link.type_label === "string" && link.type_label !== "") return link.type_label;
+      if (link.masked === true || directionMasked(link)) return "Movimento";
       return paymentWord("", ontology);
     }
     const info = ontologyType(ontology, link && link.type);
@@ -1193,6 +1201,7 @@
     allowsAction,
     matchesIncasso,
     matchesPagamento,
+    matchesMovimenti,
     fileActionBar,
     measureText,
     auditCard,

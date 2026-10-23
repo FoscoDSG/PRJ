@@ -47,6 +47,7 @@ const {
   canWriteDecisions,
   matchesIncasso,
   matchesPagamento,
+  matchesMovimenti,
   allowsAction,
 } = globalThis.ieolEscape;
 
@@ -459,7 +460,16 @@ function paymentOutgoingLabel(ontology) {
   return "Pagamento";
 }
 
-function objectPageFilters(types, ontology) {
+function paymentMovementsLabel(ontology) {
+  const labels = ontology && ontology.payment_labels;
+  const movements = labels && labels.movements;
+  if (typeof movements === "string" && movements !== "") return movements;
+  return "Movimenti";
+}
+
+function objectPageFilters(types, ontology, objects) {
+  const rows = Array.isArray(objects) ? objects : [];
+  const hidden = rows.some((object) => matchesMovimenti(object));
   const filters = [];
   for (const typeDef of types || []) {
     if (!typeDef || !typeDef.name) continue;
@@ -470,6 +480,9 @@ function objectPageFilters(types, ontology) {
     });
     if (typeDef.name === "Payment") {
       filters.push({ id: "Pagamento", type: "Payment", label: paymentOutgoingLabel(ontology) });
+      if (hidden) {
+        filters.push({ id: "Movimenti", type: "Payment", label: paymentMovementsLabel(ontology) });
+      }
     }
   }
   return filters;
@@ -479,6 +492,7 @@ function objectsForFilter(objects, filterId) {
   const rows = Array.isArray(objects) ? objects : [];
   if (filterId === "Payment") return rows.filter((object) => matchesIncasso(object));
   if (filterId === "Pagamento") return rows.filter((object) => matchesPagamento(object));
+  if (filterId === "Movimenti") return rows.filter((object) => matchesMovimenti(object));
   return rows;
 }
 
@@ -487,26 +501,35 @@ async function loadObjects() {
   const types = OBJECT_PAGE_TYPES
     .map((name) => (ontology.types || []).find((item) => item && item.name === name))
     .filter(Boolean);
-  const filters = objectPageFilters(types, ontology);
-  if (filters.length && !filters.some((item) => item.id === state.objectFilter)) {
-    state.objectFilter = filters[0].id;
-    state.objectType = filters[0].type;
-  }
-  renderObjectTypes(filters);
   const list = document.querySelector("#order-list");
   const detail = document.querySelector("#order-detail");
   detail.hidden = true;
   list.hidden = false;
   let data = { objects: [] };
+  let payments = [];
   try {
-    data = await api(`/api/objects?type=${encodeURIComponent(state.objectType)}`);
+    if (state.objectType === "Payment") {
+      data = await api("/api/objects?type=Payment");
+      payments = data.objects || [];
+    } else {
+      const paymentData = await api("/api/objects?type=Payment");
+      payments = paymentData.objects || [];
+      data = await api(`/api/objects?type=${encodeURIComponent(state.objectType)}`);
+    }
   } catch (err) {
+    renderObjectTypes(objectPageFilters(types, ontology, payments));
     list.replaceChildren();
     const note = document.createElement("p");
     note.textContent = err.message;
     list.append(note);
     return;
   }
+  const filters = objectPageFilters(types, ontology, payments);
+  if (filters.length && !filters.some((item) => item.id === state.objectFilter)) {
+    state.objectFilter = filters[0].id;
+    state.objectType = filters[0].type;
+  }
+  renderObjectTypes(filters);
   const objects = objectsForFilter(data.objects || [], state.objectFilter);
   if (!objects.length) {
     list.replaceChildren();
