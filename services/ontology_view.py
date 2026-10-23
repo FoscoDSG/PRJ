@@ -29,6 +29,13 @@ TYPE_LABELS = {
     "CreditNote": "Nota di credito",
     "Payment": "Incasso",
     "PaymentAllocation": "Assegnazione incasso",
+    "PurchaseRequest": "Richiesta di acquisto",
+    "PurchaseOrder": "Ordine di acquisto",
+    "PurchaseOrderLine": "Riga ordine di acquisto",
+    "GoodsReceipt": "Ricevimento",
+    "GoodsReceiptLine": "Riga di ricevimento",
+    "SupplierInvoice": "Fattura fornitore",
+    "SupplierInvoiceLine": "Riga fattura fornitore",
 }
 
 # Italian names for fields. A page reads these; it does not translate the key.
@@ -85,6 +92,18 @@ FIELD_LABELS = {
     "reserved": "Impegnato",
     "warehouse_source_key": "Magazzino",
     "delay_days": "Giorni di ritardo",
+    "requested_at": "Data richiesta",
+    "requester": "Richiedente",
+    "purchase_request_source_key": "Richiesta di acquisto",
+    "supplier_source_key": "Fornitore",
+    "supplier_vat": "Partita IVA fornitore",
+    "supplier_name": "Nome fornitore",
+    "received_at": "Data ricevimento",
+    "receipt_source_key": "Ricevimento",
+    "order_line_source_key": "Riga ordine",
+    "invoice_number": "Numero fattura fornitore",
+    "invoice_year": "Anno",
+    "supplier_invoice_source_key": "Fattura fornitore",
 }
 
 FIELD_LABEL_OVERRIDES = {
@@ -99,6 +118,11 @@ FIELD_LABEL_OVERRIDES = {
     ("Order", "amount"): "Importo ordine",
     ("Order", "source_key"): "Numero ordine",
     ("OrderLine", "amount"): "Importo ereditato",
+    ("PurchaseOrder", "amount"): "Importo ordine di acquisto",
+    ("PurchaseOrder", "source_key"): "Numero ordine di acquisto",
+    ("PurchaseRequest", "source_key"): "Numero richiesta",
+    ("SupplierInvoice", "amount"): "Importo fattura fornitore",
+    ("SupplierInvoice", "source_key"): "Chiave fattura fornitore",
 }
 
 # Italian names of relations. A page reads these and falls back to the technical name.
@@ -113,6 +137,10 @@ RELATION_LABELS = {
     "allocates": "assegna",
     "settles": "salda",
     "sameOrganization": "stessa organizzazione",
+    "requests": "richiede",
+    "orderedFrom": "ordinato a",
+    "receives": "riceve",
+    "billsFor": "fattura",
 }
 
 PAYMENT_DIRECTION_LABELS = {
