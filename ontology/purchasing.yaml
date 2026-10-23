@@ -1,0 +1,93 @@
+package: purchasing
+version: "1.0.0"
+depends_on: [sales]
+changelog: "Acquisti: richiesta, ordine, ricevimento e fattura fornitore. Order resta nel pacchetto manufacturing."
+types:
+  - name: PurchaseRequest
+    extends: Document
+    properties:
+      - {name: source_key, type: string, classification: internal, origin: original, identifier: true}
+      - {name: status, type: string, classification: internal, origin: original}
+      - {name: requested_at, type: string, classification: internal, origin: original}
+      - {name: requester, type: string, classification: internal, origin: original}
+      - {name: amount, type: number, classification: confidential, origin: original}
+  - name: PurchaseOrder
+    extends: Transaction
+    properties:
+      - {name: source_key, type: string, classification: internal, origin: original, identifier: true}
+      - {name: status, type: string, classification: internal, origin: original}
+      - {name: ordered_at, type: string, classification: internal, origin: original}
+      - {name: purchase_request_source_key, type: string, classification: internal, origin: original}
+      - {name: supplier_source_key, type: string, classification: internal, origin: original}
+      - {name: supplier_vat, type: string, classification: confidential, origin: original}
+  - name: PurchaseOrderLine
+    extends: Transaction
+    properties:
+      - {name: source_key, type: string, classification: internal, origin: original, identifier: true}
+      - {name: quantity, type: number, classification: internal, origin: original}
+      - {name: unit_price, type: number, classification: confidential, origin: original}
+      - {name: line_amount, type: number, classification: confidential, origin: original}
+      - {name: vat_rate, type: number, classification: internal, origin: original}
+      - {name: order_source_key, type: string, classification: internal, origin: original}
+      - {name: product_source_key, type: string, classification: internal, origin: original}
+  - name: GoodsReceipt
+    extends: Document
+    properties:
+      - {name: source_key, type: string, classification: internal, origin: original, identifier: true}
+      - {name: status, type: string, classification: internal, origin: original}
+      - {name: received_at, type: string, classification: internal, origin: original}
+      - {name: order_source_key, type: string, classification: internal, origin: original}
+  - name: GoodsReceiptLine
+    extends: Transaction
+    properties:
+      - {name: source_key, type: string, classification: internal, origin: original, identifier: true}
+      - {name: quantity, type: number, classification: internal, origin: original}
+      - {name: receipt_source_key, type: string, classification: internal, origin: original}
+      - {name: order_line_source_key, type: string, classification: internal, origin: original}
+      - {name: product_source_key, type: string, classification: internal, origin: original}
+  - name: SupplierInvoice
+    extends: Document
+    properties:
+      - {name: source_key, type: string, classification: internal, origin: original, identifier: true}
+      - {name: supplier_vat, type: string, classification: confidential, origin: original}
+      - {name: supplier_name, type: string, classification: confidential, origin: original}
+      - {name: invoice_number, type: string, classification: internal, origin: original}
+      - {name: invoice_year, type: number, classification: internal, origin: original}
+      - {name: document_type, type: string, classification: internal, origin: original}
+      - {name: issued_at, type: string, classification: internal, origin: original}
+      - {name: due_at, type: string, classification: internal, origin: original}
+      - {name: amount, type: number, classification: confidential, origin: original}
+      - {name: currency, type: string, classification: internal, origin: original}
+      - {name: order_source_key, type: string, classification: internal, origin: original}
+      - {name: status, type: string, classification: internal, origin: original}
+  - name: SupplierInvoiceLine
+    extends: Transaction
+    properties:
+      - {name: source_key, type: string, classification: internal, origin: original, identifier: true}
+      - {name: description, type: string, classification: internal, origin: original}
+      - {name: quantity, type: number, classification: internal, origin: original}
+      - {name: unit_price, type: number, classification: confidential, origin: original}
+      - {name: line_amount, type: number, classification: confidential, origin: original}
+      - {name: vat_rate, type: number, classification: internal, origin: original}
+      - {name: supplier_invoice_source_key, type: string, classification: internal, origin: original}
+extends_types:
+  - name: PaymentAllocation
+    properties:
+      - {name: supplier_invoice_source_key, type: string, classification: internal, origin: original}
+relations:
+  - {name: requests, from: PurchaseRequest, to: PurchaseOrder}
+  - {name: orderedFrom, from: PurchaseOrder, to: Supplier}
+  - {name: receives, from: GoodsReceipt, to: PurchaseOrder}
+  - {name: billsFor, from: SupplierInvoice, to: PurchaseOrder}
+  - {name: settles, from: PaymentAllocation, to: SupplierInvoice}
+processes:
+  - id: procure_to_pay
+    label: Dall'acquisto al pagamento
+    steps:
+      - {id: requested, label: Richiesta}
+      - {id: ordered, label: Ordine}
+      - {id: received, label: Ricevimento}
+      - {id: supplier_invoiced, label: Fattura passiva}
+      - {id: three_way, label: Tre vie}
+      - {id: payment_proposed, label: Pagamento proposto}
+      - {id: payment_authorized, label: Pagamento autorizzato}

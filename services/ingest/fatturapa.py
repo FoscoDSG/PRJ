@@ -19,7 +19,7 @@ def require_synthetic(text: str) -> None:
         raise AppError(422, "Il file non dichiara label_origin synthetic")
 
 
-def parse_fatturapa(text: str) -> dict[str, list[dict[str, Any]]]:
+def parse_fatturapa(text: str) -> dict[str, Any]:
     require_synthetic(text)
     try:
         root = ET.fromstring(text)
@@ -29,6 +29,7 @@ def parse_fatturapa(text: str) -> dict[str, list[dict[str, Any]]]:
     if header is None:
         raise AppError(422, "Testata fattura assente")
     customer_name, customer_vat = _party(header, "CessionarioCommittente")
+    supplier_name, supplier_vat = _party(header, "CedentePrestatore")
     invoices = []
     credit_notes = []
     for body in _all(root, "FatturaElettronicaBody"):
@@ -90,7 +91,11 @@ def parse_fatturapa(text: str) -> dict[str, list[dict[str, Any]]]:
         )
     if not invoices and not credit_notes:
         raise AppError(422, "Nessun documento nel file")
-    return {"invoices": invoices, "credit_notes": credit_notes}
+    return {
+        "invoices": invoices,
+        "credit_notes": credit_notes,
+        "supplier": {"name": supplier_name, "vat": supplier_vat},
+    }
 
 
 def _party(header, name: str) -> tuple[str, str]:
