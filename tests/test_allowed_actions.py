@@ -770,7 +770,7 @@ def test_correct_stays_off_an_outgoing_payment():
     outgoing["allowed_actions"] = payment_actions("approver", outgoing, company=True)
     incoming = dict(_OPEN_PAYMENT)
     incoming["allowed_actions"] = payment_actions("approver", _OPEN_PAYMENT, company=True)
-    assert outgoing["allowed_actions"] == ["confirm", "reject"]
+    assert outgoing["allowed_actions"] == ["reject"]
     assert incoming["allowed_actions"] == ["confirm", "correct", "reject"]
     rendered = subprocess.run(
         ["node", "-e", _OUTGOING_CORRECT],
@@ -781,6 +781,167 @@ def test_correct_stays_off_an_outgoing_payment():
     )
     assert rendered.returncode == 0, rendered.stderr
     assert rendered.stdout == "ok\n"
+
+
+def test_confirming_an_outgoing_payment_is_refused_and_old_rows_stay(client: TestClient):
+    from services.agent.payment_measure import measure_payment_matches
+
+    company_id = give_company("mapper", "Conferme in uscita")
+    _assign("approver", company_id)
+    model = load_merged()
+    message = "Un pagamento in uscita non si abbina a una fattura di vendita"
+
+    def payment(conn, source_key: str, direction: str) -> str:
+        return write_payment(
+            conn,
+            model,
+            company_id=company_id,
+            source_key=source_key,
+            direction=direction,
+            paid_at="2026-04-01",
+            amount=Decimal("40.00"),
+            iban=IBAN,
+            causale="prova",
+            counterparty_name="Cliente Prova",
+            counterparty_vat="IT00000000001",
+            reference="FT-USCITA",
+            source="banca",
+            source_class="external",
+            label_origin="rule",
+        )
+
+    def proposal(conn, payment_id: str, invoice_id: str) -> str:
+        proposal_id = str(uuid.uuid4())
+        allocation_id = str(uuid.uuid4())
+        conn.execute(
+            """
+            INSERT INTO app.entities (id, type, business_key, company_id)
+            VALUES (%s, 'PaymentAllocation', %s, %s)
+            """,
+            (allocation_id, proposal_id, company_id),
+        )
+        conn.execute(
+            """
+            INSERT INTO app.payment_proposals (
+              id, company_id, payment_entity_id, invoice_entity_id, allocation_entity_id,
+              match_group, source_name, label_origin, criteria, score, confidence_method,
+              confidence_rule, allocated_amount, evidence, evidence_hash, process_id, step_id
+            )
+            VALUES (
+              %s, %s, %s, %s, %s,
+              %s, 'banca', 'rule', '{}'::jsonb, 1, 'rule',
+              'payment-match.baseline@v1', 40, '[]'::jsonb, %s, 'order_to_cash', 'match_proposed'
+            )
+            """,
+            (
+                proposal_id,
+                company_id,
+                payment_id,
+                invoice_id,
+                allocation_id,
+                str(uuid.uuid4()),
+                HASH,
+            ),
+        )
+        return proposal_id
+
+    with connect() as conn:
+        invoice_id = write_invoice(
+            conn,
+            model,
+            company_id=company_id,
+            number="FT-USCITA",
+            document_type="TD01",
+            issued_at="2026-04-01",
+            amount=Decimal("100.00"),
+            currency="EUR",
+            customer_name="Cliente Prova",
+            customer_vat="IT00000000001",
+            order_number=None,
+            due_dates=["2026-04-30"],
+            lines=[],
+            source="fatture",
+            source_class="system_of_record",
+            label_origin="rule",
+        )
+        old_payment = payment(conn, "PAG-OLD", "outgoing")
+        open_payment = payment(conn, "PAG-OPEN", "outgoing")
+        incoming_payment = payment(conn, "PAG-IN", "incoming")
+        old_proposal = proposal(conn, old_payment, invoice_id)
+        open_proposal = proposal(conn, open_payment, invoice_id)
+        old_decision = str(uuid.uuid4())
+        conn.execute(
+            """
+            INSERT INTO app.payment_decisions (
+              id, proposal_id, payment_entity_id, company_id, decision,
+              actor, actor_role, invoice_entity_id, allocated_amount,
+              failed_criteria, reason, source_name
+            )
+            VALUES (
+              %s, %s, %s, %s, 'confirm',
+              'approver', 'approver', %s, 40,
+              '[]'::jsonb, '', 'banca'
+            )
+            """,
+            (old_decision, old_proposal, old_payment, company_id, invoice_id),
+        )
+        conn.execute(
+            """
+            INSERT INTO app.payment_decisions (
+              id, proposal_id, payment_entity_id, company_id, decision,
+              actor, actor_role, invoice_entity_id, allocated_amount,
+              failed_criteria, reason, source_name
+            )
+            VALUES (
+              %s, NULL, %s, %s, 'correct',
+              'approver', 'approver', %s, 25,
+              '[]'::jsonb, 'incasso gia salvato', 'banca'
+            )
+            """,
+            (str(uuid.uuid4()), incoming_payment, company_id, invoice_id),
+        )
+        conn.commit()
+        balance_before = remaining_balance(conn, company_id, invoice_id)
+        measure_before = measure_payment_matches(conn, company_id=company_id)
+        stored_before = conn.execute(
+            """
+            SELECT id::text, decision, invoice_entity_id::text, allocated_amount, decided_at
+            FROM app.payment_decisions
+            WHERE id = %s
+            """,
+            (old_decision,),
+        ).fetchone()
+        count_before = conn.execute("SELECT count(*) AS n FROM app.payment_decisions").fetchone()["n"]
+
+    assert balance_before == Decimal("75.00")
+    login(client, "approver")
+    refused = client.post(
+        f"/api/payment-proposals/{open_proposal}/confirm",
+        json={"decision": "confirm", "evidence_hash": HASH},
+    )
+    assert refused.status_code == 422, refused.text
+    assert refused.json()["detail"] == message
+
+    with connect() as conn:
+        assert remaining_balance(conn, company_id, invoice_id) == balance_before
+        measure_after = measure_payment_matches(conn, company_id=company_id)
+        stored_after = conn.execute(
+            """
+            SELECT id::text, decision, invoice_entity_id::text, allocated_amount, decided_at
+            FROM app.payment_decisions
+            WHERE id = %s
+            """,
+            (old_decision,),
+        ).fetchone()
+        count_after = conn.execute("SELECT count(*) AS n FROM app.payment_decisions").fetchone()["n"]
+        open_decisions = conn.execute(
+            "SELECT count(*) AS n FROM app.payment_decisions WHERE proposal_id = %s",
+            (open_proposal,),
+        ).fetchone()["n"]
+    assert measure_after == measure_before
+    assert stored_after == stored_before
+    assert count_after == count_before
+    assert open_decisions == 0
 
 
 def test_the_page_uses_server_actions_for_its_buttons_and_file_types():
@@ -928,8 +1089,9 @@ const sample = JSON.parse(require("fs").readFileSync(0, "utf8"));
 const outgoing = inboxCard(sample.outgoing, "approver", true);
 const incoming = inboxCard(sample.incoming, "approver", true);
 if (outgoing.includes('data-act="correct-match"') || outgoing.includes(">Correggi<")) process.exit(1);
-if (!outgoing.includes('data-act="confirm-match"') || !outgoing.includes('data-act="reject-match"')) process.exit(2);
-if (!incoming.includes('data-act="correct-match"')) process.exit(3);
+if (outgoing.includes('data-act="confirm-match"') || outgoing.includes(">Conferma<")) process.exit(2);
+if (!outgoing.includes('data-act="reject-match"')) process.exit(3);
+if (!incoming.includes('data-act="confirm-match"') || !incoming.includes('data-act="correct-match"')) process.exit(4);
 process.stdout.write("ok\n");
 """
 

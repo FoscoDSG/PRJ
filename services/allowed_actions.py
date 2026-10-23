@@ -124,20 +124,20 @@ def payment_actions(
     *,
     company: bool = True,
 ) -> list[str]:
-    """Confirm or reject a proposed match. Correct only an incoming payment.
+    """Reject a proposed match. Confirm and correct only an incoming payment.
 
     ``is_incoming`` is the same rule as the balance and the measure, so
-    Correggi stays off an outgoing payment. Revoke comes after a decision.
+    Conferma and Correggi stay off an outgoing payment. Revoke comes after
+    a decision.
     """
     if not company or role not in APPROVER:
         return []
     actions: list[str] = []
     if _status(item) == "proposed":
-        actions.append("confirm")
         payment = (item or {}).get("payment")
         subject = payment if isinstance(payment, dict) else item
         if is_incoming(subject):
-            actions.append("correct")
+            actions.extend(["confirm", "correct"])
         actions.append("reject")
     if _open_decision(item):
         actions.append("revoke")

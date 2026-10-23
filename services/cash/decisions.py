@@ -39,6 +39,8 @@ def confirm_proposal(
     company_id = _company(conn, actor)
     proposal = _proposal(conn, proposal_id, company_id)
     _fresh(proposal, evidence_hash)
+    if not is_incoming({"direction": _open_direction(conn, proposal["payment_entity_id"])}):
+        raise AppError(422, "Un pagamento in uscita non si abbina a una fattura di vendita")
     _refuse_if_decided(conn, proposal_id)
     decision_id = _insert(
         conn,
@@ -300,6 +302,29 @@ def _invoice(conn, invoice_id: str, company_id: str) -> dict[str, Any]:
     if row is None or row["company_id"] != company_id:
         raise AppError(404, "Fattura assente")
     return dict(row)
+
+
+def _open_direction(conn, payment_id: str) -> str | None:
+    """Newest open direction, the same order the measure and the balance use.
+
+    A missing fact stays missing. ``is_incoming`` then treats the payment
+    as money coming in.
+    """
+    row = conn.execute(
+        """
+        SELECT value #>> '{}' AS direction
+        FROM app.facts
+        WHERE entity_id = %s::uuid
+          AND property = 'direction'
+          AND valid_to IS NULL
+        ORDER BY valid_from DESC
+        LIMIT 1
+        """,
+        (payment_id,),
+    ).fetchone()
+    if row is None:
+        return None
+    return row["direction"]
 
 
 def _payment(conn, payment_id: str, company_id: str) -> dict[str, Any]:
