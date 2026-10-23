@@ -65,6 +65,7 @@ types:
     properties:
       - {name: source_key, type: string, classification: internal, origin: original, identifier: true}
       - {name: description, type: string, classification: internal, origin: original}
+      - {name: product_source_key, type: string, classification: internal, origin: original}
       - {name: quantity, type: number, classification: internal, origin: original}
       - {name: unit_price, type: number, classification: confidential, origin: original}
       - {name: line_amount, type: number, classification: confidential, origin: original}

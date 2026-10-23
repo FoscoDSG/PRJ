@@ -254,6 +254,31 @@
       Warehouse: "Magazzino",
     },
     reservedDirection: "Direzione riservata",
+    match3: {
+      outcomes: {
+        MATCH_OK: "Tre vie coerenti",
+        QTY_NOT_RECEIVED: "Quantità non ricevuta",
+        QTY_OVER: "Quantità oltre il ricevuto",
+        PRICE_OUT_OF_TOL: "Prezzo fuori tolleranza",
+        VAT_MISMATCH: "IVA non coincidente",
+        TOTAL_MISMATCH: "Totale fuori tolleranza",
+        NO_PO: "Ordine assente",
+        DUPLICATE_INVOICE: "Fattura già presente",
+      },
+      criteria: {
+        unique: "Univoca",
+        order: "Ordine",
+        quantity: "Quantità",
+        price: "Prezzo",
+        vat: "IVA",
+        total: "Totale",
+      },
+      types: {
+        SupplierInvoice: "Fattura fornitore",
+        PurchaseOrder: "Ordine di acquisto",
+        GoodsReceipt: "Ricevimento",
+      },
+    },
   };
 
   function pageValue(name, value, typeName, ontology) {
@@ -840,6 +865,99 @@
       ${criteriaMarkup(item && item.criteria)}`;
   }
 
+  function match3Book(ontology) {
+    const labels = ontology && ontology.match3_labels;
+    const reserve = PAGE_TEXT.match3 || { outcomes: {}, criteria: {}, types: {} };
+    return {
+      outcomes: Object.assign({}, reserve.outcomes, labels && labels.outcomes),
+      criteria: Object.assign({}, reserve.criteria, labels && labels.criteria),
+      types: reserve.types,
+    };
+  }
+
+  function match3TypeLabel(ontology, name) {
+    const info = ontologyType(ontology, name);
+    if (info && info.label) return info.label;
+    const book = match3Book(ontology);
+    return book.types[name] || name;
+  }
+
+  function match3Outcome(item, ontology) {
+    const code = item && item.outcome ? String(item.outcome) : "";
+    const book = match3Book(ontology);
+    return book.outcomes[code] || code;
+  }
+
+  function match3Criterion(code, ontology) {
+    const book = match3Book(ontology);
+    return book.criteria[code] || String(code || "");
+  }
+
+  function threeWayBlocks(item, ontology) {
+    const comparison = item && item.comparison && typeof item.comparison === "object" ? item.comparison : {};
+    const lines = Array.isArray(comparison.lines) ? comparison.lines : [];
+    const lineRows = lines.map((line) => {
+      return `<li>${escapeHtml(line.product || "")}: ${escapeHtml("ordinata")} ${escapeHtml(line.ordered_qty || "")}, ${escapeHtml("ricevuta")} ${escapeHtml(line.received_qty || "")}, ${escapeHtml("fatturata")} ${escapeHtml(line.invoiced_qty || "")}. ${escapeHtml("Atteso")} ${escapeHtml(euroText(line.expected_line))} ${escapeHtml("fatturato")} ${escapeHtml(euroText(line.invoiced_line))} ${escapeHtml("soglia")} ${escapeHtml(euroText(line.threshold))}. ${escapeHtml("IVA")} ${escapeHtml(line.vat_rate || "")}</li>`;
+    }).join("");
+    const taxes = (comparison.invoice_tax || []).map((row) => {
+      return `${row.rate}: ${euroText(row.amount)}`;
+    }).join(", ");
+    const failed = (item && item.failed_criteria || []).map((code) => escapeHtml(match3Criterion(code, ontology)));
+    const exceptions = failed.length
+      ? `<p class="failed-criteria">${failed.join(", ")}</p>`
+      : "";
+    return `<p>${escapeHtml(item && item.problem || "")}</p>
+      <h3 class="section-heading">${escapeHtml(match3TypeLabel(ontology, "SupplierInvoice"))}</h3>
+      <ul class="fact-list">
+        ${matchLine("Numero", item && item.invoice_number)}
+        ${matchLine("Esito", match3Outcome(item, ontology))}
+      </ul>
+      ${exceptions}
+      <h3 class="section-heading">${escapeHtml(match3TypeLabel(ontology, "PurchaseOrder"))}</h3>
+      <h3 class="section-heading">${escapeHtml(match3TypeLabel(ontology, "GoodsReceipt"))}</h3>
+      <ul class="fact-list">${lineRows}</ul>
+      <h3 class="section-heading">${escapeHtml(match3Criterion("vat", ontology))}</h3>
+      <ul class="fact-list">${matchLine("Imposta per aliquota", taxes)}</ul>
+      <h3 class="section-heading">${escapeHtml(match3Criterion("total", ontology))}</h3>
+      <ul class="fact-list">
+        ${matchLine("Atteso", euroText(comparison.expected_total))}
+        ${matchLine("Fattura", euroText(comparison.invoice_total))}
+      </ul>`;
+  }
+
+  function threeWayButtons(item, canWrite) {
+    const parts = [];
+    if (canWrite === false) parts.push(`<p>${escapeHtml(companyUploadNotice())}</p>`);
+    const confirm = allows(item, "confirm");
+    const correct = allows(item, "correct");
+    const reject = allows(item, "reject");
+    if (!confirm && !correct && !reject) return parts.join("");
+    if (correct) {
+      parts.push(`<label>Motivo della correzione <input data-correct-reason required minlength="5" maxlength="500" /></label>`);
+    }
+    if (reject) {
+      parts.push(`<label>Motivo del rifiuto <input data-reject-reason required minlength="5" maxlength="500" /></label>`);
+    }
+    const buttons = [
+      confirm ? `<button type="button" data-act="confirm-match3">Conferma</button>` : "",
+      correct ? `<button type="button" class="ghost" data-act="correct-match3">Correggi</button>` : "",
+      reject ? `<button type="button" class="ghost" data-act="reject-match3">Rifiuta</button>` : "",
+    ].filter(Boolean).join("\n        ");
+    parts.push(`<div class="decision-bar">\n        ${buttons}\n      </div>`);
+    return parts.join("\n      ");
+  }
+
+  function match3Section(match3, ontology) {
+    if (!match3 || typeof match3 !== "object") return "";
+    const item = Object.assign({ kind: "three_way" }, match3);
+    return `<article class="card" data-id="${escapeHtml(item.id || "")}" data-hash="${escapeHtml(item.evidence_hash || "")}">
+      <h3 class="card-title">${escapeHtml(item.headline || match3TypeLabel(ontology, "SupplierInvoice"))}</h3>
+      ${threeWayBlocks(item, ontology)}
+      ${threeWayButtons(item)}
+      ${revokeBar(item, true, "match3")}
+    </article>`;
+  }
+
   function paymentButtons(item, role, canWrite) {
     const parts = [];
     if (canWrite === false) parts.push(`<p>${escapeHtml(companyUploadNotice())}</p>`);
@@ -893,7 +1011,7 @@
     return parts.join("");
   }
 
-  function inboxCard(item, role, canWrite) {
+  function inboxCard(item, role, canWrite, ontology) {
     const preview = item.preview || {};
     const payloads = preview.payloads || item.dry_run || [];
     const evidence = (item.evidence || [])
@@ -901,7 +1019,10 @@
       .join("");
     const cfo = item.requires_cfo ? '<span class="pill high">CFO</span>' : "";
     const payment = item.kind === "payment_match";
-    const buttons = payment ? paymentButtons(item, role, canWrite) : recommendationButtons(item, canWrite);
+    const threeWay = item.kind === "three_way";
+    const buttons = threeWay
+      ? threeWayButtons(item, canWrite)
+      : (payment ? paymentButtons(item, role, canWrite) : recommendationButtons(item, canWrite));
     const title = item && typeof item.headline === "string" && item.headline !== ""
       ? item.headline
       : `Ordine ${item.order_key ?? ""}`;
@@ -911,7 +1032,9 @@
     const processLine = processBits.length
       ? `<p class="process-step">${escapeHtml(processBits.join(" · "))}</p>`
       : "";
-    const body = payment
+    const body = threeWay
+      ? threeWayBlocks(item, ontology)
+      : (payment
       ? `<p>${escapeHtml(item.problem)}</p>
       <p class="confidence-badge">${escapeHtml(confidenceLabel(item))}</p>
       ${matchBlocks(item)}`
@@ -921,17 +1044,17 @@
       <p class="formula">${escapeHtml(preview.formula || "")}</p>
       <ul class="fact-list">${evidence}</ul>
       <h3 class="section-heading">Cosa verrà approvato</h3>
-      <pre>${escapeHtml(JSON.stringify(payloads, null, 2))}</pre>`;
+      <pre>${escapeHtml(JSON.stringify(payloads, null, 2))}</pre>`);
     const decided = item && item.disposition === "closed" ? " decided" : "";
     return `<article class="card${decided}" data-id="${escapeHtml(item.id)}" data-hash="${escapeHtml(item.evidence_hash)}">
       <div class="meta">${pill(item.status)}${cfo}<span class="pill">${escapeHtml(item.risk)}</span></div>
       <h3 class="card-title">${escapeHtml(title)}</h3>
       ${processLine}
-      ${payment ? "" : criteriaMarkup(item.criteria)}
-      ${failedMarkup(item.failed_criteria)}
+      ${payment || threeWay ? "" : criteriaMarkup(item.criteria)}
+      ${threeWay ? "" : failedMarkup(item.failed_criteria)}
       ${body}
       ${decisionHistory(item.history)}
-      ${revokeBar(item, canWrite, payment ? "payment" : "inbox", role)}
+      ${revokeBar(item, canWrite, threeWay ? "match3" : (payment ? "payment" : "inbox"), role)}
       ${buttons}
     </article>`;
   }
@@ -1149,6 +1272,7 @@
     return `<p><button type="button" id="back-objects" class="ghost">Torna agli oggetti</button></p>
       <h2>${escapeHtml(typeLabel)} ${escapeHtml(object && object.business_key || "")}</h2>
       <ul class="fact-list">${objectFields(object, ontology)}</ul>
+      ${match3Section(object && object.match3, ontology)}
       ${links ? `<h3 class="section-heading">Collegamenti</h3><ul class="edges">${links}</ul>` : ""}
       ${history ? `<h3 class="section-heading">Storia</h3><ul class="decision-history">${history}</ul>` : ""}`;
   }

@@ -221,12 +221,13 @@ _FRESH = [
     {"version": "0021", "name": "quarantine_reject_reason", "baselined": False},
     {"version": "0022", "name": "ieol_admin", "baselined": False},
     {"version": "0023", "name": "p2p_tolerances", "baselined": False},
+    {"version": "0024", "name": "match3", "baselined": False},
 ]
 
 
 def test_migration_files_do_not_drop_or_truncate():
     files = migration_files()
-    assert [item.version for item in files] == ["0001", "0002", "0003", "0004", "0005", "0006", "0007", "0008", "0009", "0010", "0011", "0012", "0013", "0014", "0015", "0016", "0017", "0018", "0019", "0020", "0021", "0022", "0023"]
+    assert [item.version for item in files] == ["0001", "0002", "0003", "0004", "0005", "0006", "0007", "0008", "0009", "0010", "0011", "0012", "0013", "0014", "0015", "0016", "0017", "0018", "0019", "0020", "0021", "0022", "0023", "0024"]
     assert [item.name for item in files] == [
         "initial",
         "provenance_audit_quality",
@@ -251,6 +252,7 @@ def test_migration_files_do_not_drop_or_truncate():
         "quarantine_reject_reason",
         "ieol_admin",
         "p2p_tolerances",
+        "match3",
     ]
     for item in files:
         text = item.path.read_text(encoding="utf-8")
@@ -465,6 +467,7 @@ def test_legacy_database_is_baselined_without_touching_data_or_audit():
         {"version": "0021", "name": "quarantine_reject_reason", "baselined": False},
         {"version": "0022", "name": "ieol_admin", "baselined": False},
         {"version": "0023", "name": "p2p_tolerances", "baselined": False},
+    {"version": "0024", "name": "match3", "baselined": False},
     ]
     assert again == []
     assert third == []
@@ -502,6 +505,7 @@ def test_legacy_database_is_baselined_without_touching_data_or_audit():
         ("0021", "quarantine_reject_reason", False),
         ("0022", "ieol_admin", False),
         ("0023", "p2p_tolerances", False),
+        ("0024", "match3", False),
     ]
 
 
@@ -757,6 +761,7 @@ def test_upgraded_schema_is_baselined_without_touching_audit():
         {"version": "0021", "name": "quarantine_reject_reason", "baselined": False},
         {"version": "0022", "name": "ieol_admin", "baselined": False},
         {"version": "0023", "name": "p2p_tolerances", "baselined": False},
+    {"version": "0024", "name": "match3", "baselined": False},
     ]
     assert again == []
     assert fact == [("0.42", "system_of_record", "unknown", None)]
@@ -785,6 +790,7 @@ def test_upgraded_schema_is_baselined_without_touching_audit():
         ("0021", "quarantine_reject_reason", False),
         ("0022", "ieol_admin", False),
         ("0023", "p2p_tolerances", False),
+        ("0024", "match3", False),
     ]
 
 

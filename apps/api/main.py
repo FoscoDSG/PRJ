@@ -23,6 +23,9 @@ from apps.api.schemas import (
     FileTypeDecisionBody,
     LoginBody,
     ModifyBody,
+    Match3ConfirmBody,
+    Match3CorrectBody,
+    Match3RejectBody,
     PaymentConfirmBody,
     PaymentCorrectBody,
     PaymentRejectBody,
@@ -40,6 +43,7 @@ from services.allowed_actions import (
     file_actions,
     identity_actions,
     mapping_actions,
+    match3_actions,
     page_actions,
     payment_actions,
     quarantine_actions,
@@ -716,6 +720,13 @@ def object_route(object_id: str, user: dict = Depends(require_user)) -> dict:
         )
     if detail is None:
         raise AppError(404, "Oggetto assente")
+    match3 = detail.get("match3")
+    if isinstance(match3, dict):
+        match3["allowed_actions"] = match3_actions(
+            user["role"],
+            match3,
+            company=company_id is not None,
+        )
     return _ok(detail)
 
 
@@ -901,7 +912,12 @@ def inbox(user: dict = Depends(require_user)) -> dict:
         rows = list_inbox(conn, user["role"], company_id)
     company = company_id is not None
     for row in rows:
-        choose = payment_actions if row.get("kind") == "payment_match" else recommendation_actions
+        if row.get("kind") == "payment_match":
+            choose = payment_actions
+        elif row.get("kind") == "three_way":
+            choose = match3_actions
+        else:
+            choose = recommendation_actions
         row["allowed_actions"] = choose(user["role"], row, company=company)
     return _ok({"recommendations": rows})
 
@@ -1100,6 +1116,107 @@ def correct_unmatched_route(
             reason=body.reason,
             invoice_id=str(body.invoice_id) if body.invoice_id else None,
             invoice_number=body.invoice_number,
+        )
+        conn.commit()
+    return _ok(result)
+
+
+@app.post("/api/supplier-invoices/match3")
+def match3_route(user: dict = Depends(require_user)) -> dict:
+    from services.purchasing.match3 import propose_company
+
+    _require_company(user["username"])
+    with app_connect() as conn:
+        company_id = company_id_for_user(conn, user["username"])
+        created = propose_company(conn, ontology(), company_id)
+        conn.commit()
+    return _ok({"proposals": created})
+
+
+@app.post("/api/match3-proposals/{proposal_id}/confirm")
+def confirm_match3_route(
+    proposal_id: str,
+    body: Match3ConfirmBody,
+    user: dict = Depends(require_user),
+) -> dict:
+    from services.purchasing.match3 import confirm_proposal
+
+    _require_approver_company(user)
+    with app_connect() as conn:
+        result = confirm_proposal(
+            conn,
+            ontology(),
+            proposal_id,
+            actor=user["username"],
+            role=user["role"],
+            evidence_hash=body.evidence_hash,
+        )
+        conn.commit()
+    return _ok(result)
+
+
+@app.post("/api/match3-proposals/{proposal_id}/correct")
+def correct_match3_route(
+    proposal_id: str,
+    body: Match3CorrectBody,
+    user: dict = Depends(require_user),
+) -> dict:
+    from services.purchasing.match3 import correct_proposal
+
+    _require_approver_company(user)
+    with app_connect() as conn:
+        result = correct_proposal(
+            conn,
+            ontology(),
+            proposal_id,
+            actor=user["username"],
+            role=user["role"],
+            evidence_hash=body.evidence_hash,
+            reason=body.reason,
+        )
+        conn.commit()
+    return _ok(result)
+
+
+@app.post("/api/match3-proposals/{proposal_id}/reject")
+def reject_match3_route(
+    proposal_id: str,
+    body: Match3RejectBody,
+    user: dict = Depends(require_user),
+) -> dict:
+    from services.purchasing.match3 import reject_proposal
+
+    _require_approver_company(user)
+    with app_connect() as conn:
+        result = reject_proposal(
+            conn,
+            ontology(),
+            proposal_id,
+            actor=user["username"],
+            role=user["role"],
+            evidence_hash=body.evidence_hash,
+            reason=body.reason,
+        )
+        conn.commit()
+    return _ok(result)
+
+
+@app.post("/api/match3-decisions/{decision_id}/revoke")
+def revoke_match3_route(
+    decision_id: str,
+    body: RevokeBody,
+    user: dict = Depends(require_user),
+) -> dict:
+    from services.purchasing.match3 import revoke_decision
+
+    _require_approver_company(user)
+    with app_connect() as conn:
+        result = revoke_decision(
+            conn,
+            decision_id,
+            actor=user["username"],
+            role=user["role"],
+            reason=body.reason,
         )
         conn.commit()
     return _ok(result)

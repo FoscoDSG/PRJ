@@ -155,6 +155,27 @@ PAYMENT_OUTGOING_FIELDS = {
     "paid_at": "Data pagamento",
 }
 
+# Esiti delle tre vie. La pagina legge queste etichette e non traduce il codice.
+MATCH3_OUTCOMES = {
+    "MATCH_OK": "Tre vie coerenti",
+    "QTY_NOT_RECEIVED": "Quantità non ricevuta",
+    "QTY_OVER": "Quantità oltre il ricevuto",
+    "PRICE_OUT_OF_TOL": "Prezzo fuori tolleranza",
+    "VAT_MISMATCH": "IVA non coincidente",
+    "TOTAL_MISMATCH": "Totale fuori tolleranza",
+    "NO_PO": "Ordine assente",
+    "DUPLICATE_INVOICE": "Fattura già presente",
+}
+
+MATCH3_CRITERIA = {
+    "unique": "Univoca",
+    "order": "Ordine",
+    "quantity": "Quantità",
+    "price": "Prezzo",
+    "vat": "IVA",
+    "total": "Totale",
+}
+
 # Shown words for a stored code. «open» is not the same word on every type.
 VALUE_LABELS = {
     ("Order", "status"): {"open": "Aperto", "closed": "Chiuso"},
@@ -260,6 +281,10 @@ def describe_ontology(
         "value_labels": _value_labels(),
         "payment_labels": dict(PAYMENT_DIRECTION_LABELS),
         "payment_field_labels": {"outgoing": dict(PAYMENT_OUTGOING_FIELDS)},
+        "match3_labels": {
+            "outcomes": dict(MATCH3_OUTCOMES),
+            "criteria": dict(MATCH3_CRITERIA),
+        },
         "processes": processes,
         "step_transitions": step_transitions,
         "extensions": extensions,
