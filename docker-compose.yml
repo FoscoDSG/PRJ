@@ -1,0 +1,20 @@
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: ieol
+      POSTGRES_PASSWORD: ieol-local-only
+      POSTGRES_DB: ieol
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - ieol-pg:/var/lib/postgresql/data
+      - ./docker/init-databases.sql:/docker-entrypoint-initdb.d/10-init-databases.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ieol -d ieol"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+volumes:
+  ieol-pg:

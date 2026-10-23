@@ -1,0 +1,272 @@
+# Sinonimi di intestazione per il mapping.
+# I numeri sono punteggi di regola, non probabilità e non una calibrazione.
+# Fonti usate per scrivere le voci: Odoo 17 (res_partner.xlsx, product_template.xls,
+# product_purchase.xls e le etichette italiane nei file it.po), HubSpot
+# (pagine delle proprietà), Danea Easyfatt (pagina del tracciato XML) e
+# schema.org (Product.sku e Offer.price, cioè l'intestazione price).
+# Ogni voce ha source file:<nome> oppure doc:<url>.
+# Shopify, FatturaPA e WooCommerce non compaiono. Regular price è un'intestazione
+# di WooCommerce, non di schema.org: non è un sinonimo. WooCommerce è rivisto
+# dopo la prova e non è un test indipendente.
+# Magento è visto dopo la prova cieca sui CSV prodotto pubblici e non è un test
+# indipendente. I nomi colonna di Magento non sono sinonimi.
+version: "1"
+rule: mapping.synonym@v1
+score_kind: "punteggio di regola, non probabilità"
+sources:
+  - id: odoo17_res_partner
+    file: res_partner.xlsx
+    note: "Campi res.partner di Odoo 17 (nome tecnico o etichetta)."
+  - id: odoo17_product_template
+    file: product_template.xls
+    note: "Campi product.template di Odoo 17, inclusi qty_available e virtual_available."
+  - id: odoo17_product_purchase
+    file: product_purchase.xls
+    note: "Campi product.supplierinfo di Odoo 17 (scheda acquisto del prodotto)."
+  - id: hubspot_contacts
+    note: "Proprietà predefinite dei contatti HubSpot."
+  - id: hubspot_companies
+    note: "Proprietà predefinite delle aziende HubSpot."
+  - id: hubspot_deals
+    note: "Proprietà predefinite delle trattative HubSpot."
+  - id: danea_easyfatt_ordini
+    note: "Tag del tracciato Easyfatt-Xml documenti (ordini) e il nome italiano indicato da Danea accanto al tag."
+  - id: schema_org_product_offer
+    note: "schema.org Product.sku e Offer.price (intestazione price, non Regular price)."
+entries:
+  # Customer
+  - {header: "Company Name", language: en, source: doc:https://knowledge.hubspot.com/properties/hubspot-crm-default-company-properties, profile: customer, target_type: Customer, target_property: company_name, score: 0.93}
+  - {header: "Nome azienda", language: it, source: file:odoo/addons/base/i18n/it.po, profile: customer, target_type: Customer, target_property: company_name, score: 0.93}
+  - {header: complete_name, language: en, source: file:res_partner.xlsx, profile: customer, target_type: Customer, target_property: name, score: 0.90}
+  - {header: "Nome completo", language: it, source: file:odoo/addons/base/i18n/it.po, profile: customer, target_type: Customer, target_property: name, score: 0.90}
+  - {header: vat, language: en, source: file:res_partner.xlsx, profile: customer, target_type: Customer, target_property: vat, score: 0.96}
+  - {header: "Tax ID", language: en, source: file:res_partner.xlsx, profile: customer, target_type: Customer, target_property: vat, score: 0.94}
+  - {header: CustomerVatCode, language: en, source: doc:https://www.danea.it/software/easyfatt/xml/documenti/, profile: customer, target_type: Customer, target_property: vat, score: 0.95}
+  - {header: "Partita Iva", language: it, source: doc:https://www.danea.it/software/easyfatt/xml/documenti/, profile: customer, target_type: Customer, target_property: vat, score: 0.96}
+  - {header: email_formatted, language: en, source: file:res_partner.xlsx, profile: customer, target_type: Customer, target_property: email, score: 0.90}
+  - {header: CustomerEmail, language: en, source: doc:https://www.danea.it/software/easyfatt/xml/documenti/, profile: customer, target_type: Customer, target_property: email, score: 0.93}
+  - {header: "Indirizzo e-mail", language: it, source: doc:https://www.danea.it/software/easyfatt/xml/documenti/, profile: customer, target_type: Customer, target_property: email, score: 0.91}
+  - {header: CustomerCode, language: en, source: doc:https://www.danea.it/software/easyfatt/xml/documenti/, profile: customer, target_type: Customer, target_property: source_key, score: 0.94}
+  - {header: Reference, language: en, source: file:res_partner.xlsx, profile: customer, target_type: Customer, target_property: source_key, score: 0.88}
+  - {header: "Codice anagrafica", language: it, source: doc:https://www.danea.it/software/easyfatt/xml/documenti/, profile: customer, target_type: Customer, target_property: source_key, score: 0.93}
+  # Person and Organization, recognized on a customer file
+  - {header: CustomerName, language: en, source: doc:https://www.danea.it/software/easyfatt/xml/documenti/, profile: customer, target_type: Person, target_property: full_name, score: 0.86}
+  - {header: "Cognome e nome o denominazione sociale", language: it, source: doc:https://www.danea.it/software/easyfatt/xml/documenti/, profile: customer, target_type: Person, target_property: full_name, score: 0.86}
+  - {header: commercial_company_name, language: en, source: file:res_partner.xlsx, profile: customer, target_type: Organization, target_property: name, score: 0.88}
+  - {header: "Company Name Entity", language: en, source: file:res_partner.xlsx, profile: customer, target_type: Organization, target_property: name, score: 0.86}
+  - {header: "Ragione sociale azienda", language: it, source: file:odoo/addons/base/i18n/it.po, profile: customer, target_type: Organization, target_property: name, score: 0.84}
+  # Supplier (Odoo product.supplierinfo and the Danea supplier side of a purchase document)
+  - {header: "Delivery Lead Time", language: en, source: file:product_purchase.xls, profile: supplier, target_type: Supplier, target_property: delay_days, score: 0.92}
+  - {header: delay, language: en, source: file:product_purchase.xls, profile: supplier, target_type: Supplier, target_property: delay_days, score: 0.90}
+  - {header: "Tempo di risposta per consegne", language: it, source: file:addons/product/i18n/it.po, profile: supplier, target_type: Supplier, target_property: delay_days, score: 0.91}
+  - {header: "Vendor Product Code", language: en, source: file:product_purchase.xls, profile: supplier, target_type: Supplier, target_property: product_source_key, score: 0.93}
+  - {header: product_code, language: en, source: file:product_purchase.xls, profile: supplier, target_type: Supplier, target_property: product_source_key, score: 0.93}
+  - {header: SupplierCode, language: en, source: doc:https://www.danea.it/software/easyfatt/xml/documenti/, profile: supplier, target_type: Supplier, target_property: product_source_key, score: 0.94}
+  - {header: "Codice prodotto del fornitore", language: it, source: doc:https://www.danea.it/software/easyfatt/xml/documenti/, profile: supplier, target_type: Supplier, target_property: product_source_key, score: 0.93}
+  - {header: partner_id, language: en, source: file:product_purchase.xls, profile: supplier, target_type: Supplier, target_property: source_key, score: 0.80}
+  - {header: "Company Name", language: en, source: doc:https://knowledge.hubspot.com/properties/hubspot-crm-default-company-properties, profile: supplier, target_type: Supplier, target_property: name, score: 0.86}
+  - {header: "Nome azienda", language: it, source: file:odoo/addons/base/i18n/it.po, profile: supplier, target_type: Supplier, target_property: name, score: 0.86}
+  - {header: "Codice anagrafica", language: it, source: doc:https://www.danea.it/software/easyfatt/xml/documenti/, profile: supplier, target_type: Supplier, target_property: source_key, score: 0.84}
+  # Product
+  - {header: default_code, language: en, source: file:product_template.xls, profile: product, target_type: Product, target_property: source_key, score: 0.96}
+  - {header: "Internal Reference", language: en, source: file:product_template.xls, profile: product, target_type: Product, target_property: source_key, score: 0.94}
+  - {header: barcode, language: en, source: file:product_template.xls, profile: product, target_type: Product, target_property: source_key, score: 0.88}
+  - {header: "Codice prodotto", language: it, source: doc:https://www.danea.it/software/easyfatt/xml/documenti/, profile: product, target_type: Product, target_property: source_key, score: 0.93}
+  - {header: "Riferimento interno", language: it, source: file:addons/product/i18n/it.po, profile: product, target_type: Product, target_property: source_key, score: 0.93}
+  # schema.org Product.sku e Offer.price. Regular price non c'è: è un nome WooCommerce.
+  - {header: sku, language: en, source: doc:https://schema.org/sku, profile: product, target_type: Product, target_property: source_key, score: 0.94}
+  - {header: price, language: en, source: doc:https://schema.org/price, profile: product, target_type: OrderLine, target_property: unit_price, score: 0.90}
+  - {header: standard_price, language: en, source: file:product_template.xls, profile: product, target_type: Product, target_property: cost, score: 0.94}
+  - {header: Cost, language: en, source: file:product_template.xls, profile: product, target_type: Product, target_property: cost, score: 0.92}
+  - {header: Costo, language: it, source: file:addons/product/i18n/it.po, profile: product, target_type: Product, target_property: cost, score: 0.92}
+  - {header: description_sale, language: en, source: file:product_template.xls, profile: product, target_type: Product, target_property: name, score: 0.84}
+  - {header: "Sales Description", language: en, source: file:product_template.xls, profile: product, target_type: Product, target_property: name, score: 0.86}
+  - {header: Description, language: en, source: doc:https://www.danea.it/software/easyfatt/xml/documenti/, profile: product, target_type: Product, target_property: name, score: 0.86}
+  - {header: "Descrizione vendite", language: it, source: file:addons/product/i18n/it.po, profile: product, target_type: Product, target_property: name, score: 0.85}
+  # Order
+  - {header: "Deal Name", language: en, source: doc:https://knowledge.hubspot.com/properties/hubspots-default-deal-properties, profile: order, target_type: Order, target_property: source_key, score: 0.90}
+  - {header: dealname, language: en, source: doc:https://knowledge.hubspot.com/properties/hubspots-default-deal-properties, profile: order, target_type: Order, target_property: source_key, score: 0.90}
+  - {header: "Numero documento", language: it, source: doc:https://www.danea.it/software/easyfatt/xml/documenti/, profile: order, target_type: Order, target_property: source_key, score: 0.93}
+  - {header: amount, language: en, source: doc:https://knowledge.hubspot.com/properties/hubspots-default-deal-properties, profile: order, target_type: Order, target_property: amount, score: 0.90}
+  - {header: TotalWithoutTax, language: en, source: doc:https://www.danea.it/software/easyfatt/xml/documenti/, profile: order, target_type: Order, target_property: amount, score: 0.86}
+  - {header: "Totale documento al netto dell'imposta IVA", language: it, source: doc:https://www.danea.it/software/easyfatt/xml/documenti/, profile: order, target_type: Order, target_property: amount, score: 0.84}
+  - {header: "Deal Stage", language: en, source: doc:https://knowledge.hubspot.com/properties/hubspots-default-deal-properties, profile: order, target_type: Order, target_property: status, score: 0.90}
+  - {header: dealstage, language: en, source: doc:https://knowledge.hubspot.com/properties/hubspots-default-deal-properties, profile: order, target_type: Order, target_property: status, score: 0.88}
+  - {header: "Fase della trattativa", language: it, source: doc:https://knowledge.hubspot.com/it/records/search-your-crm, profile: order, target_type: Order, target_property: status, score: 0.88}
+  - {header: "Close Date", language: en, source: doc:https://knowledge.hubspot.com/properties/hubspots-default-deal-properties, profile: order, target_type: Order, target_property: ordered_at, score: 0.90}
+  - {header: closedate, language: en, source: doc:https://knowledge.hubspot.com/properties/hubspots-default-deal-properties, profile: order, target_type: Order, target_property: ordered_at, score: 0.88}
+  - {header: Date, language: en, source: doc:https://www.danea.it/software/easyfatt/xml/documenti/, profile: order, target_type: Order, target_property: ordered_at, score: 0.86}
+  - {header: "Data del documento", language: it, source: doc:https://www.danea.it/software/easyfatt/xml/documenti/, profile: order, target_type: Order, target_property: ordered_at, score: 0.92}
+  - {header: CustomerCode, language: en, source: doc:https://www.danea.it/software/easyfatt/xml/documenti/, profile: order, target_type: Order, target_property: customer_source_key, score: 0.93}
+  - {header: "Codice anagrafica", language: it, source: doc:https://www.danea.it/software/easyfatt/xml/documenti/, profile: order, target_type: Order, target_property: customer_source_key, score: 0.90}
+  - {header: DocumentType, language: en, source: doc:https://www.danea.it/software/easyfatt/xml/documenti/, profile: order, target_type: Event, target_property: event_type, score: 0.82}
+  - {header: "tipo di documento", language: it, source: doc:https://www.danea.it/software/easyfatt/xml/documenti/, profile: order, target_type: Event, target_property: event_type, score: 0.80}
+  - {header: InternalComment, language: en, source: doc:https://www.danea.it/software/easyfatt/xml/documenti/, profile: order, target_type: Event, target_property: summary, score: 0.80}
+  - {header: Commento, language: it, source: doc:https://www.danea.it/software/easyfatt/xml/documenti/, profile: order, target_type: Event, target_property: summary, score: 0.78}
+  - {header: CustomerCity, language: en, source: doc:https://www.danea.it/software/easyfatt/xml/documenti/, profile: customer, target_type: Location, target_property: name, score: 0.72}
+  - {header: "Città", language: it, source: doc:https://www.danea.it/software/easyfatt/xml/documenti/, profile: customer, target_type: Location, target_property: name, score: 0.70}
+  # Order line
+  - {header: Quantity, language: en, source: file:product_purchase.xls, profile: order_line, target_type: OrderLine, target_property: quantity, score: 0.86}
+  - {header: "Quantità prodotti", language: it, source: doc:https://www.danea.it/software/easyfatt/xml/documenti/, profile: order_line, target_type: OrderLine, target_property: quantity, score: 0.93}
+  - {header: Price, language: en, source: doc:https://www.danea.it/software/easyfatt/xml/documenti/, profile: order_line, target_type: OrderLine, target_property: unit_price, score: 0.90}
+  - {header: price, language: en, source: doc:https://schema.org/price, profile: order_line, target_type: OrderLine, target_property: unit_price, score: 0.90}
+  - {header: "Sales Price", language: en, source: file:product_template.xls, profile: order_line, target_type: OrderLine, target_property: unit_price, score: 0.84}
+  - {header: "Prezzo di vendita", language: it, source: file:addons/product/i18n/it.po, profile: order_line, target_type: OrderLine, target_property: unit_price, score: 0.84}
+  - {header: Code, language: en, source: doc:https://www.danea.it/software/easyfatt/xml/documenti/, profile: order_line, target_type: OrderLine, target_property: product_source_key, score: 0.90}
+  - {header: "Codice prodotto", language: it, source: doc:https://www.danea.it/software/easyfatt/xml/documenti/, profile: order_line, target_type: OrderLine, target_property: product_source_key, score: 0.92}
+  - {header: Number, language: en, source: doc:https://www.danea.it/software/easyfatt/xml/documenti/, profile: order_line, target_type: OrderLine, target_property: order_source_key, score: 0.82}
+  - {header: "Numero documento", language: it, source: doc:https://www.danea.it/software/easyfatt/xml/documenti/, profile: order_line, target_type: OrderLine, target_property: order_source_key, score: 0.86}
+  - {header: Notes, language: en, source: doc:https://www.danea.it/software/easyfatt/xml/documenti/, profile: order_line, target_type: Event, target_property: summary, score: 0.76}
+  - {header: "Note della riga", language: it, source: doc:https://www.danea.it/software/easyfatt/xml/documenti/, profile: order_line, target_type: Event, target_property: summary, score: 0.78}
+  # Stock and warehouse
+  - {header: "Quantity On Hand", language: en, source: file:product_template.xls, profile: stock, target_type: StockPosition, target_property: on_hand, score: 0.95}
+  - {header: qty_available, language: en, source: file:product_template.xls, profile: stock, target_type: StockPosition, target_property: on_hand, score: 0.94}
+  - {header: "Quantità giacenza fisica", language: it, source: file:addons/stock/i18n/it.po, profile: stock, target_type: StockPosition, target_property: on_hand, score: 0.93}
+  - {header: "Available Quantity", language: en, source: file:addons/stock/i18n/it.po, profile: stock, target_type: StockPosition, target_property: available, score: 0.84}
+  - {header: "Quantità disponibile", language: it, source: file:addons/stock/i18n/it.po, profile: stock, target_type: StockPosition, target_property: available, score: 0.84}
+  - {header: "Forecasted Quantity", language: en, source: file:product_template.xls, profile: stock, target_type: StockPosition, target_property: available, score: 0.72}
+  - {header: virtual_available, language: en, source: file:product_template.xls, profile: stock, target_type: StockPosition, target_property: available, score: 0.70}
+  - {header: "Quantità prevista", language: it, source: file:addons/stock/i18n/it.po, profile: stock, target_type: StockPosition, target_property: available, score: 0.72}
+  - {header: default_code, language: en, source: file:product_template.xls, profile: stock, target_type: StockPosition, target_property: product_source_key, score: 0.90}
+  - {header: "Codice prodotto", language: it, source: doc:https://www.danea.it/software/easyfatt/xml/documenti/, profile: stock, target_type: StockPosition, target_property: product_source_key, score: 0.88}
+  - {header: Warehouse, language: en, source: doc:https://www.danea.it/software/easyfatt/xml/documenti/, profile: stock, target_type: Warehouse, target_property: name, score: 0.90}
+  - {header: "Denominazione del magazzino usato", language: it, source: doc:https://www.danea.it/software/easyfatt/xml/documenti/, profile: stock, target_type: Warehouse, target_property: name, score: 0.88}
+  # Shipment columns on a file that is only transport data
+  - {header: TrackingNumber, language: en, source: doc:https://www.danea.it/software/easyfatt/xml/documenti/, profile: shipment, target_type: Shipment, target_property: source_key, score: 0.92}
+  - {header: "Numero di tracciatura spedizione", language: it, source: doc:https://www.danea.it/software/easyfatt/xml/documenti/, profile: shipment, target_type: Shipment, target_property: source_key, score: 0.92}
+  - {header: TransportDateTime, language: en, source: doc:https://www.danea.it/software/easyfatt/xml/documenti/, profile: shipment, target_type: Shipment, target_property: shipped_at, score: 0.90}
+  - {header: "Data e ora del trasporto", language: it, source: doc:https://www.danea.it/software/easyfatt/xml/documenti/, profile: shipment, target_type: Shipment, target_property: shipped_at, score: 0.90}
+  - {header: TransportReason, language: en, source: doc:https://www.danea.it/software/easyfatt/xml/documenti/, profile: shipment, target_type: Shipment, target_property: event_type, score: 0.78}
+  - {header: "Causale trasporto", language: it, source: doc:https://www.danea.it/software/easyfatt/xml/documenti/, profile: shipment, target_type: Shipment, target_property: event_type, score: 0.80}
+  - {header: FootNotes, language: en, source: doc:https://www.danea.it/software/easyfatt/xml/documenti/, profile: shipment, target_type: Shipment, target_property: summary, score: 0.74}
+  - {header: "Note a fine pagina", language: it, source: doc:https://www.danea.it/software/easyfatt/xml/documenti/, profile: shipment, target_type: Shipment, target_property: summary, score: 0.74}
+# Parti di un nome composto. Person.given_name e Person.family_name non sono nell'ontologia:
+# queste colonne restano sotto soglia e non scrivono Person.full_name.
+name_parts:
+  - {header: "First Name", language: en, source: doc:https://knowledge.hubspot.com/properties/hubspots-default-contact-properties, profile: customer, part: given_name}
+  - {header: firstname, language: en, source: doc:https://knowledge.hubspot.com/properties/hubspots-default-contact-properties, profile: customer, part: given_name}
+  - {header: "Last Name", language: en, source: doc:https://knowledge.hubspot.com/properties/hubspots-default-contact-properties, profile: customer, part: family_name}
+  - {header: lastname, language: en, source: doc:https://knowledge.hubspot.com/properties/hubspots-default-contact-properties, profile: customer, part: family_name}
+uncovered:
+  - {target_type: Document, target_property: title, reason: "Nessuna colonna nelle fonti ammesse. Resta il ripiego unknown_header."}
+  - {target_type: Asset, target_property: name, reason: "Il nome è Product.name. Asset.name non ha una colonna distinta."}
+  - {target_type: Transaction, target_property: amount, reason: "L'importo esportato è Order.amount (amount di HubSpot, TotalWithoutTax di Danea)."}
+  - {target_type: Order, target_property: margin, reason: "Proprietà calcolata, assente negli export ammessi."}
+  - {target_type: Order, target_property: shortage_qty, reason: "Proprietà calcolata, assente negli export ammessi."}
+  - {target_type: Order, target_property: commessa, reason: "Estensione cliente, assente in Odoo, HubSpot e Danea."}
+  - {target_type: OrderLine, target_property: amount, reason: "Ereditata da Transaction. Negli export ammessi il prezzo di riga è OrderLine.unit_price, non un importo di riga."}
+  - {target_type: OrderLine, target_property: shortage, reason: "Proprietà calcolata, assente negli export ammessi."}
+  - {target_type: OrderLine, target_property: source_key, reason: "Il tracciato Danea e i campi Odoo/HubSpot non hanno un id di riga distinto da codice e numero."}
+  - {target_type: StockPosition, target_property: name, reason: "La giacenza non ha un nome negli export ammessi."}
+  - {target_type: StockPosition, target_property: reserved, reason: "Nessuna colonna riservato in res.partner, product.template o product.supplierinfo."}
+  - {target_type: StockPosition, target_property: source_key, reason: "La chiave di giacenza è composta da prodotto e magazzino, non è una colonna delle fonti."}
+  - {target_type: StockPosition, target_property: warehouse_source_key, reason: "Warehouse di Danea è il nome del magazzino (Warehouse.name). Il profilo italiano usa già magazzino."}
+  - {target_type: Warehouse, target_property: source_key, reason: "Warehouse di Danea è il nome, non un codice separato."}
+  - {target_type: Shipment, target_property: status, reason: "Il tracciato Danea non ha uno stato spedizione distinto dalla causale."}
+  - {target_type: Shipment, target_property: occurred_at, reason: "Ereditato da Event. La data di processo non è una colonna del dizionario."}
+  - {target_type: Shipment, target_property: process_id, reason: "Ereditato da Event. L'id di processo non è una colonna del dizionario."}
+  - {target_type: Shipment, target_property: step_id, reason: "Ereditato da Event. L'id del passo non è una colonna del dizionario."}
+  - {target_type: Shipment, target_property: order_source_key, reason: "Il collegamento spedizione-ordine è del modulo ordine-incasso, non un'intestazione delle fonti del dizionario."}
+  - {target_type: Supplier, target_property: vat, reason: "La partita IVA del fornitore collega lo stesso soggetto del cliente. Il dizionario ha già Customer.vat."}
+  - {target_type: Event, target_property: occurred_at, reason: "Data dell'evento di processo, scritta dal sistema, non da una colonna di export."}
+  - {target_type: Event, target_property: process_id, reason: "Identificatore del processo, dichiarato nell'ontologia, non in un export."}
+  - {target_type: Event, target_property: step_id, reason: "Identificatore del passo, dichiarato nell'ontologia, non in un export."}
+  - {target_type: Invoice, target_property: title, reason: "Ereditato da Document. Il numero fattura è Invoice.source_key."}
+  - {target_type: Invoice, target_property: source_key, reason: "La chiave italiana fattura sta nel profilo di mapping, non nel dizionario che esclude FatturaPA."}
+  - {target_type: Invoice, target_property: document_type, reason: "Tipo documento letto dal tracciato XML di prova, non da un'intestazione del dizionario."}
+  - {target_type: Invoice, target_property: issued_at, reason: "Data fattura del modulo ordine-incasso. Il dizionario tiene la data sull'ordine."}
+  - {target_type: Invoice, target_property: due_at, reason: "La chiave italiana scadenza sta nel profilo di mapping, non nel dizionario."}
+  - {target_type: Invoice, target_property: scadenze, reason: "Elenco scadenze letto dall'importatore, non da una colonna del dizionario."}
+  - {target_type: Invoice, target_property: amount, reason: "Importo fattura, riservato. Il dizionario copre Order.amount, non questo modulo."}
+  - {target_type: Invoice, target_property: currency, reason: "Valuta della fattura, assente nelle fonti ammesse del dizionario."}
+  - {target_type: Invoice, target_property: customer_vat, reason: "Partita IVA del cliente in fattura. Il dizionario ha Customer.vat."}
+  - {target_type: Invoice, target_property: customer_name, reason: "Nome del cliente in fattura. È un dato personale, non una voce nuova del dizionario."}
+  - {target_type: Invoice, target_property: order_source_key, reason: "Riferimento ordine sulla fattura, collegamento del processo, non una colonna del dizionario."}
+  - {target_type: Invoice, target_property: status, reason: "Stato scritto dal processo. La regola non chiude la fattura da un export."}
+  - {target_type: InvoiceLine, target_property: amount, reason: "Ereditato da Transaction. L'importo di riga è InvoiceLine.line_amount."}
+  - {target_type: InvoiceLine, target_property: source_key, reason: "Chiave di riga composta da numero fattura e numero riga."}
+  - {target_type: InvoiceLine, target_property: description, reason: "Descrizione di riga letta dall'importatore di prova."}
+  - {target_type: InvoiceLine, target_property: quantity, reason: "La quantità di riga fattura non entra nel dizionario: FatturaPA resta fuori."}
+  - {target_type: InvoiceLine, target_property: unit_price, reason: "Prezzo di riga fattura, importo riservato, fuori dal dizionario."}
+  - {target_type: InvoiceLine, target_property: line_amount, reason: "Importo di riga, riservato, fuori dal dizionario."}
+  - {target_type: InvoiceLine, target_property: invoice_source_key, reason: "Riferimento alla testata fattura, non una colonna del dizionario."}
+  - {target_type: InvoiceLine, target_property: vat_rate, reason: "Aliquota letta dall'importatore di prova. FatturaPA non è una fonte del dizionario."}
+  - {target_type: CreditNote, target_property: title, reason: "Ereditato da Document. Il numero della nota è CreditNote.source_key."}
+  - {target_type: CreditNote, target_property: source_key, reason: "Numero della nota di credito TD04, letto dall'importatore di prova."}
+  - {target_type: CreditNote, target_property: document_type, reason: "TD04 è il tipo della nota, non un'intestazione del dizionario."}
+  - {target_type: CreditNote, target_property: issued_at, reason: "Data della nota di credito, scritta dall'importatore."}
+  - {target_type: CreditNote, target_property: amount, reason: "Importo della nota, riservato."}
+  - {target_type: CreditNote, target_property: invoice_source_key, reason: "Fattura a cui la nota si riferisce."}
+  - {target_type: CreditNote, target_property: customer_vat, reason: "Stessa partita IVA del cliente della fattura."}
+  - {target_type: CreditNote, target_property: reason, reason: "Causale della nota, testo del documento di prova."}
+  - {target_type: CreditNote, target_property: status, reason: "Stato della nota, scritto dal processo."}
+  - {target_type: Payment, target_property: amount, reason: "Ereditato da Transaction. L'incasso è riservato e la chiave italiana importo sta nel profilo."}
+  - {target_type: Payment, target_property: source_key, reason: "La chiave italiana incasso sta nel profilo di mapping, non nel dizionario."}
+  - {target_type: Payment, target_property: direction, reason: "Direzione incoming o outgoing, dichiarata dal processo."}
+  - {target_type: Payment, target_property: paid_at, reason: "Data dell'incasso, scritta dall'importatore dell'estratto di prova."}
+  - {target_type: Payment, target_property: iban, reason: "IBAN è un dato personale. Non è una voce del dizionario."}
+  - {target_type: Payment, target_property: causale, reason: "La causale è un dato personale. La chiave italiana sta nel profilo, non nel dizionario."}
+  - {target_type: Payment, target_property: counterparty_name, reason: "Nome di chi paga, dato personale."}
+  - {target_type: Payment, target_property: counterparty_vat, reason: "Partita IVA di chi paga, dato personale."}
+  - {target_type: Payment, target_property: reference, reason: "Riferimento letto dalla causale per la regola di abbinamento."}
+  - {target_type: Payment, target_property: status, reason: "Stato dell'incasso, scritto dal processo. La regola non chiude la fattura."}
+  - {target_type: PaymentAllocation, target_property: amount, reason: "Ereditato da Transaction. L'importo assegnato è allocated_amount."}
+  - {target_type: PaymentAllocation, target_property: source_key, reason: "Chiave dell'assegnazione, scritta dalla proposta."}
+  - {target_type: PaymentAllocation, target_property: payment_source_key, reason: "Collegamento all'incasso. L'abbinamento passa da qui."}
+  - {target_type: PaymentAllocation, target_property: invoice_source_key, reason: "Collegamento alla fattura. Il pagamento non la salda da solo."}
+  - {target_type: PaymentAllocation, target_property: allocated_amount, reason: "Importo assegnato, riservato. È il criterio amount della proposta."}
+  - {target_type: PaymentAllocation, target_property: status, reason: "proposed o confirmed. Non è la chiusura della fattura."}
+  - {target_type: PaymentAllocation, target_property: supplier_invoice_source_key, reason: "Collegamento all'assegnazione della fattura fornitore. Non è una colonna del dizionario."}
+  - {target_type: PurchaseRequest, target_property: title, reason: "Ereditato da Document. Il numero della richiesta è PurchaseRequest.source_key."}
+  - {target_type: PurchaseRequest, target_property: source_key, reason: "Chiave della richiesta di acquisto, scritta dal processo, non da un export del dizionario."}
+  - {target_type: PurchaseRequest, target_property: status, reason: "Stato della richiesta, scritto dal processo."}
+  - {target_type: PurchaseRequest, target_property: requested_at, reason: "Data della richiesta. Non è una colonna delle fonti ammesse."}
+  - {target_type: PurchaseRequest, target_property: requester, reason: "Chi chiede l'acquisto. Non è una colonna delle fonti ammesse."}
+  - {target_type: PurchaseRequest, target_property: amount, reason: "Importo della richiesta, riservato. Il dizionario copre Order.amount."}
+  - {target_type: PurchaseOrder, target_property: amount, reason: "Ereditato da Transaction. Importo dell'ordine di acquisto, riservato."}
+  - {target_type: PurchaseOrder, target_property: source_key, reason: "Numero dell'ordine di acquisto, chiave del processo, non una colonna del dizionario."}
+  - {target_type: PurchaseOrder, target_property: status, reason: "Stato dell'ordine di acquisto, scritto dal processo."}
+  - {target_type: PurchaseOrder, target_property: ordered_at, reason: "Data dell'ordine di acquisto. Il dizionario tiene la data sull'ordine di vendita."}
+  - {target_type: PurchaseOrder, target_property: purchase_request_source_key, reason: "Collegamento alla richiesta. Non è una colonna del dizionario."}
+  - {target_type: PurchaseOrder, target_property: supplier_source_key, reason: "Collegamento al fornitore. Il dizionario ha Supplier.source_key, non questo riferimento."}
+  - {target_type: PurchaseOrder, target_property: supplier_vat, reason: "Partita IVA del fornitore sull'ordine. Il dizionario ha Customer.vat."}
+  - {target_type: PurchaseOrderLine, target_property: amount, reason: "Ereditato da Transaction. L'importo di riga è line_amount."}
+  - {target_type: PurchaseOrderLine, target_property: source_key, reason: "Chiave di riga dell'ordine di acquisto."}
+  - {target_type: PurchaseOrderLine, target_property: quantity, reason: "Quantità ordinata al fornitore. Non è una colonna delle fonti ammesse."}
+  - {target_type: PurchaseOrderLine, target_property: unit_price, reason: "Prezzo unitario di acquisto, riservato."}
+  - {target_type: PurchaseOrderLine, target_property: line_amount, reason: "Importo di riga dell'ordine di acquisto, riservato."}
+  - {target_type: PurchaseOrderLine, target_property: vat_rate, reason: "Aliquota della riga di acquisto. FatturaPA non è una fonte del dizionario."}
+  - {target_type: PurchaseOrderLine, target_property: order_source_key, reason: "Riferimento all'ordine di acquisto, collegamento del processo."}
+  - {target_type: PurchaseOrderLine, target_property: product_source_key, reason: "Prodotto della riga. Il dizionario ha Product.source_key."}
+  - {target_type: GoodsReceipt, target_property: title, reason: "Ereditato da Document. Il numero del ricevimento è GoodsReceipt.source_key."}
+  - {target_type: GoodsReceipt, target_property: source_key, reason: "Numero del DDT di ricevimento, chiave del processo."}
+  - {target_type: GoodsReceipt, target_property: status, reason: "Stato del ricevimento, scritto dal processo."}
+  - {target_type: GoodsReceipt, target_property: received_at, reason: "Data del ricevimento. Non è una colonna delle fonti ammesse."}
+  - {target_type: GoodsReceipt, target_property: order_source_key, reason: "Collegamento all'ordine di acquisto."}
+  - {target_type: GoodsReceiptLine, target_property: amount, reason: "Ereditato da Transaction. Il ricevimento conta la quantità."}
+  - {target_type: GoodsReceiptLine, target_property: source_key, reason: "Chiave di riga del ricevimento."}
+  - {target_type: GoodsReceiptLine, target_property: quantity, reason: "Quantità ricevuta. Non è una colonna delle fonti ammesse."}
+  - {target_type: GoodsReceiptLine, target_property: receipt_source_key, reason: "Riferimento al DDT."}
+  - {target_type: GoodsReceiptLine, target_property: order_line_source_key, reason: "Riferimento alla riga dell'ordine di acquisto."}
+  - {target_type: GoodsReceiptLine, target_property: product_source_key, reason: "Prodotto ricevuto. Il dizionario ha Product.source_key."}
+  - {target_type: SupplierInvoice, target_property: title, reason: "Ereditato da Document. La chiave è P.IVA, numero e anno."}
+  - {target_type: SupplierInvoice, target_property: source_key, reason: "Chiave composta. FatturaPA non è una fonte del dizionario."}
+  - {target_type: SupplierInvoice, target_property: supplier_vat, reason: "Partita IVA del fornitore, dato personale. Il dizionario ha Customer.vat."}
+  - {target_type: SupplierInvoice, target_property: supplier_name, reason: "Nome del fornitore, dato personale."}
+  - {target_type: SupplierInvoice, target_property: invoice_number, reason: "Numero della fattura del fornitore. I numeri si sovrappongono a quelli delle fatture emesse."}
+  - {target_type: SupplierInvoice, target_property: invoice_year, reason: "Anno della fattura fornitore, parte della chiave."}
+  - {target_type: SupplierInvoice, target_property: document_type, reason: "Tipo documento letto dal file di prova."}
+  - {target_type: SupplierInvoice, target_property: issued_at, reason: "Data della fattura fornitore."}
+  - {target_type: SupplierInvoice, target_property: due_at, reason: "Scadenza della fattura fornitore."}
+  - {target_type: SupplierInvoice, target_property: amount, reason: "Importo della fattura fornitore, riservato."}
+  - {target_type: SupplierInvoice, target_property: currency, reason: "Valuta della fattura fornitore."}
+  - {target_type: SupplierInvoice, target_property: order_source_key, reason: "Collegamento all'ordine di acquisto."}
+  - {target_type: SupplierInvoice, target_property: status, reason: "Stato della fattura fornitore, scritto dal processo."}
+  - {target_type: SupplierInvoiceLine, target_property: amount, reason: "Ereditato da Transaction. L'importo di riga è line_amount."}
+  - {target_type: SupplierInvoiceLine, target_property: source_key, reason: "Chiave di riga della fattura fornitore."}
+  - {target_type: SupplierInvoiceLine, target_property: description, reason: "Descrizione di riga letta dal file di prova."}
+  - {target_type: SupplierInvoiceLine, target_property: quantity, reason: "Quantità fatturata dal fornitore. FatturaPA resta fuori dal dizionario."}
+  - {target_type: SupplierInvoiceLine, target_property: unit_price, reason: "Prezzo unitario della riga fornitore, riservato."}
+  - {target_type: SupplierInvoiceLine, target_property: line_amount, reason: "Importo di riga della fattura fornitore, riservato."}
+  - {target_type: SupplierInvoiceLine, target_property: vat_rate, reason: "Aliquota della riga fornitore. FatturaPA non è una fonte del dizionario."}
+  - {target_type: SupplierInvoiceLine, target_property: supplier_invoice_source_key, reason: "Riferimento alla testata della fattura fornitore."}

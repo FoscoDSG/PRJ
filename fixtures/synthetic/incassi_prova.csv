@@ -1,0 +1,7 @@
+# label_origin: synthetic
+# Estratto inventato per i test. Non è un movimento vero.
+data,importo,iban,causale,riferimento,cliente,partita_iva,direzione,incasso
+2026-04-02,122.00,IT00TEST0000000000000000000,Saldo FT-TEST-100,FT-TEST-100,Cliente Prova Alfa,IT00000000001,incoming,INC-100
+2026-04-03,40.00,IT00TEST0000000000000000000,Acconto FT-TEST-200,FT-TEST-200,Cliente Prova Alfa,IT00000000001,incoming,INC-200
+2026-04-04,100.00,IT00TEST0000000000000000000,Saldo FT-TEST-301 e FT-TEST-302,FT-TEST-301 FT-TEST-302,Cliente Prova Alfa,IT00000000001,incoming,INC-301
+2026-04-05,122.00,IT00TEST0000000000000000000,Uscita FT-TEST-100,FT-TEST-100,Cliente Prova Alfa,IT00000000001,outgoing,INC-OUT
