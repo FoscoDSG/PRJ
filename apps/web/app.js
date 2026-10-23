@@ -441,6 +441,13 @@ async function ensureOntology() {
   return state.ontology;
 }
 
+function paymentIncomingLabel(ontology) {
+  const labels = ontology && ontology.payment_labels;
+  const incoming = labels && labels.incoming;
+  if (typeof incoming === "string" && incoming !== "") return incoming;
+  return "Incasso";
+}
+
 function paymentOutgoingLabel(ontology) {
   const labels = ontology && ontology.payment_labels;
   const outgoing = labels && labels.outgoing;
@@ -455,7 +462,7 @@ function objectPageFilters(types, ontology) {
     filters.push({
       id: typeDef.name,
       type: typeDef.name,
-      label: typeDef.label || typeDef.name,
+      label: typeDef.name === "Payment" ? paymentIncomingLabel(ontology) : (typeDef.label || typeDef.name),
     });
     if (typeDef.name === "Payment") {
       filters.push({ id: "Pagamento", type: "Payment", label: paymentOutgoingLabel(ontology) });
@@ -548,10 +555,11 @@ async function openObject(id) {
 
 async function openOrder(id) {
   const order = await api(`/api/orders/${id}`);
+  const ontology = await ensureOntology();
   document.querySelector("#order-list").hidden = true;
   const detail = document.querySelector("#order-detail");
   detail.hidden = false;
-  detail.innerHTML = orderDetail(order);
+  detail.innerHTML = orderDetail(order, ontology);
   detail.querySelector("#back-orders").addEventListener("click", loadObjects);
   const customerButton = detail.querySelector("#open-customer");
   if (customerButton) {

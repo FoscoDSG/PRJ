@@ -70,6 +70,26 @@ def test_ontology_read_falls_back_to_the_technical_name():
     assert catalog["payment_labels"]["outgoing"] == "Pagamento"
 
 
+def test_margin_uses_a_percent_unit_and_status_words_follow_the_type():
+    model = load_merged()
+    assert model.prop("Order", "margin").unit == "percent"
+    assert model.prop("Order", "amount").unit is None
+    catalog = describe_ontology(model, None)
+    order = next(item for item in catalog["types"] if item["name"] == "Order")
+    margin = next(field for field in order["fields"] if field["name"] == "margin")
+    amount = next(field for field in order["fields"] if field["name"] == "amount")
+    assert margin["unit"] == "percent"
+    assert amount["unit"] is None
+    assert catalog["value_labels"]["Order"]["status"]["open"] == "Aperto"
+    assert catalog["value_labels"]["Invoice"]["status"]["open"] == "Aperta"
+    assert catalog["value_labels"]["Invoice"]["status"]["open"] != "Aperto"
+    places = next(item for item in catalog["relations"] if item["name"] == "places")
+    assert places["in"] == "effettuato da"
+    assert places["out"] == "effettua"
+    contains = next(item for item in catalog["relations"] if item["name"] == "contains")
+    assert contains["out"] == "contiene"
+
+
 def test_extension_cannot_override_a_base_property():
     model = load_merged()
     with pytest.raises(OntologyError):

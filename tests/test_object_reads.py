@@ -831,6 +831,11 @@ const named = objectPageFilters(pageTypes, { payment_labels: { outgoing: "Uscita
 if (named.find((filter) => filter.id === "Pagamento").label !== "Uscita") fail(13, "etichetta");
 const reserve = objectPageFilters(pageTypes, { payment_labels: { outgoing: "" } });
 if (reserve.find((filter) => filter.id === "Pagamento").label !== "Pagamento") fail(13, "riserva");
+const namedIn = objectPageFilters(pageTypes, { payment_labels: { incoming: "Entrata", outgoing: "Uscita" } });
+if (namedIn.find((filter) => filter.id === "Payment").label !== "Entrata") fail(13, "incasso");
+if (namedIn.find((filter) => filter.id === "Pagamento").label !== "Uscita") fail(13, "uscita");
+const reserveIn = objectPageFilters(pageTypes, { payment_labels: { incoming: "" } });
+if (reserveIn.find((filter) => filter.id === "Payment").label !== "Incasso") fail(13, "riserva incasso");
 const maskedIn = {
   id: "hid-in", type: "Payment", business_key: "MASK-IN", incoming: true,
   fields: [{ name: "direction", value: "riservato", masked: true }],
@@ -915,8 +920,9 @@ const detail = orderDetail({
 if (detail.includes("Grafo") || detail.includes("Nessun arco") || detail.includes("Stock") || detail.includes("shortage")) fail(detail);
 if (!detail.includes("Collegamenti") || !detail.includes("Fatti") || !detail.includes("Disponibile")) fail(detail);
 if (!detail.includes("Quantità 2") || !detail.includes("Mancanza 1")) fail(detail);
-if (!detail.includes("collegato a contiene Prodotto ART-X")) fail(detail);
-if (!detail.includes("collegato da effettua Cliente C001")) fail(detail);
+if (!detail.includes("contiene Prodotto ART-X")) fail(detail);
+if (!detail.includes("effettuato da Cliente C001")) fail(detail);
+if (detail.includes("collegato da effettua") || detail.includes("Shipment")) fail(detail);
 if (!detail.includes("Importo ordine: 60.000,00 €") || detail.includes(": 60000") || detail.includes("amount:")) fail(detail);
 if (!detail.includes("Margine: 66,7 %") || detail.includes("0.6667")) fail(detail);
 if (!detail.includes("Stato: Aperto") || detail.includes(": open")) fail(detail);
@@ -950,8 +956,9 @@ const masked = objectCard({
 }, ontology);
 if (!masked.includes("Direzione riservata") || masked.includes("Direzione: riservato")) fail(masked);
 if (!masked.includes("Stato: Ricevuto") || masked.includes(": received")) fail(masked);
-if (!masked.includes("collegato a salda Fattura FT-1")) fail(masked);
-if (!masked.includes("collegato da assegna Pagamento PAG-9")) fail(masked);
+if (!masked.includes("salda Fattura FT-1")) fail(masked);
+if (!masked.includes("assegnato da Pagamento PAG-9")) fail(masked);
+if (masked.includes("collegato da") || masked.includes("collegato a")) fail(masked);
 
 const plain = objectDetail({
   type: "Payment",
@@ -962,6 +969,97 @@ const plain = objectDetail({
   history: [],
 }, ontology);
 if (!plain.includes("Direzione: In entrata") || plain.includes("incoming")) fail(plain);
+
+const labelBook = {
+  types: [
+    { name: "Payment", label: "Incasso", fields: [
+      { name: "amount", label: "Importo incasso" },
+      { name: "paid_at", label: "Data incasso" },
+      { name: "source_key", label: "Numero incasso" },
+      { name: "direction", label: "Direzione" },
+      { name: "status", label: "Stato" },
+    ] },
+    { name: "Invoice", label: "Fattura", fields: [{ name: "status", label: "Stato" }] },
+    { name: "Order", label: "Ordine", fields: [
+      { name: "margin", label: "Margine", unit: "percent" },
+      { name: "amount", label: "Importo" },
+      { name: "status", label: "Stato" },
+      { name: "shortage_qty", label: "Quantità mancante" },
+    ] },
+    { name: "Shipment", label: "Consegna" },
+  ],
+  relations: [
+    { name: "contains", label: "contiene", out: "contiene", in: "contenuto in" },
+    { name: "places", label: "effettua", out: "effettua", in: "effettuato da" },
+    { name: "fulfills", label: "evade", out: "evade", in: "evaso da" },
+  ],
+  value_labels: {
+    Order: { status: { open: "Aperto" } },
+    Invoice: { status: { open: "Da saldare" } },
+  },
+  payment_labels: { incoming: "Incasso", outgoing: "Pagamento" },
+  payment_field_labels: { outgoing: { amount: "Importo pagamento", paid_at: "Data pagamento" } },
+};
+function hiddenPayment(key) {
+  return objectDetail({
+    type: "Payment",
+    business_key: key,
+    type_label: "Movimento",
+    fields: [
+      { name: "direction", value: "non visibile per il tuo ruolo", label: "Direzione", masked: true },
+      { name: "amount", value: 10, label: "Importo", masked: false },
+      { name: "paid_at", value: "2026-04-01", label: "Data", masked: false },
+      { name: "source_key", value: key, label: "Numero", masked: false },
+      { name: "status", value: "received", label: "Stato", masked: false },
+    ],
+    links: [],
+    history: [{ kind: "event", at: "2026-04-01", label: "Movimento registrato", decision: "" }],
+  }, labelBook);
+}
+const hiddenIn = hiddenPayment("MOV-IN");
+const hiddenOut = hiddenPayment("MOV-OUT");
+for (const html of [hiddenIn, hiddenOut]) {
+  for (const word of ["Incasso", "incasso", "Pagamento", "pagamento", "incoming", "outgoing", "In entrata", "In uscita"]) {
+    if (html.includes(word)) fail(html);
+  }
+  if (!html.includes("Movimento ") || !html.includes("Importo: 10,00 €") || !html.includes("Data: 01/04/2026")) fail(html);
+  if (!html.includes("Direzione riservata") || !html.includes("Numero:")) fail(html);
+}
+if (hiddenIn.replaceAll("MOV-IN", "X") !== hiddenOut.replaceAll("MOV-OUT", "X")) fail(hiddenIn + "\\n" + hiddenOut);
+const invoiceOpen = objectDetail({
+  type: "Invoice",
+  business_key: "FT-OPEN",
+  fields: [{ name: "status", value: "open", label: "Stato", masked: false }],
+  links: [],
+  history: [],
+}, labelBook);
+if (!invoiceOpen.includes("Stato: Da saldare") || invoiceOpen.includes("Aperto") || invoiceOpen.includes("Aperta")) fail(invoiceOpen);
+const invoiceReserve = objectDetail({
+  type: "Invoice",
+  business_key: "FT-OPEN",
+  fields: [{ name: "status", value: "open", label: "Stato", masked: false }],
+  links: [],
+  history: [],
+});
+if (!invoiceReserve.includes("Stato: Aperta") || invoiceReserve.includes("Aperto")) fail(invoiceReserve);
+const shipped = orderDetail({
+  business_key: "1024",
+  stock_formula: "disponibile = giacenza − impegnato",
+  lines: [],
+  edges: [{ direction: "in", rel: "fulfills", other_type: "Shipment", other_key: "SH-1" }],
+  facts: [{ property: "margin", value: 0.75, source_class: "system_of_record", confidence: null, confidence_method: "unknown" }],
+}, labelBook);
+if (!shipped.includes("evaso da Consegna SH-1") || shipped.includes("Shipment") || shipped.includes("Spedizione")) fail(shipped);
+if (!shipped.includes("Margine: 75 %") || shipped.includes("0.75")) fail(shipped);
+const bareMargin = orderCard({
+  id: "1",
+  business_key: "9",
+  status: "open",
+  shortage_qty: 0,
+  amount: 10,
+  margin: 0.75,
+}, { types: [{ name: "Order", label: "Ordine", fields: [{ name: "margin", label: "Margine" }] }] });
+if (bareMargin.includes("%") || !bareMargin.includes("0.75")) fail(bareMargin);
 process.stdout.write("ok\n");
 """
 
@@ -975,3 +1073,124 @@ def test_page_shows_italian_values_direction_and_links():
     )
     assert rendered.returncode == 0, rendered.stderr
     assert rendered.stdout == "ok\n"
+
+
+_DIRECTION_WORDS = ("Incasso", "incasso", "Pagamento", "pagamento", "incoming", "outgoing")
+
+
+def _direction_text(payload) -> str:
+    import json
+
+    return json.dumps(payload, ensure_ascii=False)
+
+
+def test_operator_cannot_tell_incasso_from_pagamento(client: TestClient):
+    """A role that does not see the direction gets one neutral movement."""
+    from decimal import Decimal
+
+    from ontology.loader import load_merged
+    from services.cash.documents import write_payment
+    from services.ontology_view import is_incoming
+    from tests.test_order_to_cash import IBAN
+
+    assert is_incoming({"direction": None}) is True
+    assert is_incoming({"direction": "outgoing"}) is False
+    company = give_company("mapper", "Direzione nascosta")
+    _assign("operator", company)
+    _assign("approver", company)
+    model = load_merged()
+
+    def payment(conn, source_key: str, direction: str) -> str:
+        return write_payment(
+            conn,
+            model,
+            company_id=company,
+            source_key=source_key,
+            direction=direction,
+            paid_at="2026-04-01",
+            amount=Decimal("10.00"),
+            iban=IBAN,
+            causale="prova",
+            counterparty_name="Cliente Prova",
+            counterparty_vat="IT00000000001",
+            reference="R1",
+            source="registro",
+            source_class="external",
+            label_origin="rule",
+        )
+
+    with connect() as conn:
+        incoming_id = payment(conn, "MOV-IN", "incoming")
+        outgoing_id = payment(conn, "MOV-OUT", "outgoing")
+        conn.commit()
+
+    def bundle() -> dict:
+        listed = client.get("/api/objects", params={"type": "Payment"}).json()
+        details = {
+            key: client.get(f"/api/objects/{item['id']}").json()
+            for key, item in ((row["business_key"], row) for row in listed["objects"])
+        }
+        events = {}
+        cash = {}
+        for key, detail in details.items():
+            event = next(link for link in detail["links"] if link["type"] == "Event")
+            events[key] = client.get(f"/api/objects/{event['id']}").json()
+            cash[key] = client.get(f"/api/payments/{detail['id']}").json()
+        inbox = client.get("/api/inbox").json()
+        return {"list": listed, "details": details, "events": events, "cash": cash, "inbox": inbox}
+
+    login(client, "operator")
+    hidden = bundle()
+    blob = _direction_text(hidden)
+    for word in _DIRECTION_WORDS:
+        assert word not in blob
+    for key in ("MOV-IN", "MOV-OUT"):
+        row = next(item for item in hidden["list"]["objects"] if item["business_key"] == key)
+        assert "incoming" not in row
+        assert row["type_label"] == "Movimento"
+        assert _field(row, "amount")["label"] == "Importo"
+        assert _field(row, "paid_at")["label"] == "Data"
+        assert _field(row, "source_key")["label"] == "Numero"
+        direction = _field(row, "direction")
+        assert direction["masked"] is True
+        assert direction["value"] == ROLE_HIDDEN
+        detail = hidden["details"][key]
+        assert detail["type_label"] == "Movimento"
+        assert "incoming" not in detail
+        assert [item["label"] for item in detail["history"]] == ["Movimento registrato"]
+        payment_link = next(link for link in hidden["events"][key]["links"] if link["type"] == "Payment")
+        assert payment_link["type_label"] == "Movimento"
+        assert payment_link["key"] == key
+        summary = next(field for field in hidden["events"][key]["fields"] if field["name"] == "summary")
+        assert summary["value"] == "Movimento registrato"
+        fact = next(field for field in hidden["cash"][key]["facts"] if field["property"] == "direction")
+        assert fact["value"] == ROLE_HIDDEN
+        assert fact["masked"] is True
+        assert hidden["cash"][key]["history"][0]["label"] == "Movimento registrato"
+    assert hidden["details"]["MOV-IN"]["type_label"] == hidden["details"]["MOV-OUT"]["type_label"]
+
+    login(client, "approver")
+    shown = bundle()
+    by_key = {item["business_key"]: item for item in shown["list"]["objects"]}
+    assert by_key["MOV-IN"]["incoming"] is True
+    assert by_key["MOV-OUT"]["incoming"] is False
+    assert by_key["MOV-IN"]["type_label"] == "Incasso"
+    assert by_key["MOV-OUT"]["type_label"] == "Pagamento"
+    assert _field(by_key["MOV-IN"], "direction")["value"] == "incoming"
+    assert _field(by_key["MOV-OUT"], "direction")["value"] == "outgoing"
+    assert _field(by_key["MOV-IN"], "amount")["label"] == "Importo incasso"
+    assert _field(by_key["MOV-OUT"], "paid_at")["label"] == "Data incasso"
+    assert shown["details"]["MOV-IN"]["history"][0]["label"] == "Incasso registrato"
+    assert shown["details"]["MOV-OUT"]["history"][0]["label"] == "Pagamento registrato"
+    assert next(
+        link["type_label"]
+        for link in shown["events"]["MOV-IN"]["links"]
+        if link["type"] == "Payment"
+    ) == "Incasso"
+    assert next(
+        link["type_label"]
+        for link in shown["events"]["MOV-OUT"]["links"]
+        if link["type"] == "Payment"
+    ) == "Pagamento"
+    assert incoming_id
+    assert outgoing_id

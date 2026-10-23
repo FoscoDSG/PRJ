@@ -132,7 +132,6 @@
     values: {
       direction: { incoming: "In entrata", outgoing: "In uscita" },
       status: {
-        open: "Aperto",
         closed: "Chiuso",
         issued: "Emessa",
         received: "Ricevuto",
@@ -145,7 +144,15 @@
         paid: "Pagato",
         pending: "In attesa",
       },
+      byType: {
+        Order: { status: { open: "Aperto", closed: "Chiuso" } },
+        Invoice: { status: { open: "Aperta", closed: "Chiusa", issued: "Emessa", paid: "Pagata" } },
+        CreditNote: { status: { open: "Aperta" } },
+        Payment: { status: { open: "In corso", received: "Ricevuto" } },
+        Shipment: { status: { open: "In corso" } },
+      },
     },
+    units: { margin: "percent" },
     fields: {
       name: "Nome",
       title: "Titolo",
@@ -211,6 +218,18 @@
       available: "Disponibile",
     },
     links: { out: "collegato a", in: "collegato da" },
+    phrases: {
+      places: { out: "effettua", in: "effettuato da" },
+      contains: { out: "contiene", in: "contenuto in" },
+      suppliedBy: { out: "fornito da", in: "fornisce" },
+      storedAt: { out: "depositato in", in: "ospita" },
+      triggered: { out: "genera", in: "generato da" },
+      generates: { out: "genera", in: "generata da" },
+      fulfills: { out: "evade", in: "evaso da" },
+      allocates: { out: "assegna", in: "assegnato da" },
+      settles: { out: "salda", in: "saldato da" },
+      sameOrganization: { out: "stessa organizzazione di", in: "stessa organizzazione di" },
+    },
     relations: {
       places: "effettua",
       contains: "contiene",
@@ -230,20 +249,39 @@
       OrderLine: "Riga d'ordine",
       Invoice: "Fattura",
       Payment: "Incasso",
+      Shipment: "Spedizione",
       Supplier: "Fornitore",
       Warehouse: "Magazzino",
     },
     reservedDirection: "Direzione riservata",
   };
 
-  function pageValue(name, value) {
+  function pageValue(name, value, typeName, ontology) {
     const raw = value == null ? "" : String(value);
+    const fromType = valueLabel(ontology, typeName, name, raw);
+    if (fromType) return fromType;
+    const reserveType = PAGE_TEXT.values.byType[typeName];
+    const reserveTyped = reserveType && reserveType[name];
+    if (reserveTyped && Object.prototype.hasOwnProperty.call(reserveTyped, raw)) return reserveTyped[raw];
+    if (name === "status" && raw === "open" && typeName && typeName !== "Order") return raw;
     const group = PAGE_TEXT.values[name];
     if (group && Object.prototype.hasOwnProperty.call(group, raw)) return group[raw];
     return raw;
   }
 
-  function pageLabel(name, typeName) {
+  function valueLabel(ontology, typeName, name, raw) {
+    const book = ontology && ontology.value_labels;
+    const typed = book && typeName && book[typeName];
+    const labels = typed && name && typed[name];
+    if (labels && Object.prototype.hasOwnProperty.call(labels, raw) && labels[raw] !== "") return labels[raw];
+    return "";
+  }
+
+  function pageLabel(name, typeName, ontology) {
+    const info = ontologyType(ontology, typeName);
+    const fields = info && Array.isArray(info.fields) ? info.fields : [];
+    const found = fields.find((item) => item && item.name === name);
+    if (found && typeof found.label === "string" && found.label !== "") return found.label;
     const override = typeName && name ? PAGE_TEXT.overrides[`${typeName}.${name}`] : "";
     if (override) return override;
     const labels = PAGE_TEXT.fields;
@@ -251,16 +289,33 @@
     return name == null ? "" : String(name);
   }
 
-  function pageRelation(name) {
+  function pageRelation(name, ontology) {
+    const rels = ontology && Array.isArray(ontology.relations) ? ontology.relations : [];
+    const found = rels.find((item) => item && item.name === name);
+    if (found && typeof found.label === "string" && found.label !== "") return found.label;
     const labels = PAGE_TEXT.relations;
     if (name && Object.prototype.hasOwnProperty.call(labels, name)) return labels[name];
     return name == null ? "" : String(name);
   }
 
-  function pageType(name) {
+  function pageType(name, ontology) {
+    const info = ontologyType(ontology, name);
+    if (info && typeof info.label === "string" && info.label !== "") return info.label;
     const labels = PAGE_TEXT.types;
     if (name && Object.prototype.hasOwnProperty.call(labels, name)) return labels[name];
     return name == null ? "" : String(name);
+  }
+
+  function unitOf(ontology, typeName, name) {
+    const info = ontologyType(ontology, typeName);
+    const fields = info && Array.isArray(info.fields) ? info.fields : [];
+    const found = fields.find((item) => item && item.name === name);
+    if (found && typeof found.unit === "string" && found.unit !== "") return found.unit;
+    if (ontology) return "";
+    const units = PAGE_TEXT.units || {};
+    if (typeName && name && units[`${typeName}.${name}`]) return units[`${typeName}.${name}`];
+    if (name && units[name]) return units[name];
+    return "";
   }
 
   function percentText(value) {
@@ -502,21 +557,21 @@
     return value;
   }
 
-  function shownFactValue(name, value) {
+  function shownFactValue(name, value, typeName, ontology) {
     if (value != null && typeof value === "object") return JSON.stringify(value);
     if (value == null || value === "") return "";
-    if (name === "margin" && isPlainNumber(value)) return percentText(value);
+    if (unitOf(ontology, typeName, name) === "percent" && isPlainNumber(value)) return percentText(value);
     if ((name === "amount" || MONEY_FIELDS.has(name)) && isPlainNumber(value)) return euroText(value);
     if (DATE_FIELDS.has(name)) return formatDay(value);
-    if (name === "direction" || name === "status") return pageValue(name, value);
+    if (name === "direction" || name === "status") return pageValue(name, value, typeName, ontology);
     return String(value);
   }
 
-  function factList(facts, typeName) {
+  function factList(facts, typeName, ontology) {
     const items = (facts || []).map((fact) => {
       const name = fact && fact.property != null ? String(fact.property) : "";
-      const label = pageLabel(name, typeName);
-      const value = shownFactValue(name, fact && fact.value);
+      const label = pageLabel(name, typeName, ontology);
+      const value = shownFactValue(name, fact && fact.value, typeName, ontology);
       return `<li><span hidden><code>${escapeHtml(name)}</code></span>${escapeHtml(label)}: ${escapeHtml(value)}<p>${escapeHtml(provenanceLabel(fact.source_class))}</p><p class="fact-confidence">${escapeHtml(confidenceLabel(fact))}</p></li>`;
     });
     return `<ul class="edges fact-list">${items.join("") || "<li>Nessun fatto</li>"}</ul>`;
@@ -577,30 +632,37 @@
       </tr>`;
   }
 
-  function orderCard(order) {
+  function orderCard(order, ontology) {
     const status = order.status || "n/d";
     const amount = isPlainNumber(order.amount) ? euroText(order.amount) : order.amount;
+    const marginUnit = unitOf(ontology, "Order", "margin");
     const margin = order.margin == null || order.margin === ""
       ? "n/d"
-      : (isPlainNumber(order.margin) ? percentText(order.margin) : order.margin);
+      : (isPlainNumber(order.margin) && marginUnit === "percent" ? percentText(order.margin) : order.margin);
     return `<article class="card">
       <h3 class="card-title">Ordine ${escapeHtml(order.business_key)}</h3>
-      <div class="meta">${pill(status, pageValue("status", status))}<span class="pill">${escapeHtml(pageLabel("shortage_qty"))} ${escapeHtml(order.shortage_qty ?? 0)}</span></div>
-      <p>${escapeHtml(order.customer_name || "Cliente non collegato")} · ${escapeHtml(pageLabel("amount"))} ${escapeHtml(amount)} · ${escapeHtml(pageLabel("margin"))} ${escapeHtml(margin)}</p>
+      <div class="meta">${pill(status, pageValue("status", status, "Order", ontology))}<span class="pill">${escapeHtml(pageLabel("shortage_qty", "Order", ontology))} ${escapeHtml(order.shortage_qty ?? 0)}</span></div>
+      <p>${escapeHtml(order.customer_name || "Cliente non collegato")} · ${escapeHtml(pageLabel("amount", ontology ? "Order" : "", ontology))} ${escapeHtml(amount)} · ${escapeHtml(pageLabel("margin", "Order", ontology))} ${escapeHtml(margin)}</p>
       <button type="button" data-order="${escapeHtml(order.id)}">Apri scheda</button>
     </article>`;
   }
 
-  function orderEdgeText(edge) {
-    const way = edge && edge.direction === "in" ? PAGE_TEXT.links.in : PAGE_TEXT.links.out;
-    return [way, pageRelation(edge && edge.rel), pageType(edge && edge.other_type), edge && edge.other_key]
+  function orderEdgeText(edge, ontology) {
+    const rel = edge && edge.rel;
+    const way = edge && edge.direction;
+    const phrase = relationPhrase(ontology, rel, way);
+    const typeLabel = pageType(edge && edge.other_type, ontology);
+    const key = edge && edge.other_key;
+    if (phrase) return [phrase, typeLabel, key].filter((part) => part !== "" && part != null).join(" ");
+    const fallback = way === "in" ? PAGE_TEXT.links.in : way === "out" ? PAGE_TEXT.links.out : "";
+    return [fallback, pageRelation(rel, ontology), typeLabel, key]
       .filter((part) => part !== "" && part != null)
       .join(" ");
   }
 
-  function orderDetail(order) {
+  function orderDetail(order, ontology) {
     const edges = (order.edges || [])
-      .map((edge) => `<li>${escapeHtml(orderEdgeText(edge))}</li>`)
+      .map((edge) => `<li>${escapeHtml(orderEdgeText(edge, ontology))}</li>`)
       .join("");
     const lines = (order.lines || [])
       .map((line) => {
@@ -622,7 +684,7 @@
     <ul class="edges">${edges || empty}</ul>
     ${customer}
     <h3>${escapeHtml(PAGE_TEXT.headings.facts)}</h3>
-    ${factList(order.facts, "Order")}
+    ${factList(order.facts, "Order", ontology)}
   `;
   }
 
@@ -725,7 +787,7 @@
     return formatDay(value);
   }
 
-  function displayField(field) {
+  function displayField(field, typeName, ontology) {
     const name = field && field.name ? String(field.name) : "";
     const value = field && field.value;
     if (value == null || value === "") return "";
@@ -733,10 +795,10 @@
       if (name === "direction") return PAGE_TEXT.reservedDirection;
       return String(value);
     }
-    if (name === "margin" && isPlainNumber(value)) return percentText(value);
+    if (unitOf(ontology, typeName, name) === "percent" && isPlainNumber(value)) return percentText(value);
     if (MONEY_FIELDS.has(name)) return displayMoney(value);
     if (DATE_FIELDS.has(name)) return displayDate(value);
-    if (name === "direction" || name === "status") return pageValue(name, value);
+    if (name === "direction" || name === "status") return pageValue(name, value, typeName, ontology);
     return String(value);
   }
 
@@ -910,14 +972,23 @@
   }
 
   function objectTypeLabel(object, ontology) {
-    if (object && object.type === "Payment") return paymentWord(directionOf(object), ontology);
+    if (object && object.type === "Payment") {
+      if (directionMasked(object)) {
+        if (typeof object.type_label === "string" && object.type_label !== "") return object.type_label;
+        return "Movimento";
+      }
+      return paymentWord(directionOf(object), ontology);
+    }
     const info = ontologyType(ontology, object && object.type);
     if (info && info.label) return info.label;
     if (object && typeof object.type_label === "string" && object.type_label !== "") return object.type_label;
-    return (object && object.type) || "";
+    return pageType(object && object.type, ontology);
   }
 
   function fieldCaption(ontology, typeName, field, object) {
+    if (directionMasked(object) && field && typeof field.label === "string" && field.label !== "") {
+      return field.label;
+    }
     if (typeName === "Payment" && !isIncoming(directionOf(object))) {
       const maps = ontology && ontology.payment_field_labels;
       const outgoing = maps && maps.outgoing;
@@ -935,7 +1006,17 @@
     const found = fields.find((item) => item && item.name === field.name);
     if (found && typeof found.label === "string" && found.label !== "") return found.label;
     if (field && typeof field.label === "string" && field.label !== "") return field.label;
-    return field && field.name ? String(field.name) : "";
+    return pageLabel(field && field.name, typeName, ontology);
+  }
+
+  function relationPhrase(ontology, name, way) {
+    if (way !== "in" && way !== "out") return "";
+    const rels = ontology && Array.isArray(ontology.relations) ? ontology.relations : [];
+    const found = rels.find((item) => item && item.name === name);
+    if (found && typeof found[way] === "string" && found[way] !== "") return found[way];
+    const reserve = PAGE_TEXT.phrases && name ? PAGE_TEXT.phrases[name] : null;
+    if (reserve && typeof reserve[way] === "string" && reserve[way] !== "") return reserve[way];
+    return "";
   }
 
   function relationLabel(ontology, name) {
@@ -963,9 +1044,11 @@
   }
 
   function linkText(ontology, link) {
-    const rel = relationLabel(ontology, link && link.rel);
     const typeLabel = linkedTypeLabel(ontology, link);
     const key = link && link.key != null ? link.key : "";
+    const phrase = relationPhrase(ontology, link && link.rel, link && link.direction);
+    if (phrase) return [phrase, typeLabel, key].filter((part) => part !== "" && part != null).join(" ");
+    const rel = relationLabel(ontology, link && link.rel);
     return [linkWay(link), rel, typeLabel, key].filter((part) => part !== "" && part != null).join(" ");
   }
 
@@ -975,7 +1058,7 @@
         return `<li>${escapeHtml(PAGE_TEXT.reservedDirection)}</li>`;
       }
       const caption = fieldCaption(ontology, object.type, field, object);
-      const value = displayField(field);
+      const value = displayField(field, object && object.type, ontology);
       return `<li>${escapeHtml(caption)}: ${escapeHtml(value)}</li>`;
     }).join("");
     return `${rows}${remainingLine(object)}`;

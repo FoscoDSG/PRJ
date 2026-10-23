@@ -37,7 +37,7 @@ types:
       - {name: status, type: string, classification: internal, origin: original}
       - {name: ordered_at, type: string, classification: internal, origin: original}
       - {name: customer_source_key, type: string, classification: internal, origin: original}
-      - {name: margin, type: number, classification: confidential, origin: calculated}
+      - {name: margin, type: number, classification: confidential, origin: calculated, unit: percent}
       - {name: shortage_qty, type: number, classification: internal, origin: calculated}
   - name: OrderLine
     extends: Transaction

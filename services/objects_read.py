@@ -107,12 +107,19 @@ def visible_facts(conn: psycopg.Connection, entity_id: str) -> dict[str, Any]:
     return found
 
 
+def hides_payment_direction(role: str) -> bool:
+    """An operator may see the movement, not whether money comes in or goes out."""
+    return role == "operator"
+
+
 def document_history(
     conn: psycopg.Connection,
     entity_id: str,
     type_name: str,
     company_id: str | None,
     direction: str | None = None,
+    *,
+    hide_direction: bool = False,
 ) -> list[dict[str, Any]]:
     """Events on this object, plus payment decisions for an invoice or a payment."""
     if not company_id:
@@ -120,9 +127,12 @@ def document_history(
     items = _event_history(conn, entity_id, company_id)
     if type_name in ("Invoice", "Payment"):
         items.extend(_decision_history(conn, entity_id, company_id))
-    if type_name == "Payment":
+    if type_name == "Payment" and not hide_direction:
         for item in items:
             item["label"] = payment_words(str(item.get("label") or ""), direction)
+    if hide_direction:
+        for item in items:
+            item["label"] = _neutral_sentence(str(item.get("label") or ""))
     items.sort(key=lambda item: (str(item.get("at") or ""), item.get("kind") or "", item.get("label") or ""))
     return items
 
@@ -141,7 +151,51 @@ def _named(fields: list[dict[str, Any]], name: str) -> str | None:
     return None
 
 
-def _entity_direction(conn: psycopg.Connection, entity_id: str) -> str | None:
+_NEUTRAL_TITLE = "Movimento"
+_NEUTRAL_FIELD_LABELS = {
+    "amount": "Importo",
+    "paid_at": "Data",
+    "source_key": "Numero",
+}
+_DIRECTION_WORDS = (
+    ("Incassi", "Movimenti"),
+    ("incassi", "movimenti"),
+    ("Incasso", "Movimento"),
+    ("incasso", "movimento"),
+    ("Pagamenti", "Movimenti"),
+    ("pagamenti", "movimenti"),
+    ("Pagamento", "Movimento"),
+    ("pagamento", "movimento"),
+    ("incoming", "movimento"),
+    ("outgoing", "movimento"),
+)
+
+
+def _neutral_sentence(text: str) -> str:
+    for source, target in _DIRECTION_WORDS:
+        text = text.replace(source, target)
+    return text
+
+
+def scrub_direction_text(value: Any) -> Any:
+    """Replace direction words in a read payload. Keys stay as they are."""
+    if isinstance(value, str):
+        return _neutral_sentence(value)
+    if isinstance(value, list):
+        return [scrub_direction_text(item) for item in value]
+    if isinstance(value, dict):
+        return {key: scrub_direction_text(item) for key, item in value.items()}
+    return value
+
+
+def _entity_direction(conn: psycopg.Connection, entity_id: str, role: str) -> tuple[str | None, bool]:
+    """Clear direction, and whether this viewer must not learn it.
+
+    A missing fact stays visible as «no direction» for someone who may see
+    it. A masked value is not returned in clear.
+    """
+    if hides_payment_direction(role):
+        return None, True
     row = conn.execute(
         """
         SELECT value FROM app.facts
@@ -150,11 +204,14 @@ def _entity_direction(conn: psycopg.Connection, entity_id: str) -> str | None:
         (entity_id,),
     ).fetchone()
     if row is None:
-        return None
+        return None, False
     value = stable(row["value"])
     if value in (None, ""):
-        return None
-    return str(value)
+        return None, False
+    text = str(value)
+    if text in (MASK, RESERVED, ROLE_HIDDEN) or text_has_pii(text):
+        return None, True
+    return text, False
 
 
 def _uuid(value: str) -> bool:
@@ -176,7 +233,10 @@ def _present(
     detail: bool,
 ) -> dict[str, Any]:
     fields = _fields(conn, row["id"], row["type"], role)
-    direction = _named(fields, "direction")
+    hidden = row["type"] == "Payment" and _direction_masked(fields)
+    if hidden:
+        _neutralize_payment(fields)
+    direction = None if hidden else _named(fields, "direction")
     # The hook is the place a future view log would record a clear personal value.
     note_clear_personal_view(
         conn,
@@ -184,15 +244,21 @@ def _present(
         entity_id=row["id"],
         properties=clear_personal_names(fields, row["type"]),
     )
+    if hidden:
+        shown_type = _NEUTRAL_TITLE
+    elif row["type"] == "Payment":
+        shown_type = payment_label(direction)
+    else:
+        shown_type = type_label(row["type"])
     payload = {
         "id": row["id"],
         "type": row["type"],
-        "type_label": payment_label(direction) if row["type"] == "Payment" else type_label(row["type"]),
+        "type_label": shown_type,
         "business_key": row["business_key"],
         "fields": fields,
-        "links": _links(conn, row["id"], company_id, model),
+        "links": _links(conn, row["id"], company_id, model, role),
     }
-    if row["type"] == "Payment":
+    if row["type"] == "Payment" and not hidden:
         payload["incoming"] = is_incoming({"direction": direction})
     if row["type"] == "Invoice":
         balance = remaining_balance(conn, company_id, row["id"])
@@ -203,9 +269,25 @@ def _present(
             row["id"],
             row["type"],
             company_id,
-            direction if row["type"] == "Payment" else None,
+            None if hidden else (direction if row["type"] == "Payment" else None),
+            hide_direction=hidden,
         )
+    if hidden:
+        return scrub_direction_text(payload)
     return payload
+
+
+def _direction_masked(fields: list[dict[str, Any]]) -> bool:
+    return any(field.get("name") == "direction" and field.get("masked") for field in fields)
+
+
+def _neutralize_payment(fields: list[dict[str, Any]]) -> None:
+    for field in fields:
+        replacement = _NEUTRAL_FIELD_LABELS.get(str(field.get("name") or ""))
+        if replacement:
+            field["label"] = replacement
+        elif isinstance(field.get("label"), str):
+            field["label"] = _neutral_sentence(field["label"])
 
 
 def _fields(conn: psycopg.Connection, entity_id: str, type_name: str, role: str) -> list[dict[str, Any]]:
@@ -228,6 +310,16 @@ def _fields(conn: psycopg.Connection, entity_id: str, type_name: str, role: str)
         elif role not in ("admin", "approver") and hides_margin(row["property"]):
             value = ROLE_HIDDEN
             masked = True
+        elif row["property"] == "direction" and hides_payment_direction(role):
+            value = ROLE_HIDDEN
+            masked = True
+        elif (
+            hides_payment_direction(role)
+            and type_name == "Event"
+            and isinstance(value, str)
+            and not masked
+        ):
+            value = _neutral_sentence(value)
         fields.append(
             {
                 "name": row["property"],
@@ -244,6 +336,7 @@ def _links(
     entity_id: str,
     company_id: str,
     model: Ontology,
+    role: str,
 ) -> list[dict[str, Any]]:
     outbound = conn.execute(
         """
@@ -272,17 +365,17 @@ def _links(
     for row in list(outbound) + list(inbound):
         if row["rel"] not in known or row["other_type"] not in model.types:
             continue
-        other_direction = _entity_direction(conn, row["other_id"]) if row["other_type"] == "Payment" else None
+        if row["other_type"] == "Payment":
+            other_direction, hidden = _entity_direction(conn, row["other_id"], role)
+            other_label = _NEUTRAL_TITLE if hidden else payment_label(other_direction)
+        else:
+            other_label = type_label(row["other_type"])
         links.append(
             {
                 "rel": row["rel"],
                 "direction": row["direction"],
                 "type": row["other_type"],
-                "type_label": (
-                    payment_label(other_direction)
-                    if row["other_type"] == "Payment"
-                    else type_label(row["other_type"])
-                ),
+                "type_label": other_label,
                 "id": row["other_id"],
                 "key": row["other_key"],
             }
