@@ -1035,14 +1035,10 @@
   }
 
   function linkedTypeLabel(ontology, link) {
-    if (link && link.type === "Payment") {
-      if (typeof link.type_label === "string" && link.type_label !== "") return link.type_label;
-      if (link.masked === true || directionMasked(link)) return "Movimento";
-      return paymentWord("", ontology);
-    }
+    if (link && typeof link.type_label === "string" && link.type_label !== "") return link.type_label;
+    if (link && link.type === "Payment") return "Movimento";
     const info = ontologyType(ontology, link && link.type);
     if (info && info.label) return info.label;
-    if (link && typeof link.type_label === "string" && link.type_label !== "") return link.type_label;
     return (link && link.type) || "";
   }
 

@@ -28,7 +28,7 @@ TYPE_LABELS = {
     "InvoiceLine": "Riga fattura",
     "CreditNote": "Nota di credito",
     "Payment": "Incasso",
-    "PaymentAllocation": "Assegnazione incasso",
+    "PaymentAllocation": "Assegnazione",
     "PurchaseRequest": "Richiesta di acquisto",
     "PurchaseOrder": "Ordine di acquisto",
     "PurchaseOrderLine": "Riga ordine di acquisto",

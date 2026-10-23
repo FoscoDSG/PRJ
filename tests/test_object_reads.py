@@ -1119,6 +1119,51 @@ const bareMargin = orderCard({
   margin: 0.75,
 }, { types: [{ name: "Order", label: "Ordine", fields: [{ name: "margin", label: "Margine" }] }] });
 if (bareMargin.includes("%") || !bareMargin.includes("0.75")) fail(bareMargin);
+
+const reserveBook = {
+  types: [{ name: "Payment", label: "Incasso" }, { name: "PaymentAllocation", label: "Assegnazione incasso" }],
+  relations: [
+    { name: "settles", in: "saldato da" },
+    { name: "allocates", out: "assegna" },
+  ],
+  payment_labels: { incoming: "Incasso", outgoing: "Pagamento a fornitore" },
+};
+const reserveLink = objectDetail({
+  type: "Invoice",
+  business_key: "FT-1",
+  fields: [],
+  links: [{ rel: "settles", direction: "in", type: "Payment", key: "INC-2026-0421", id: "p" }],
+  history: [],
+}, reserveBook);
+if (!reserveLink.includes("saldato da Movimento INC-2026-0421")) fail(reserveLink);
+for (const word of ["Incasso", "incasso", "Pagamento", "pagamento", "pagamento a fornitore"]) {
+  if (reserveLink.includes(word)) fail(reserveLink);
+}
+const emptyLabel = objectDetail({
+  type: "Invoice",
+  business_key: "FT-1",
+  fields: [],
+  links: [{ rel: "settles", direction: "in", type: "Payment", type_label: "", key: "INC-2026-0421", id: "p" }],
+  history: [],
+}, reserveBook);
+if (!emptyLabel.includes("Movimento INC-2026-0421") || emptyLabel.includes("Incasso") || emptyLabel.includes("fornitore")) fail(emptyLabel);
+const serverLabel = objectDetail({
+  type: "Payment",
+  business_key: "INC-2026-0412",
+  type_label: "Movimento",
+  fields: [{ name: "direction", value: "non visibile per il tuo ruolo", label: "Direzione", masked: true }],
+  links: [{
+    rel: "allocates",
+    direction: "out",
+    type: "PaymentAllocation",
+    type_label: "Assegnazione movimento",
+    key: "ALL-0001",
+    id: "a",
+  }],
+  history: [],
+}, reserveBook);
+if (!serverLabel.includes("assegna Assegnazione movimento ALL-0001")) fail(serverLabel);
+if (serverLabel.includes("Assegnazione incasso") || serverLabel.includes("incasso") || serverLabel.includes("pagamento")) fail(serverLabel);
 process.stdout.write("ok\n");
 """
 
@@ -1253,6 +1298,131 @@ def test_operator_cannot_tell_incasso_from_pagamento(client: TestClient):
     ) == "Pagamento"
     assert incoming_id
     assert outgoing_id
+
+
+_LINK_CARD = r"""
+const { objectCard, objectDetail } = require("./apps/web/escape.js");
+let raw = "";
+process.stdin.setEncoding("utf8");
+process.stdin.on("data", (chunk) => { raw += chunk; });
+process.stdin.on("end", () => {
+  const input = JSON.parse(raw);
+  const html = [
+    objectCard(input.row, input.ontology),
+    objectDetail(input.detail, input.ontology),
+  ].join("\n");
+  process.stdout.write(html);
+});
+"""
+
+_LINK_DIRECTION_WORDS = (
+    "incasso",
+    "pagamento",
+    "pagamento a fornitore",
+    "incoming",
+    "outgoing",
+)
+
+
+def _render_operator_card(ontology: dict, row: dict, detail: dict) -> str:
+    import json
+
+    rendered = subprocess.run(
+        ["node", "-e", _LINK_CARD],
+        cwd=ROOT,
+        input=json.dumps({"ontology": ontology, "row": row, "detail": detail}),
+        text=True,
+        capture_output=True,
+    )
+    assert rendered.returncode == 0, rendered.stderr
+    return rendered.stdout
+
+
+def test_operator_hidden_payment_links_stay_neutral(client: TestClient):
+    """Links on a hidden-direction payment never name the direction.
+
+    The page uses the server type label before the ontology label. A payment
+    link with no type label stays «Movimento» even without a masked flag.
+    """
+    from decimal import Decimal
+
+    from ontology.loader import load_merged
+    from services.cash.documents import write_payment
+    from services.graph.projection import _edge
+    from tests.test_order_to_cash import IBAN
+
+    company = give_company("mapper", "Collegamenti neutri")
+    _assign("operator", company)
+    model = load_merged()
+    with connect() as conn:
+        incoming_id = write_payment(
+            conn,
+            model,
+            company_id=company,
+            source_key="INC-2026-0412",
+            direction="incoming",
+            paid_at="2026-04-12",
+            amount=Decimal("10.00"),
+            iban=IBAN,
+            causale="prova",
+            counterparty_name="Cliente Prova",
+            counterparty_vat="IT00000000001",
+            reference="R1",
+            source="registro",
+            source_class="external",
+            label_origin="rule",
+        )
+        outgoing_id = write_payment(
+            conn,
+            model,
+            company_id=company,
+            source_key="PAG-2026-0412",
+            direction="outgoing",
+            paid_at="2026-04-12",
+            amount=Decimal("20.00"),
+            iban=IBAN,
+            causale="prova",
+            counterparty_name="Fornitore Prova",
+            counterparty_vat="IT00000000002",
+            reference="R2",
+            source="registro",
+            source_class="external",
+            label_origin="rule",
+        )
+        incoming_allocation = _entity(conn, "PaymentAllocation", "ALL-0001", company)
+        outgoing_allocation = _entity(conn, "PaymentAllocation", "ALL-0002", company)
+        _edge(conn, incoming_id, "allocates", incoming_allocation)
+        _edge(conn, outgoing_id, "allocates", outgoing_allocation)
+        conn.commit()
+
+    login(client, "operator")
+    ontology = client.get("/api/ontology").json()
+    allocation_label = next(item["label"] for item in ontology["types"] if item["name"] == "PaymentAllocation")
+    assert allocation_label == "Assegnazione"
+    listed = {item["business_key"]: item for item in _objects(client, "Payment")}
+    for key, allocation_key in (("INC-2026-0412", "ALL-0001"), ("PAG-2026-0412", "ALL-0002")):
+        row = listed[key]
+        detail = client.get(f"/api/objects/{row['id']}").json()
+        assert detail["type_label"] == "Movimento"
+        allocation = next(link for link in detail["links"] if link["type"] == "PaymentAllocation")
+        assert allocation["type_label"] == "Assegnazione"
+        assert allocation["key"] == allocation_key
+        for link in detail["links"]:
+            blob = " ".join(
+                str(link.get(name) or "")
+                for name in ("rel", "type", "type_label", "key")
+            ).lower()
+            for word in _LINK_DIRECTION_WORDS:
+                assert word not in blob
+        html = _render_operator_card(ontology, row, detail)
+        start = html.find('<ul class="edges">')
+        assert start >= 0
+        edges = html[start:].split("</ul>", 1)[0].lower()
+        assert f"assegna assegnazione {allocation_key.lower()}" in edges
+        for word in _LINK_DIRECTION_WORDS:
+            assert word not in edges
+        assert "assegnazione incasso" not in edges
+        assert "assegnazione movimento" not in edges
 
 
 def test_missing_direction_uses_the_same_word_on_both_pages(client: TestClient):
