@@ -1,0 +1,45 @@
+# Intestazioni tenute fuori dal dizionario dei sinonimi.
+# Servono solo a questa misura. Non sono etichette umane.
+# Due fonti: sotto il minimo di 3 la soglia resta non misurata.
+label: PROVVISORIA
+calibrated: false
+human_labels: false
+sources:
+  - id: shopify_order_export
+    name: Shopify
+    headers:
+      - Name
+      - Id
+      - Created at
+      - Email
+      - Phone
+      - Financial Status
+      - Fulfillment Status
+      - Currency
+      - Subtotal
+      - Shipping
+      - Taxes
+      - Total
+      - Discount Code
+      - Discount Amount
+      - Payment Method
+      - Canceled at
+      - Lineitem quantity
+      - Lineitem name
+      - Lineitem price
+      - Lineitem SKU
+      - Lineitem discount
+      - Vendor
+  - id: fatturapa_1_2_2
+    name: FatturaPA
+    headers:
+      - Denominazione
+      - IdFiscaleIVA
+      - CodiceFiscale
+      - CodiceArticolo
+      - Descrizione
+      - Quantita
+      - UnitaMisura
+      - PrezzoUnitario
+      - AliquotaIVA
+      - Data

@@ -1,0 +1,188 @@
+"""Queue doubtful matches. Identical identity values already share one entity."""
+
+from __future__ import annotations
+
+import re
+import unicodedata
+
+import psycopg
+
+from services.companies import USER_WITHOUT_COMPANY
+from services.errors import AppError
+from services.revocation import QUEUE_MESSAGE
+
+_LEGAL = re.compile(r"\b(srl|s\.r\.l|spa|s\.p\.a|sas|snc|srls|llc|ltd)\b", re.IGNORECASE)
+
+
+def normalize_name(value: str) -> str:
+    text = unicodedata.normalize("NFKD", value.strip().lower())
+    text = "".join(char for char in text if not unicodedata.combining(char))
+    text = _LEGAL.sub(" ", text)
+    text = re.sub(r"[^a-z0-9\s]", " ", text)
+    return " ".join(text.split())
+
+
+def name_score(left: str, right: str) -> float:
+    if not left or not right:
+        return 0.0
+    if left == right:
+        return 0.95
+    left_tokens = left.split()
+    right_tokens = right.split()
+    if left_tokens[-1] == right_tokens[-1] and left_tokens[0][:1] == right_tokens[0][:1]:
+        return 0.72
+    return 0.0
+
+
+def queue_identity_doubts(conn: psycopg.Connection) -> int:
+    """Pair close names in the database. The reason does not contain the names."""
+    row = conn.execute("SELECT app.queue_name_reviews() AS created").fetchone()
+    return int(row["created"] or 0)
+
+
+def confirm_review(
+    conn: psycopg.Connection,
+    review_id: str,
+    *,
+    actor: str,
+    company_id: str | None,
+) -> dict:
+    if not company_id:
+        raise AppError(403, USER_WITHOUT_COMPANY)
+    review = _lock_review(conn, review_id)
+    _refuse_other_company(review, company_id)
+    if review["status"] != "open":
+        raise AppError(409, QUEUE_MESSAGE)
+    pair = _same_company_pair(
+        _entities_by_key(conn, review["entity_type"], review["left_key"]),
+        _entities_by_key(conn, review["entity_type"], review["right_key"]),
+    )
+    if pair is not None:
+        left, right = pair
+        conn.execute(
+            """
+            UPDATE app.identity_aliases
+            SET entity_id = %s
+            WHERE entity_id = %s
+            """,
+            (left["id"], right["id"]),
+        )
+        conn.execute(
+            """
+            INSERT INTO app.identity_aliases (entity_type, alias, entity_id, company_id)
+            VALUES (%s, %s, %s, %s)
+            ON CONFLICT (company_id, entity_type, alias) DO UPDATE SET entity_id = EXCLUDED.entity_id
+            """,
+            (
+                review["entity_type"],
+                review["right_key"],
+                left["id"],
+                left["company_id"],
+            ),
+        )
+        conn.execute("UPDATE app.entities SET valid_to = now() WHERE id = %s", (right["id"],))
+    conn.execute(
+        """
+        UPDATE app.identity_reviews
+        SET status = 'confirmed', company_id = %s, actor = %s
+        WHERE id = %s
+        """,
+        (company_id, actor, review_id),
+    )
+    return {"id": review_id, "status": "confirmed"}
+
+
+def reject_review(
+    conn: psycopg.Connection,
+    review_id: str,
+    *,
+    actor: str,
+    company_id: str | None,
+) -> dict:
+    if not company_id:
+        raise AppError(403, USER_WITHOUT_COMPANY)
+    review = _lock_review(conn, review_id)
+    _refuse_other_company(review, company_id)
+    if review["status"] != "open":
+        raise AppError(409, QUEUE_MESSAGE)
+    conn.execute(
+        """
+        UPDATE app.identity_reviews
+        SET status = 'rejected', company_id = %s, actor = %s
+        WHERE id = %s
+        """,
+        (company_id, actor, review_id),
+    )
+    return {"id": review_id, "status": "rejected"}
+
+
+def list_reviews(conn: psycopg.Connection, company_id: str | None = None) -> list[dict]:
+    """This company's queue, plus rows written before a company was stored."""
+    from services.revocation import state_histories
+
+    rows = list(
+        conn.execute(
+            """
+            SELECT id::text, entity_type, left_key, right_key, score, reason, status
+            FROM app.identity_reviews
+            WHERE company_id IS NULL
+               OR (%s::uuid IS NOT NULL AND company_id = %s::uuid)
+            ORDER BY created_at DESC
+            """,
+            (company_id, company_id),
+        ).fetchall()
+    )
+    histories = state_histories(
+        conn,
+        subject_table="app.identity_reviews",
+        revocation_table="app.identity_review_decisions",
+        subject_ids=[row["id"] for row in rows],
+        decision_for_status={"confirmed": "confirmed", "rejected": "rejected"},
+    )
+    for row in rows:
+        row["history"] = histories.get(row["id"], [])
+        row["executed"] = False
+    return rows
+
+
+def _entities_by_key(conn: psycopg.Connection, entity_type: str, business_key: str) -> list[dict]:
+    return list(
+        conn.execute(
+            """
+            SELECT id::text, company_id::text AS company_id
+            FROM app.entities
+            WHERE type = %s AND business_key = %s AND valid_to IS NULL
+            """,
+            (entity_type, business_key),
+        ).fetchall()
+    )
+
+
+def _same_company_pair(lefts: list[dict], rights: list[dict]) -> tuple[dict, dict] | None:
+    """Merge only when one company owns both keys. Two companies stay apart."""
+    pairs = []
+    for left in lefts:
+        for right in rights:
+            if left["id"] == right["id"]:
+                continue
+            if left["company_id"] == right["company_id"]:
+                pairs.append((left, right))
+    if len(pairs) != 1:
+        return None
+    return pairs[0]
+
+
+def _refuse_other_company(review: dict, company_id: str) -> None:
+    stored = review.get("company_id")
+    if stored is not None and str(stored) != company_id:
+        raise AppError(404, "Revisione identità assente")
+
+
+def _lock_review(conn: psycopg.Connection, review_id: str) -> dict:
+    row = conn.execute(
+        "SELECT * FROM app.identity_reviews WHERE id = %s FOR UPDATE",
+        (review_id,),
+    ).fetchone()
+    if row is None:
+        raise AppError(404, "Revisione identità assente")
+    return row

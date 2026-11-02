@@ -1,0 +1,27 @@
+package: core
+version: "1.0.0"
+changelog: "Concetti generali: persona, organizzazione, asset, documento, evento, luogo, transazione."
+types:
+  - name: Person
+    properties:
+      - {name: full_name, type: string, classification: internal, origin: original}
+  - name: Organization
+    properties:
+      - {name: name, type: string, classification: internal, origin: original}
+  - name: Asset
+    properties:
+      - {name: name, type: string, classification: internal, origin: original}
+  - name: Document
+    properties:
+      - {name: title, type: string, classification: internal, origin: original}
+  - name: Event
+    properties:
+      - {name: event_type, type: string, classification: internal, origin: original}
+      - {name: summary, type: string, classification: internal, origin: original}
+  - name: Location
+    properties:
+      - {name: name, type: string, classification: public, origin: original}
+  - name: Transaction
+    properties:
+      - {name: amount, type: number, classification: confidential, origin: original}
+relations: []

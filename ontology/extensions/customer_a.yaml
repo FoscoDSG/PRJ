@@ -1,0 +1,8 @@
+package: customer_a
+version: "1.0.0"
+depends_on: [manufacturing]
+changelog: "Estensione cliente: aggiunge la commessa sull'ordine senza toccare il template base."
+extends_types:
+  - name: Order
+    properties:
+      - {name: commessa, type: string, classification: internal, origin: original}

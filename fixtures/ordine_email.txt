@@ -1,0 +1,10 @@
+Da: buyer@nuova.example
+Cliente: Nuova Srl
+P.IVA: IT55555555555
+Codice cliente: C009
+Ordine: 1099
+Data: 2026-10-12
+Importo: 120000
+
+Righe:
+ART-X 1000 120

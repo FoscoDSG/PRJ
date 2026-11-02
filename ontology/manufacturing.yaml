@@ -1,0 +1,76 @@
+package: manufacturing
+version: "1.0.0"
+depends_on: [core]
+changelog: "Pack ordini: cliente, fornitore, prodotto, magazzino, ordine, riga, stock, spedizione."
+types:
+  - name: Customer
+    extends: Organization
+    properties:
+      - {name: source_key, type: string, classification: internal, origin: original, identifier: true}
+      - {name: company_name, type: string, classification: internal, origin: original}
+      - {name: vat, type: string, classification: confidential, origin: original, identity: true}
+      - {name: email, type: string, classification: internal, origin: original}
+  - name: Supplier
+    extends: Organization
+    properties:
+      - {name: source_key, type: string, classification: internal, origin: original, identifier: true}
+      - {name: name, type: string, classification: internal, origin: original}
+      - {name: delay_days, type: number, classification: internal, origin: original}
+      - {name: product_source_key, type: string, classification: internal, origin: original}
+  - name: Product
+    extends: Asset
+    properties:
+      - {name: source_key, type: string, classification: internal, origin: original, identifier: true}
+      - {name: name, type: string, classification: internal, origin: original}
+      - {name: cost, type: number, classification: confidential, origin: original}
+  - name: Warehouse
+    extends: Location
+    properties:
+      - {name: source_key, type: string, classification: internal, origin: original, identifier: true}
+      - {name: name, type: string, classification: public, origin: original}
+  - name: Order
+    extends: Transaction
+    actions: [approve, reject, modify, send_to_ERP, request_information]
+    properties:
+      - {name: source_key, type: string, classification: internal, origin: original, identifier: true}
+      - {name: amount, type: number, classification: confidential, origin: original}
+      - {name: status, type: string, classification: internal, origin: original}
+      - {name: ordered_at, type: string, classification: internal, origin: original}
+      - {name: customer_source_key, type: string, classification: internal, origin: original}
+      - {name: margin, type: number, classification: confidential, origin: calculated, unit: percent}
+      - {name: shortage_qty, type: number, classification: internal, origin: calculated}
+  - name: OrderLine
+    extends: Transaction
+    properties:
+      - {name: source_key, type: string, classification: internal, origin: original, identifier: true}
+      - {name: quantity, type: number, classification: internal, origin: original}
+      - {name: unit_price, type: number, classification: internal, origin: original}
+      - {name: order_source_key, type: string, classification: internal, origin: original}
+      - {name: product_source_key, type: string, classification: internal, origin: original}
+      - {name: shortage, type: number, classification: internal, origin: calculated}
+  - name: StockPosition
+    extends: Asset
+    properties:
+      - {name: source_key, type: string, classification: internal, origin: original, identifier: true}
+      - {name: on_hand, type: number, classification: internal, origin: original}
+      - {name: reserved, type: number, classification: internal, origin: original}
+      - {name: available, type: number, classification: internal, origin: calculated}
+      - {name: product_source_key, type: string, classification: internal, origin: original}
+      - {name: warehouse_source_key, type: string, classification: internal, origin: original}
+  - name: Shipment
+    extends: Event
+    properties:
+      - {name: source_key, type: string, classification: internal, origin: original, identifier: true}
+      - {name: status, type: string, classification: internal, origin: original}
+      - {name: shipped_at, type: string, classification: internal, origin: original}
+relations:
+  - {name: places, from: Customer, to: Order}
+  - {name: contains, from: Order, to: Product}
+  - {name: suppliedBy, from: Product, to: Supplier}
+  - {name: storedAt, from: StockPosition, to: Warehouse}
+  - {name: triggered, from: Order, to: Event}
+processes:
+  - id: order_exception
+    label: Eccezione d'ordine
+    steps:
+      - {id: shortage, label: Disponibilità insufficiente}

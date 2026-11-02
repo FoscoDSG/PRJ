@@ -1,0 +1,92 @@
+package: sales
+version: "1.0.0"
+depends_on: [manufacturing]
+changelog: "Modulo di processo ordine-incasso. Non sposta Order, OrderLine e Shipment."
+types:
+  - name: Invoice
+    extends: Document
+    properties:
+      - {name: source_key, type: string, classification: internal, origin: original, identifier: true}
+      - {name: document_type, type: string, classification: internal, origin: original}
+      - {name: issued_at, type: string, classification: internal, origin: original}
+      - {name: due_at, type: string, classification: internal, origin: original}
+      - {name: scadenze, type: string, classification: internal, origin: original}
+      - {name: amount, type: number, classification: confidential, origin: original}
+      - {name: currency, type: string, classification: internal, origin: original}
+      - {name: customer_vat, type: string, classification: confidential, origin: original}
+      - {name: customer_name, type: string, classification: confidential, origin: original}
+      - {name: order_source_key, type: string, classification: internal, origin: original}
+      - {name: status, type: string, classification: internal, origin: original}
+  - name: InvoiceLine
+    extends: Transaction
+    properties:
+      - {name: source_key, type: string, classification: internal, origin: original, identifier: true}
+      - {name: description, type: string, classification: internal, origin: original}
+      - {name: quantity, type: number, classification: internal, origin: original}
+      - {name: unit_price, type: number, classification: confidential, origin: original}
+      - {name: line_amount, type: number, classification: confidential, origin: original}
+      - {name: invoice_source_key, type: string, classification: internal, origin: original}
+      - {name: vat_rate, type: number, classification: internal, origin: original}
+  - name: CreditNote
+    extends: Document
+    properties:
+      - {name: source_key, type: string, classification: internal, origin: original, identifier: true}
+      - {name: document_type, type: string, classification: internal, origin: original}
+      - {name: issued_at, type: string, classification: internal, origin: original}
+      - {name: amount, type: number, classification: confidential, origin: original}
+      - {name: invoice_source_key, type: string, classification: internal, origin: original}
+      - {name: customer_vat, type: string, classification: confidential, origin: original}
+      - {name: reason, type: string, classification: internal, origin: original}
+      - {name: status, type: string, classification: internal, origin: original}
+  - name: Payment
+    extends: Transaction
+    properties:
+      - {name: source_key, type: string, classification: internal, origin: original, identifier: true}
+      - {name: direction, type: string, classification: internal, origin: original}
+      - {name: paid_at, type: string, classification: internal, origin: original}
+      - {name: iban, type: string, classification: confidential, origin: original}
+      - {name: causale, type: string, classification: confidential, origin: original}
+      - {name: counterparty_name, type: string, classification: confidential, origin: original}
+      - {name: counterparty_vat, type: string, classification: confidential, origin: original}
+      - {name: reference, type: string, classification: internal, origin: original}
+      - {name: status, type: string, classification: internal, origin: original}
+  - name: PaymentAllocation
+    extends: Transaction
+    properties:
+      - {name: source_key, type: string, classification: internal, origin: original, identifier: true}
+      - {name: payment_source_key, type: string, classification: internal, origin: original}
+      - {name: invoice_source_key, type: string, classification: internal, origin: original}
+      - {name: allocated_amount, type: number, classification: confidential, origin: original}
+      - {name: status, type: string, classification: internal, origin: original}
+extends_types:
+  - name: Supplier
+    properties:
+      - {name: vat, type: string, classification: confidential, origin: original, identity: true}
+  - name: Shipment
+    properties:
+      - {name: order_source_key, type: string, classification: internal, origin: original}
+  - name: Event
+    properties:
+      - {name: occurred_at, type: string, classification: internal, origin: original}
+      - {name: process_id, type: string, classification: internal, origin: original}
+      - {name: step_id, type: string, classification: internal, origin: original}
+relations:
+  - {name: generates, from: Order, to: Invoice}
+  - {name: fulfills, from: Shipment, to: Order}
+  - {name: allocates, from: Payment, to: PaymentAllocation}
+  - {name: settles, from: PaymentAllocation, to: Invoice}
+  - {name: sameOrganization, from: Customer, to: Supplier}
+  - {name: triggered, from: Invoice, to: Event}
+  - {name: triggered, from: Payment, to: Event}
+  - {name: triggered, from: CreditNote, to: Event}
+processes:
+  - id: order_to_cash
+    label: Ordine e incasso
+    steps:
+      - {id: order_placed, label: Ordine}
+      - {id: fulfilled, label: Spedizione}
+      - {id: invoiced, label: Fattura emessa}
+      - {id: credited, label: Nota di credito}
+      - {id: payment_received, label: Incasso registrato}
+      - {id: match_proposed, label: Abbinamento proposto}
+      - {id: match_confirmed, label: Abbinamento confermato}

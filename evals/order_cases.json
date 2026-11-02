@@ -1,0 +1,61 @@
+{
+  "label_origin": "synthetic",
+  "cases": [
+  {
+    "id": "shortage-fast-supplier",
+    "context": {
+      "order_key": "1024",
+      "amount": 60000,
+      "customer_key": "C001",
+      "lines": [{"product": "ART-X", "shortage": 80, "quantity": 500}],
+      "suppliers": [
+        {"source_key": "SUP-A", "product": "ART-X", "delay_days": 12},
+        {"source_key": "SUP-B", "product": "ART-X", "delay_days": 2}
+      ],
+      "evidence": []
+    },
+    "expected": {
+      "actions": [
+        {"type": "createPurchaseOrder", "supplier": "SUP-B", "product": "ART-X", "quantity": 80},
+        {"type": "notifyCustomer"}
+      ]
+    }
+  },
+  {
+    "id": "no-shortage",
+    "context": {
+      "order_key": "1025",
+      "amount": 1000,
+      "customer_key": "C002",
+      "lines": [{"product": "ART-Y", "shortage": 0, "quantity": 5}],
+      "suppliers": [{"source_key": "SUP-C", "product": "ART-Y", "delay_days": 1}],
+      "evidence": []
+    },
+    "expected": {"actions": []}
+  },
+  {
+    "id": "two-short-products",
+    "context": {
+      "order_key": "2000",
+      "amount": 10000,
+      "customer_key": "C009",
+      "lines": [
+        {"product": "ART-X", "shortage": 10, "quantity": 10},
+        {"product": "ART-Y", "shortage": 4, "quantity": 4}
+      ],
+      "suppliers": [
+        {"source_key": "SUP-B", "product": "ART-X", "delay_days": 2},
+        {"source_key": "SUP-C", "product": "ART-Y", "delay_days": 1}
+      ],
+      "evidence": []
+    },
+    "expected": {
+      "actions": [
+        {"type": "createPurchaseOrder", "supplier": "SUP-B", "product": "ART-X", "quantity": 10},
+        {"type": "createPurchaseOrder", "supplier": "SUP-C", "product": "ART-Y", "quantity": 4},
+        {"type": "notifyCustomer"}
+      ]
+    }
+  }
+  ]
+}

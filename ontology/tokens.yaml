@@ -1,0 +1,23 @@
+# Vocabolario indipendente di parole normalizzate.
+# Aggiunto dopo la prima misura hold-out (2 colonne su 32 sopra 0,75).
+# I numeri sono punteggi di regola, sotto quelli dei sinonimi, non probabilità.
+# Termini presi da schema.org (Order, Offer, Invoice, PostalAddress, Person, Organization).
+# Non ci sono nomi di Shopify né di FatturaPA.
+version: "1"
+rule: mapping.token@v1
+score_kind: "punteggio di regola, non probabilità"
+added_after_holdout: true
+entries:
+  - {term: orderNumber, source: doc:https://schema.org/orderNumber, profile: order, target_type: Order, target_property: source_key, score: 0.64}
+  - {term: orderDate, source: doc:https://schema.org/orderDate, profile: order, target_type: Order, target_property: ordered_at, score: 0.60}
+  - {term: totalPaymentDue, source: doc:https://schema.org/totalPaymentDue, profile: order, target_type: Order, target_property: amount, score: 0.58}
+  - {term: price, source: doc:https://schema.org/price, profile: order_line, target_type: OrderLine, target_property: unit_price, score: 0.62}
+  - {term: orderQuantity, source: doc:https://schema.org/orderQuantity, profile: order_line, target_type: OrderLine, target_property: quantity, score: 0.60}
+  - {term: taxID, source: doc:https://schema.org/taxID, profile: customer, target_type: Customer, target_property: vat, score: 0.64}
+  - {term: vatID, source: doc:https://schema.org/vatID, profile: customer, target_type: Customer, target_property: vat, score: 0.66}
+  - {term: email, source: doc:https://schema.org/email, profile: customer, target_type: Customer, target_property: email, score: 0.64}
+  - {term: addressLocality, source: doc:https://schema.org/addressLocality, profile: customer, target_type: Location, target_property: name, score: 0.55}
+unmapped:
+  - {term: priceCurrency, source: doc:https://schema.org/priceCurrency, reason: "Proprietà di Offer. L'ontologia non ha una valuta."}
+  - {term: telephone, source: doc:https://schema.org/telephone, reason: "Proprietà di Person e Organization. L'ontologia non ha un telefono."}
+  - {term: postalCode, source: doc:https://schema.org/postalCode, reason: "Proprietà di PostalAddress. L'ontologia non ha un CAP."}
