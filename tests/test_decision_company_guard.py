@@ -584,7 +584,7 @@ def test_api_blocks_the_remaining_decisions_without_a_company(client: TestClient
     assert "quarantineCard(item, canWrite, state.role)" in page
     assert "identityCard(item, canWrite, state.role)" in page
     assert "driftCard(item, canWrite, state.role)" in page
-    assert "inboxCard(item, state.role, canWrite)" in page
+    assert "inboxCard(item, state.role, canWrite, ontology)" in page
     assert 'classList.toggle("mappings-readonly", !canWrite)' in page
     rendered = subprocess.run(
         ["node", "-e", _CARD_BUTTONS],

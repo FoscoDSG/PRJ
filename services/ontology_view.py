@@ -155,6 +155,51 @@ PAYMENT_OUTGOING_FIELDS = {
     "paid_at": "Data pagamento",
 }
 
+# Esiti delle tre vie. La pagina legge queste etichette e non traduce il codice.
+MATCH3_OUTCOMES = {
+    "MATCH_OK": "Tre vie coerenti",
+    "QTY_NOT_RECEIVED": "Quantità non ricevuta",
+    "QTY_OVER": "Quantità oltre il ricevuto",
+    "PRICE_OUT_OF_TOL": "Prezzo fuori tolleranza",
+    "VAT_MISMATCH": "IVA non coincidente",
+    "TOTAL_MISMATCH": "Totale fuori tolleranza",
+    "NO_PO": "Ordine assente",
+    "DUPLICATE_INVOICE": "Fattura già presente",
+}
+
+MATCH3_CRITERIA = {
+    "unique": "Univoca",
+    "order": "Ordine",
+    "quantity": "Quantità",
+    "price": "Prezzo",
+    "vat": "IVA",
+    "total": "Totale",
+}
+
+# Frasi dei criteri falliti. La pagina non mostra la parola isolata.
+MATCH3_FAILURES = {
+    "unique": "Fattura già presente",
+    "order": "Ordine assente",
+    "quantity": "Quantità non coerente con il ricevuto",
+    "price": "Prezzo fuori tolleranza",
+    "vat": "Aliquota IVA diversa dall'ordine",
+    "total": "Totale fuori tolleranza",
+}
+
+MATCH3_CAPTIONS = {
+    "expected_tax": "Imposta attesa",
+    "invoice_tax": "Imposta in fattura",
+    "vat_rate": "Aliquota fattura",
+    "order_vat_rate": "Aliquota ordine",
+    "ordered_qty": "ordinata",
+    "received_qty": "ricevuta",
+    "invoiced_qty": "fatturata",
+    "expected_line": "Atteso",
+    "invoiced_line": "fatturato",
+    "threshold": "soglia",
+    "vat_heading": "IVA",
+}
+
 # Shown words for a stored code. «open» is not the same word on every type.
 VALUE_LABELS = {
     ("Order", "status"): {"open": "Aperto", "closed": "Chiuso"},
@@ -167,6 +212,7 @@ VALUE_LABELS = {
     ("CreditNote", "status"): {"open": "Aperta", "issued": "Emessa"},
     ("Payment", "status"): {"received": "Ricevuto", "open": "In corso"},
     ("Shipment", "status"): {"open": "In corso"},
+    ("SupplierInvoice", "status"): {"open": "Aperta", "received": "Ricevuta"},
     ("Payment", "direction"): {"incoming": "In entrata", "outgoing": "In uscita"},
 }
 
@@ -260,6 +306,12 @@ def describe_ontology(
         "value_labels": _value_labels(),
         "payment_labels": dict(PAYMENT_DIRECTION_LABELS),
         "payment_field_labels": {"outgoing": dict(PAYMENT_OUTGOING_FIELDS)},
+        "match3_labels": {
+            "outcomes": dict(MATCH3_OUTCOMES),
+            "criteria": dict(MATCH3_CRITERIA),
+            "failures": dict(MATCH3_FAILURES),
+            "captions": dict(MATCH3_CAPTIONS),
+        },
         "processes": processes,
         "step_transitions": step_transitions,
         "extensions": extensions,

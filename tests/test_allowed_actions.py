@@ -27,6 +27,7 @@ from services.allowed_actions import (
     identity_actions,
     mapping_actions,
     page_actions,
+    match3_actions,
     payment_actions,
     quarantine_actions,
     recommendation_actions,
@@ -149,6 +150,27 @@ _DECIDED_PAYMENT = {
     "status": "confirmed",
     "history": [{"id": "h1", "decision": "confirm", "revoked": False}],
 }
+_OPEN_MATCH3 = {
+    "id": "m1",
+    "kind": "three_way",
+    "status": "proposed",
+    "outcome": "QTY_OVER",
+    "invoice_number": "FT-1",
+    "headline": "Fattura fornitore FT-1",
+    "problem": "Proposta delle tre vie. La fattura fornitore non viene chiusa.",
+    "evidence_hash": "abc",
+    "criteria": {"quantity": False},
+    "failed_criteria": ["quantity"],
+    "comparison": {"lines": [], "invoice_tax": [], "expected_total": "1.00", "invoice_total": "1.00"},
+    "history": [],
+    "process": {"id": "procure_to_pay", "label": "Dall'acquisto al pagamento"},
+    "step": {"id": "three_way", "label": "Tre vie"},
+}
+_DECIDED_MATCH3 = {
+    **_OPEN_MATCH3,
+    "status": "confirmed",
+    "history": [{"id": "h1", "decision": "confirm", "revoked": False}],
+}
 _FILE = {"file_id": FAKE, "source_name": "ordini", "choices": []}
 _CUSTOMER = {
     "id": FAKE,
@@ -193,6 +215,10 @@ PROBES = [
     _probe("payment", payment_actions, "correct", _OPEN_PAYMENT, f"/api/payment-proposals/{FAKE}/correct", 'data-act="correct-match"', {"decision": "correct", "evidence_hash": HASH, "invoice_number": "FT-1", "allocated_amount": 1, "reason": REASON}),
     _probe("payment", payment_actions, "reject", _OPEN_PAYMENT, f"/api/payment-proposals/{FAKE}/reject", 'data-act="reject-match"', {"decision": "reject", "evidence_hash": HASH, "reason": REASON}),
     _probe("payment", payment_actions, "revoke", _DECIDED_PAYMENT, f"/api/payment-decisions/{FAKE}/revoke", "data-revoke-payment", {"reason": REASON}),
+    _probe("match3", match3_actions, "confirm", _OPEN_MATCH3, f"/api/match3-proposals/{FAKE}/confirm", 'data-act="confirm-match3"', {"decision": "confirm", "evidence_hash": HASH}),
+    _probe("match3", match3_actions, "correct", _OPEN_MATCH3, f"/api/match3-proposals/{FAKE}/correct", 'data-act="correct-match3"', {"decision": "correct", "evidence_hash": HASH, "reason": REASON}),
+    _probe("match3", match3_actions, "reject", _OPEN_MATCH3, f"/api/match3-proposals/{FAKE}/reject", 'data-act="reject-match3"', {"decision": "reject", "evidence_hash": HASH, "reason": REASON}),
+    _probe("match3", match3_actions, "revoke", _DECIDED_MATCH3, f"/api/match3-decisions/{FAKE}/revoke", "data-revoke-match3", {"reason": REASON}),
     _probe("file", file_actions, "correct", _FILE, f"/api/files/{FAKE}/type", "data-type-ok", {"decision": "correct"}),
     _probe("file", file_actions, "wrong", _FILE, f"/api/files/{FAKE}/type", "data-type-wrong", {"decision": "wrong", "correct_type": "order"}),
     _probe("file", file_actions, "not_sure", _FILE, f"/api/files/{FAKE}/type", "data-type-wrong", {"decision": "not_sure"}),
@@ -217,7 +243,7 @@ function render(kind, item) {
   if (kind === "drift") return driftCard(item, true, "operator");
   if (kind === "identity") return identityCard(item, true, "operator");
   if (kind === "mapping") return mappingRow(item, true, "operator");
-  if (kind === "recommendation" || kind === "payment") return inboxCard(item, "operator", true);
+  if (kind === "recommendation" || kind === "payment" || kind === "match3") return inboxCard(item, "operator", true);
   if (kind === "file") return fileActionBar(item);
   if (kind === "customer") return customerDetail(item, "operator", true);
   throw new Error(kind);

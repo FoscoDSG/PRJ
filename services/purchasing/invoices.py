@@ -103,6 +103,7 @@ def write_supplier_invoice(
         line_payload = {
             "source_key": line_key,
             "description": line.get("description") or "",
+            "product_source_key": line.get("product_source_key") or "",
             "quantity": line.get("quantity"),
             "unit_price": line.get("unit_price"),
             "line_amount": money(line["line_amount"]) if line.get("line_amount") is not None else None,

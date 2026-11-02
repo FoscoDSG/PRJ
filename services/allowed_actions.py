@@ -144,6 +144,27 @@ def payment_actions(
     return actions
 
 
+def match3_actions(
+    role: str,
+    item: dict[str, Any] | None = None,
+    *,
+    company: bool = True,
+) -> list[str]:
+    """Confirm, correct or reject a proposed three-way exception. Revoke after it.
+
+    The same approver check as a payment match. An operator sees the exception
+    and does not get a button. This queue does not authorize a payment.
+    """
+    if not company or role not in APPROVER:
+        return []
+    actions: list[str] = []
+    if _status(item) == "proposed":
+        actions.extend(["confirm", "correct", "reject"])
+    if _open_decision(item):
+        actions.append("revoke")
+    return actions
+
+
 def page_actions(role: str, *, company: bool = True) -> list[str]:
     """Buttons of the Dati page: upload, confirm strong suggestions, rebuild.
 
@@ -187,6 +208,7 @@ CARD_ACTIONS: dict[str, CardFn] = {
     "mapping": mapping_actions,
     "recommendation": recommendation_actions,
     "payment": payment_actions,
+    "match3": match3_actions,
     "file": file_actions,
     "customer": customer_actions,
 }

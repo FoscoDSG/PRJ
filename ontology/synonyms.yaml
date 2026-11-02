@@ -270,3 +270,4 @@ uncovered:
   - {target_type: SupplierInvoiceLine, target_property: line_amount, reason: "Importo di riga della fattura fornitore, riservato."}
   - {target_type: SupplierInvoiceLine, target_property: vat_rate, reason: "Aliquota della riga fornitore. FatturaPA non è una fonte del dizionario."}
   - {target_type: SupplierInvoiceLine, target_property: supplier_invoice_source_key, reason: "Riferimento alla testata della fattura fornitore."}
+  - {target_type: SupplierInvoiceLine, target_property: product_source_key, reason: "Prodotto fatturato. Il dizionario ha Product.source_key."}
